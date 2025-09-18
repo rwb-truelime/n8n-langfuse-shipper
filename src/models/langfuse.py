@@ -33,6 +33,7 @@ class LangfuseSpan(BaseModel):
     error: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
     token_usage: Optional[LangfuseUsage] = None
+    status: Optional[str] = None  # normalized status (e.g. success, error)
 
 
 class LangfuseTrace(BaseModel):
