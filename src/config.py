@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict as _SettingsConfigDict
+from pydantic import Field, model_validator
 from typing import Optional
 
 
@@ -14,12 +14,20 @@ class Settings(BaseSettings):
     are initialized.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = _SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Postgres
     PG_DSN: str = Field(
         default="", description="PostgreSQL DSN, e.g. postgres://user:pass@host:5432/dbname"
     )
+    # Optional n8n-style component vars (used if PG_DSN not directly supplied)
+    DB_POSTGRESDB_HOST: Optional[str] = None
+    DB_POSTGRESDB_PORT: Optional[int] = 5432
+    DB_POSTGRESDB_DATABASE: Optional[str] = None
+    DB_POSTGRESDB_USER: Optional[str] = None
+    DB_POSTGRESDB_PASSWORD: Optional[str] = None
+    DB_POSTGRESDB_SCHEMA: Optional[str] = None
+    DB_TABLE_PREFIX: Optional[str] = None
 
     # Langfuse / OTLP
     LANGFUSE_HOST: str = Field(default="", description="Base URL for Langfuse host")
@@ -44,6 +52,16 @@ class Settings(BaseSettings):
         default=".backfill_checkpoint",
         description="Path to file storing last processed execution id",
     )
+
+    @model_validator(mode="after")
+    def build_dsn_if_needed(self):  # type: ignore[override]
+        if not self.PG_DSN and self.DB_POSTGRESDB_HOST and self.DB_POSTGRESDB_DATABASE:
+            user = self.DB_POSTGRESDB_USER or "postgres"
+            pwd = self.DB_POSTGRESDB_PASSWORD or ""
+            auth = f"{user}:{pwd}@" if pwd else f"{user}@"
+            port = self.DB_POSTGRESDB_PORT or 5432
+            self.PG_DSN = f"postgresql://{auth}{self.DB_POSTGRESDB_HOST}:{port}/{self.DB_POSTGRESDB_DATABASE}"
+        return self
 
 
 @lru_cache(maxsize=1)

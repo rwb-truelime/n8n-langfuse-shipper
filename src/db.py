@@ -6,6 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import os
+import re
 
 try:  # pragma: no cover - import guarded for type checkers
     import psycopg
@@ -30,6 +32,13 @@ class ExecutionSource:
     def __init__(self, dsn: str, batch_size: int = DEFAULT_BATCH_SIZE):
         self._dsn = dsn
         self._batch_size = batch_size
+        self._schema = os.environ.get("DB_POSTGRESDB_SCHEMA") or "public"
+        self._table_prefix = os.environ.get("DB_TABLE_PREFIX") or "n8n_"
+        # Basic safety: allow only alnum + underscore in prefix & schema
+        if not re.fullmatch(r"[A-Za-z0-9_]+", self._schema):
+            raise ValueError("Invalid schema name")
+        if not re.fullmatch(r"[A-Za-z0-9_]*", self._table_prefix):
+            raise ValueError("Invalid table prefix")
 
     @asynccontextmanager
     async def _connect(self) -> AsyncGenerator[AsyncConnection, None]:  # type: ignore
@@ -55,12 +64,15 @@ class ExecutionSource:
     async def _fetch_batch(
         self, conn: Any, last_id: int, limit: int
     ) -> List[Dict[str, Any]]:  # conn typed as Any for compatibility
+        # Table names with prefix
+        entity_table = f'"{self._schema}"."{self._table_prefix}execution_entity"'
+        data_table = f'"{self._schema}"."{self._table_prefix}execution_data"'
         sql = (
-            'SELECT e.id, e."workflowId" as "workflowId", e.status, '
-            'e."startedAt" as "startedAt", e."stoppedAt" as "stoppedAt", '
-            'e."workflowData" as "workflowData", d.data as data '
-            'FROM n8n_execution_entity e '
-            'JOIN n8n_execution_data d ON e.id = d."executionId" '
+            f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
+            f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
+            f'd."workflowData" AS "workflowData", d."data" AS data '
+            f'FROM {entity_table} e '
+            f'JOIN {data_table} d ON e.id = d."executionId" '
             'WHERE e.id > %s '
             'ORDER BY e.id ASC '
             'LIMIT %s'
