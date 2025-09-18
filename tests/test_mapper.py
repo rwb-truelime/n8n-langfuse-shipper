@@ -123,3 +123,35 @@ def test_checkpoint_roundtrip():
         assert load_checkpoint(path) is None
         store_checkpoint(path, 123)
         assert load_checkpoint(path) == 123
+
+
+def test_graph_fallback_parent_inference():
+    # Build workflow with connections but omit source info in NodeRun for child
+    run_data = {
+        "Parent": [
+            NodeRun(
+                startTime=1_700_000_000,
+                executionTime=10,
+                executionStatus="success",
+                data={},
+            )
+        ],
+        "Child": [
+            NodeRun(
+                startTime=1_700_000_020,
+                executionTime=5,
+                executionStatus="success",
+                data={},
+            )
+        ],
+    }
+    rec = _base_record(run_data)
+    # Inject a simple connection graph: Parent -> Child
+    rec.workflowData.connections = {
+        "Parent": {"main": [[{"index": 0, "node": "Child", "type": "main"}]]}
+    }
+    trace = map_execution_to_langfuse(rec, truncate_limit=200)
+    parent_span = next(s for s in trace.spans if s.name == "Parent")
+    child_span = next(s for s in trace.spans if s.name == "Child")
+    assert child_span.parent_id == parent_span.id, "Graph fallback failed to assign parent span"
+    assert child_span.metadata.get("n8n.graph.inferred_parent") is True

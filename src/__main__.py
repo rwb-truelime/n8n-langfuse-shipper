@@ -4,6 +4,7 @@ import typer
 from typing import Optional
 import logging
 import asyncio
+from pydantic import ValidationError
 
 from .config import get_settings
 from .db import ExecutionSource
@@ -60,11 +61,8 @@ def backfill(
                 startedAt=raw["startedAt"],
                 stoppedAt=raw["stoppedAt"],
                 workflowData=WorkflowData(**raw["workflowData"]),
-                data=ExecutionData(
-                    executionData=ExecutionDataDetails(
-                        resultData=ResultData(runData={})
-                    )
-                ),
+                # Attempt to parse full execution data (with runData). Fallback to empty if shape unexpected.
+                data=_build_execution_data(raw.get("data")),
             )
             trace = map_execution_to_langfuse(record, truncate_limit=settings.TRUNCATE_FIELD_LEN)
             export_trace(trace, settings, dry_run=dry_run)
@@ -84,3 +82,27 @@ def backfill(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+def _build_execution_data(raw_data: Optional[dict]) -> ExecutionData:
+    """Build ExecutionData model from raw DB JSON.
+
+    The n8n execution_data.data column usually contains a structure:
+    {
+      "executionData": {"resultData": {"runData": {...}} , ...}
+      ... other keys ...
+    }
+    We only care (for now) about executionData.resultData.runData.
+    """
+    if not raw_data or not isinstance(raw_data, dict):
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
+    if "executionData" not in raw_data:
+        logging.getLogger(__name__).debug("executionData key missing in raw execution JSON; no node spans will be produced")
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
+    try:
+        return ExecutionData(**raw_data)
+    except ValidationError as ve:
+        logging.getLogger(__name__).warning(
+            "Failed to parse executionData (validation error); proceeding with empty runData: %s", ve
+        )
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
