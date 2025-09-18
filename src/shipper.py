@@ -66,6 +66,8 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
     if span_model.model:
         span_ot.set_attribute("langfuse.observation.model.name", span_model.model)
         span_ot.set_attribute("model", span_model.model)
+    if span_model.status:
+        span_ot.set_attribute("langfuse.observation.status", span_model.status)
     if span_model.token_usage:
         if span_model.token_usage.promptTokens is not None:
             span_ot.set_attribute("gen_ai.usage.prompt_tokens", span_model.token_usage.promptTokens)
