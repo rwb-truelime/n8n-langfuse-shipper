@@ -16,6 +16,34 @@ from .checkpoint import load_checkpoint, store_checkpoint
 app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
 
 
+def _build_execution_data(raw_data: Optional[dict]) -> ExecutionData:
+    """Build ExecutionData model from raw DB JSON.
+
+    Defined before app() invocation to avoid NameError when module executed as script.
+
+    The n8n execution_data.data column usually contains a structure:
+    {
+      "executionData": {"resultData": {"runData": {...}} , ...}
+      ... other keys ...
+    }
+    We only care (for now) about executionData.resultData.runData.
+    """
+    if not raw_data or not isinstance(raw_data, dict):
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
+    if "executionData" not in raw_data:
+        logging.getLogger(__name__).debug(
+            "executionData key missing in raw execution JSON; no node spans will be produced"
+        )
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
+    try:
+        return ExecutionData(**raw_data)
+    except ValidationError as ve:
+        logging.getLogger(__name__).warning(
+            "Failed to parse executionData (validation error); proceeding with empty runData: %s", ve
+        )
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
+
+
 @app.callback()
 def main():  # pragma: no cover - simple callback
     """n8n-langfuse-shipper CLI. Use subcommands like 'backfill'."""
@@ -82,27 +110,3 @@ def backfill(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
-
-
-def _build_execution_data(raw_data: Optional[dict]) -> ExecutionData:
-    """Build ExecutionData model from raw DB JSON.
-
-    The n8n execution_data.data column usually contains a structure:
-    {
-      "executionData": {"resultData": {"runData": {...}} , ...}
-      ... other keys ...
-    }
-    We only care (for now) about executionData.resultData.runData.
-    """
-    if not raw_data or not isinstance(raw_data, dict):
-        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
-    if "executionData" not in raw_data:
-        logging.getLogger(__name__).debug("executionData key missing in raw execution JSON; no node spans will be produced")
-        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
-    try:
-        return ExecutionData(**raw_data)
-    except ValidationError as ve:
-        logging.getLogger(__name__).warning(
-            "Failed to parse executionData (validation error); proceeding with empty runData: %s", ve
-        )
-        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
