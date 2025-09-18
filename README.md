@@ -32,13 +32,13 @@ Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run export
 
 ```mermaid
 graph TD
-	PG[(PostgreSQL n8n DB)] -->|stream batches| EX[Extractor\n`db.py`]
-	EX -->|execution rows| MAP[Mapper\n`mapper.py`]
-	MAP -->|LangfuseTrace & Spans| SHIP[Shipper\n`shipper.py`]
-	SHIP -->|OTLP HTTP (spans)| LF[Langfuse OTLP Endpoint]
-	MAP -->|observation type lookup| OBS[Observation Mapper\n`observation_mapper.py`]
-	MAP -->|deterministic IDs| ID[(UUIDv5 Namespace)]
-	MAP -->|LLM usage -> attributes| GEN[Generation Detection]
+	PG[(PostgreSQL n8n DB)] -->|batches| EX[Extractor db.py]
+	EX -->|rows| MAP[Mapper mapper.py]
+	MAP --> SHIP[Shipper shipper.py]
+	SHIP -->|OTLP spans| LF[Langfuse OTLP Endpoint]
+	MAP --> OBS[Observation Mapper]
+	MAP --> ID[(UUIDv5 Namespace)]
+	MAP --> GEN[Generation Detection]
 ```
 
 Key points:
