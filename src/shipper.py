@@ -26,10 +26,21 @@ def _init_otel(settings: Settings) -> None:
     global _initialized
     if _initialized:
         return
-    endpoint = (
-        settings.OTEL_EXPORTER_OTLP_ENDPOINT
-        or (settings.LANGFUSE_HOST.rstrip("/") + "/api/public/otel/v1/traces" if settings.LANGFUSE_HOST else None)
-    )
+    # Determine correct OTLP trace endpoint.
+    # Langfuse base host (e.g. https://cloud.langfuse.com) expects /api/public/otel/v1/traces
+    # Some users may already provide a partial or full path; normalize minimally.
+    if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
+        endpoint = settings.OTEL_EXPORTER_OTLP_ENDPOINT.rstrip("/")
+    else:
+        base = settings.LANGFUSE_HOST.rstrip("/") if settings.LANGFUSE_HOST else ""
+        if base and not base.endswith("/api/public/otel"):
+            # If user already appended /api/public/otel/v1/traces we won't duplicate
+            if base.endswith("/api/public/otel/v1/traces"):
+                endpoint = base
+            else:
+                endpoint = base + "/api/public/otel/v1/traces"
+        else:
+            endpoint = base + "/v1/traces" if base else None
     if not endpoint:
         logger.warning("No Langfuse endpoint configured; skipping OTLP initialization")
         return
@@ -41,6 +52,7 @@ def _init_otel(settings: Settings) -> None:
     exporter = OTLPSpanExporter(
         endpoint=endpoint,
         headers={"Authorization": f"Basic {auth_b64}"},
+        timeout=settings.OTEL_EXPORTER_OTLP_TIMEOUT,
     )
     provider = TracerProvider()
     provider.add_span_processor(BatchSpanProcessor(exporter))

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(
         default=None, description="Override OTLP endpoint (otherwise derived from LANGFUSE_HOST)"
     )
+    OTEL_EXPORTER_OTLP_TIMEOUT: int = Field(
+        default=30, description="Timeout (seconds) for OTLP HTTP export requests"
+    )
 
     # Checkpointing
     CHECKPOINT_FILE: str = Field(
