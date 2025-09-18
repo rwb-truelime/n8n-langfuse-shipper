@@ -2,7 +2,7 @@
 
 <!-- Badges -->
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![Status](https://img.shields.io/badge/status-Iteration%202-informational)
+![Status](https://img.shields.io/badge/status-Iteration%203-informational)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
@@ -14,7 +14,7 @@ Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run export
 
 ---
 
-## Features Implemented (Iteration 2)
+## Features Implemented (Iteration 3)
 
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
@@ -22,9 +22,11 @@ Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run export
 - Deterministic span & trace ID mapping (`uuid5` namespace) in `src/mapper.py`.
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI with `backfill` subcommand, supports `--start-after-id`, `--limit`, `--dry-run`.
-- Minimal OTLP shipper (`src/shipper.py`) that sets Langfuse + GenAI semantic attributes.
+- OTLP shipper (`src/shipper.py`) that sets Langfuse + GenAI semantic + status attributes.
 - Auto-construction of `PG_DSN` from n8n style `.env` variables if not explicitly set.
 - Basic integration tests for database streaming (read‑only) under `tests/`.
+- Mapper unit tests for deterministic IDs, parent resolution, generation detection, truncation flags.
+- Checkpointing support (file-based) for resumability.
 
 ---
 
@@ -79,7 +81,7 @@ The service reads settings via environment variables (`pydantic-settings`). Eith
 | Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Batch size | `FETCH_BATCH_SIZE` (default 100) |
 | Truncation length | `TRUNCATE_FIELD_LEN` (default 4000 chars) |
-| Checkpoint file | `CHECKPOINT_FILE` (future use) |
+| Checkpoint file | `CHECKPOINT_FILE` |
 
 Example (fish shell):
 
@@ -137,7 +139,12 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Node type/category | Observation type (`agent`, `tool`, `chain`, `retriever`, etc.) via mapper |
 | Token usage (`tokenUsage` in node run) | GenAI semantic attributes (`gen_ai.usage.*`) + stored in model |
 
-Parenting logic uses `source.previousNode` when available; otherwise root span.
+Parenting logic uses `source.previousNodeRun` (deterministic parent span id) when available, falling back to last known span for that node or the root.
+
+Each node span now includes metadata:
+- `n8n.node.run_index`, `n8n.node.execution_time_ms`, `n8n.node.execution_status`
+- Truncation flags: `n8n.truncated.input`, `n8n.truncated.output` when applicable
+- Previous linkage: `n8n.node.previous_node`, `n8n.node.previous_node_run` when present
 
 ---
 
@@ -236,13 +243,13 @@ pytest tests/test_db_stream.py::test_stream_reads_rows_without_modification -q
 
 ## Roadmap (Next Iterations)
 
-1. Checkpointing & resumability (persist last processed id).
-2. Rich input/output extraction + optional masking.
-3. Media (base64 detection & upload) handling.
-4. Error retries with dead-letter logging.
-5. Performance tuning (server-side cursors, parallelization).
-6. Additional filtering (status, time window, workflow id).
-7. Unit tests for mapper & observation type classification.
+1. Nested sub-run/tool span emission (agent/tool internal calls).
+2. Media (base64 detection & upload) handling.
+3. Error retries with dead-letter logging.
+4. Performance tuning (parallel span export / chunking large traces).
+5. Additional filtering (status, time window, workflow id).
+6. Masking / PII scrubbing options.
+7. More comprehensive observation classification edge cases.
 
 ---
 
