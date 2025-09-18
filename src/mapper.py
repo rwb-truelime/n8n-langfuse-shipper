@@ -126,6 +126,9 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
         pass
 
     run_data = record.data.executionData.resultData.runData
+
+    # Maintain last output object (raw dict) per node for input propagation.
+    last_output_data: Dict[str, Any] = {}
     for node_name, runs in run_data.items():
         wf_meta = wf_node_lookup.get(node_name, {})
         node_type = wf_meta.get("type") or node_name
@@ -162,8 +165,18 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
             usage = _extract_usage(run)
             is_generation = _detect_generation(node_type, run)
             observation_type = obs_type_guess or ("generation" if is_generation else "span")
-            input_str, input_trunc = _serialize_and_truncate(run.inputOverride, truncate_limit)
-            output_str, output_trunc = _serialize_and_truncate(run.data, truncate_limit)
+            # Determine logical input: prefer explicit inputOverride, else prior parent's raw output if available.
+            raw_input_obj: Any = None
+            if run.inputOverride is not None:
+                raw_input_obj = run.inputOverride
+            else:
+                # Use parent node output if exists
+                if prev_node and prev_node in last_output_data:
+                    raw_input_obj = {"inferredFrom": prev_node, "data": last_output_data[prev_node]}
+
+            raw_output_obj = run.data
+            input_str, input_trunc = _serialize_and_truncate(raw_input_obj, truncate_limit)
+            output_str, output_trunc = _serialize_and_truncate(raw_output_obj, truncate_limit)
             status_norm = (run.executionStatus or "").lower()
             if run.error:
                 status_norm = "error"
@@ -202,6 +215,12 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
             )
             trace.spans.append(span)
             last_span_for_node[node_name] = span_id
+            # Store raw output for possible downstream propagation (limit size in memory by simple heuristic)
+            try:
+                if isinstance(raw_output_obj, dict) and len(str(raw_output_obj)) < truncate_limit * 2:
+                    last_output_data[node_name] = raw_output_obj
+            except Exception:
+                pass
             if is_generation:
                 trace.generations.append(
                     LangfuseGeneration(

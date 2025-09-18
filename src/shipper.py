@@ -14,6 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, set_span_in_context
 
 from .models.langfuse import LangfuseTrace, LangfuseSpan
 from .config import Settings
@@ -105,7 +106,10 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     for span_model in trace_model.spans:
         parent_ctx = None
         if span_model.parent_id and span_model.parent_id in ctx_lookup:
-            parent_ctx = ctx_lookup[span_model.parent_id]
+            from opentelemetry.trace import SpanContext  # local import to avoid circular
+            parent_span_context_obj = ctx_lookup[span_model.parent_id]
+            if isinstance(parent_span_context_obj, SpanContext):
+                parent_ctx = set_span_in_context(NonRecordingSpan(parent_span_context_obj))
         start_ns = int(span_model.start_time.timestamp() * 1e9)
         end_ns = int(span_model.end_time.timestamp() * 1e9)
         span_ot = tracer.start_span(
@@ -114,6 +118,11 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             start_time=start_ns,
         )
         _apply_span_attributes(span_ot, span_model)
+        # Optionally attach (possibly truncated) input/output as attributes for visibility
+        if span_model.input is not None:
+            span_ot.set_attribute("langfuse.observation.input", str(span_model.input))
+        if span_model.output is not None:
+            span_ot.set_attribute("langfuse.observation.output", str(span_model.output))
         # Set trace-level attributes on root
         if span_model.parent_id is None:
             for k, v in trace_model.metadata.items():
