@@ -1,8 +1,15 @@
-"""Core mapping logic from n8n execution records to Langfuse internal models."""
+"""Core mapping logic from n8n execution records to Langfuse internal models.
+
+Enhancements (Iteration 3):
+ - Structured JSON serialization for input/output with truncation flags.
+ - Normalized status + error propagation.
+ - Improved parent resolution using `previousNodeRun` when present.
+ - Richer metadata fields to aid downstream analysis.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid5, UUID, NAMESPACE_DNS
 
 from .models.n8n import N8nExecutionRecord, NodeRun
@@ -25,12 +32,24 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 
-def _truncate(value: Optional[str], limit: int) -> Optional[str]:
-    if value is None:
-        return value
-    if len(value) <= limit:
-        return value
-    return value[:limit] + f"...<truncated {len(value)-limit} chars>"
+def _serialize_and_truncate(obj: Any, limit: int) -> Tuple[Optional[str], bool]:
+    """Serialize obj to compact JSON (fallback to str) and truncate if needed.
+
+    Returns (serialized_value_or_None, truncated_flag).
+    """
+    if obj is None:
+        return None, False
+    try:
+        import json
+
+        raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        raw = str(obj)
+    truncated = False
+    if len(raw) > limit:
+        truncated = True
+        raw = raw[:limit] + f"...<truncated {len(raw)-limit} chars>"
+    return raw, truncated
 
 
 def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
@@ -82,7 +101,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
     )
     trace.spans.append(root_span)
 
-    # Track last span id per node for parent resolution
+    # Track last span id per node for fallback parent resolution
     last_span_for_node: Dict[str, str] = {}
 
     run_data = record.data.executionData.resultData.runData
@@ -96,13 +115,40 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
             start_time = _epoch_ms_to_dt(run.startTime)
             end_time = start_time + timedelta(milliseconds=run.executionTime or 0)
             parent_id: Optional[str] = root_span_id
-            if run.source and run.source[0].previousNode:
+            prev_node = None
+            prev_node_run = None
+            if run.source and len(run.source) > 0 and run.source[0].previousNode:
                 prev_node = run.source[0].previousNode
-                parent_id = last_span_for_node.get(prev_node, root_span_id)
+                prev_node_run = run.source[0].previousNodeRun
+                if prev_node_run is not None:
+                    # Deterministically compute the referenced span id (guaranteed stable even if not yet created)
+                    parent_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{prev_node}:{prev_node_run}"))
+                else:
+                    parent_id = last_span_for_node.get(prev_node, root_span_id)
 
             usage = _extract_usage(run)
             is_generation = _detect_generation(node_type, run)
             observation_type = obs_type_guess or ("generation" if is_generation else "span")
+            input_str, input_trunc = _serialize_and_truncate(run.inputOverride, truncate_limit)
+            output_str, output_trunc = _serialize_and_truncate(run.data, truncate_limit)
+            status_norm = (run.executionStatus or "").lower()
+            if run.error:
+                status_norm = "error"
+            metadata: Dict[str, Any] = {
+                "n8n.node.type": node_type,
+                "n8n.node.category": category,
+                "n8n.node.run_index": idx,
+                "n8n.node.execution_time_ms": run.executionTime,
+                "n8n.node.execution_status": status_norm,
+            }
+            if prev_node:
+                metadata["n8n.node.previous_node"] = prev_node
+            if prev_node_run is not None:
+                metadata["n8n.node.previous_node_run"] = prev_node_run
+            if input_trunc:
+                metadata["n8n.truncated.input"] = True
+            if output_trunc:
+                metadata["n8n.truncated.output"] = True
             span = LangfuseSpan(
                 id=span_id,
                 trace_id=trace_id,
@@ -111,15 +157,13 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
                 start_time=start_time,
                 end_time=end_time,
                 observation_type=observation_type,
-                input=_truncate(str(run.inputOverride) if run.inputOverride else None, truncate_limit),
-                output=_truncate(str(run.data) if run.data else None, truncate_limit),
-                metadata={
-                    "n8n.node.type": node_type,
-                    "n8n.node.category": category,
-                },
+                input=input_str,
+                output=output_str,
+                metadata=metadata,
                 error=run.error,
                 model=run.data.get("model") if isinstance(run.data, dict) else None,
                 token_usage=usage,
+                status=status_norm,
             )
             trace.spans.append(span)
             last_span_for_node[node_name] = span_id
