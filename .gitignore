@@ -1,6 +1,7 @@
 # Python.gitignore
 .env
 .python-version
+debug_dumps
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
