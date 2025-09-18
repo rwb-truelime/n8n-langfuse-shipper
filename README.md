@@ -1,5 +1,13 @@
 # n8n-langfuse-shipper
 
+<!-- Badges -->
+![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
+![Status](https://img.shields.io/badge/status-Iteration%202-informational)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
+![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
+<!-- (Optionally replace placeholders with real workflow badges once CI is added) -->
+
 High‑throughput backfill service that reads historical n8n execution data from PostgreSQL and ships it to Langfuse via the OpenTelemetry (OTLP/HTTP) endpoint.
 
 Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run exporter). OTLP export path is wired and can be enabled when credentials are provided (non‑dry run).
@@ -17,6 +25,27 @@ Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run export
 - Minimal OTLP shipper (`src/shipper.py`) that sets Langfuse + GenAI semantic attributes.
 - Auto-construction of `PG_DSN` from n8n style `.env` variables if not explicitly set.
 - Basic integration tests for database streaming (read‑only) under `tests/`.
+
+---
+
+## Architecture
+
+```mermaid
+graph TD
+	PG[(PostgreSQL n8n DB)] -->|stream batches| EX[Extractor\n`db.py`]
+	EX -->|execution rows| MAP[Mapper\n`mapper.py`]
+	MAP -->|LangfuseTrace & Spans| SHIP[Shipper\n`shipper.py`]
+	SHIP -->|OTLP HTTP (spans)| LF[Langfuse OTLP Endpoint]
+	MAP -->|observation type lookup| OBS[Observation Mapper\n`observation_mapper.py`]
+	MAP -->|deterministic IDs| ID[(UUIDv5 Namespace)]
+	MAP -->|LLM usage -> attributes| GEN[Generation Detection]
+```
+
+Key points:
+- Streaming reader keeps memory footprint low (batch size controlled by `FETCH_BATCH_SIZE`).
+- Pure transform layer builds internal Pydantic models before any OTLP emission (testable & dry-run friendly).
+- Deterministic IDs ensure idempotent re-processing (safe restarts & checkpoint replay).
+- Generation detection augments spans with GenAI semantic attributes so Langfuse auto-classifies them.
 
 ---
 
@@ -109,6 +138,68 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Token usage (`tokenUsage` in node run) | GenAI semantic attributes (`gen_ai.usage.*`) + stored in model |
 
 Parenting logic uses `source.previousNode` when available; otherwise root span.
+
+---
+
+## Examples
+
+### 1. Quick Dry‑Run (no network)
+Fetch first 25 executions, map to traces/spans, just log summary:
+
+```fish
+python -m src backfill --limit 25 --dry-run
+```
+
+### 2. Real Export
+Assuming you have set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (and optionally `LANGFUSE_HOST`):
+
+```fish
+python -m src backfill --limit 100 --no-dry-run
+```
+
+### 3. Resume After a Known Execution ID
+
+```fish
+python -m src backfill --start-after-id 420000 --limit 500 --dry-run
+```
+
+### 4. Narrow Window (combine with future filters)
+Planned future flags may allow filtering by status or date; for now you can externally pipe IDs.
+
+### 5. Programmatic Use (Embedding as a Library)
+If you want to call the mapper directly (e.g. inside another orchestration script):
+
+```python
+from src.mapper import map_execution_to_langfuse
+from src.shipper import LangfuseOTLPShipper
+
+# record = <load one execution row & JSON just like db.stream yields>
+trace = map_execution_to_langfuse(record)
+shipper = LangfuseOTLPShipper(dry_run=True)  # set False to export
+shipper.export_trace(trace)
+```
+
+### 6. Environment Convenience (fish)
+Persist frequently used variables in a local script:
+
+```fish
+function env.n8n-lf
+	set -x DB_POSTGRESDB_HOST localhost
+	set -x DB_POSTGRESDB_DATABASE n8n
+	set -x DB_POSTGRESDB_USER n8n
+	set -x DB_POSTGRESDB_PASSWORD n8n
+	set -x LANGFUSE_HOST https://cloud.langfuse.com
+	set -x LANGFUSE_PUBLIC_KEY lf_pk_xxx
+	set -x LANGFUSE_SECRET_KEY lf_sk_xxx
+end
+
+env.n8n-lf; python -m src backfill --limit 50 --dry-run
+```
+
+### 7. Troubleshooting Tips
+- If you see zero rows: verify `DB_TABLE_PREFIX` and `DB_POSTGRESDB_SCHEMA` match your n8n deployment.
+- Large payload warnings: reduce `FETCH_BATCH_SIZE` or lower `TRUNCATE_FIELD_LEN`.
+- Need verbose output: set `LOG_LEVEL=DEBUG` before running the CLI.
 
 ---
 
