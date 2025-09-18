@@ -101,8 +101,29 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
     )
     trace.spans.append(root_span)
 
-    # Track last span id per node for fallback parent resolution
+    # Track last span id per node for fallback parent resolution (runtime execution order)
     last_span_for_node: Dict[str, str] = {}
+
+    # Build a reverse graph from workflow connections to infer predecessors when runtime source info is absent.
+    reverse_edges: Dict[str, List[str]] = {}
+    try:
+        connections = getattr(record.workflowData, "connections", {}) or {}
+        for from_node, conn_types in connections.items():
+            if not isinstance(conn_types, dict):
+                continue
+            for _conn_type, outputs in conn_types.items():
+                if not isinstance(outputs, list):
+                    continue
+                for output_list in outputs:  # each output_list is a list of connection dicts
+                    if not isinstance(output_list, list):
+                        continue
+                    for edge in output_list:
+                        to_node = edge.get("node") if isinstance(edge, dict) else None
+                        if to_node:
+                            reverse_edges.setdefault(to_node, []).append(from_node)
+    except Exception:
+        # Fail silently; graph fallback is best-effort
+        pass
 
     run_data = record.data.executionData.resultData.runData
     for node_name, runs in run_data.items():
@@ -121,10 +142,22 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
                 prev_node = run.source[0].previousNode
                 prev_node_run = run.source[0].previousNodeRun
                 if prev_node_run is not None:
-                    # Deterministically compute the referenced span id (guaranteed stable even if not yet created)
                     parent_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{prev_node}:{prev_node_run}"))
                 else:
                     parent_id = last_span_for_node.get(prev_node, root_span_id)
+            elif node_name in reverse_edges and reverse_edges[node_name]:
+                # Choose the last seen predecessor among graph parents if any have executed; else first static predecessor.
+                graph_preds = reverse_edges[node_name]
+                # Prefer one that already has a span to maintain execution chain feel.
+                chosen_pred = None
+                for cand in graph_preds:
+                    if cand in last_span_for_node:
+                        chosen_pred = cand
+                        break
+                if not chosen_pred:
+                    chosen_pred = graph_preds[0]
+                prev_node = chosen_pred
+                parent_id = last_span_for_node.get(chosen_pred, parent_id)
 
             usage = _extract_usage(run)
             is_generation = _detect_generation(node_type, run)
@@ -145,6 +178,8 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
                 metadata["n8n.node.previous_node"] = prev_node
             if prev_node_run is not None:
                 metadata["n8n.node.previous_node_run"] = prev_node_run
+            elif prev_node and node_name in reverse_edges:
+                metadata["n8n.graph.inferred_parent"] = True
             if input_trunc:
                 metadata["n8n.truncated.input"] = True
             if output_trunc:
