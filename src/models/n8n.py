@@ -42,6 +42,18 @@ class WorkflowData(BaseModel):
     id: str
     name: str
     nodes: List[WorkflowNode] = Field(default_factory=list)
+    # Raw workflow connections graph. Structure (simplified):
+    # {
+    #   "NodeA": {
+    #       "main": [  # list indexed by output index
+    #           [ {"index": 0, "node": "NodeB", "type": "main"}, ...],  # connections from output 0
+    #           [ ... ]  # output 1
+    #       ],
+    #       "ai_languageModel": [ ... ],
+    #   },
+    #   ...
+    # }
+    connections: Dict[str, Any] = Field(default_factory=dict)
 
 
 class N8nExecutionRecord(BaseModel):
