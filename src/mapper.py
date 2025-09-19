@@ -104,25 +104,37 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
     # Track last span id per node for fallback parent resolution (runtime execution order)
     last_span_for_node: Dict[str, str] = {}
 
-    # Build a reverse graph from workflow connections to infer predecessors when runtime source info is absent.
+    # Build connection helper structures:
+    #  - reverse_edges: existing predecessor inference (execution flow / main connections)
+    #  - agent_parent_for_node: mapping child (model/tool/memory) -> agent node name for ai_* edges
     reverse_edges: Dict[str, List[str]] = {}
+    agent_parent_for_node: Dict[str, str] = {}
+    agent_nodes: set[str] = set(
+        n.name for n in record.workflowData.nodes if (n.type or "").lower().endswith(".agent") or "agent" in (n.type or "").lower()
+    )
     try:
         connections = getattr(record.workflowData, "connections", {}) or {}
         for from_node, conn_types in connections.items():
             if not isinstance(conn_types, dict):
                 continue
-            for _conn_type, outputs in conn_types.items():
+            for conn_type, outputs in conn_types.items():
                 if not isinstance(outputs, list):
                     continue
-                for output_list in outputs:  # each output_list is a list of connection dicts
+                for output_list in outputs:  # each output_list is a list of edge dicts
                     if not isinstance(output_list, list):
                         continue
                     for edge in output_list:
                         to_node = edge.get("node") if isinstance(edge, dict) else None
-                        if to_node:
-                            reverse_edges.setdefault(to_node, []).append(from_node)
+                        if not to_node:
+                            continue
+                        # Standard predecessor capture (for fallback parent inference)
+                        reverse_edges.setdefault(to_node, []).append(from_node)
+                        # Agent cluster parenting: if connection type is ai_* and target is an agent node,
+                        # treat the agent as logical parent of the from_node.
+                        if conn_type.startswith("ai_") and to_node in agent_nodes:
+                            agent_parent_for_node[from_node] = to_node
     except Exception:
-        # Fail silently; graph fallback is best-effort
+        # Fail silently; graph + agent parenting is best-effort
         pass
 
     run_data = record.data.executionData.resultData.runData
@@ -139,6 +151,13 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
             start_time = _epoch_ms_to_dt(run.startTime)
             end_time = start_time + timedelta(milliseconds=run.executionTime or 0)
             parent_id: Optional[str] = root_span_id
+            # Agent cluster override: if this node is wired via ai_* connection to an agent node
+            # then parent directly to that agent's first run span (deterministic id) unless a more
+            # precise runtime previousNodeRun explicitly points elsewhere.
+            if node_name in agent_parent_for_node:
+                agent_name = agent_parent_for_node[node_name]
+                agent_span_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{agent_name}:0"))
+                parent_id = agent_span_id
             prev_node = None
             prev_node_run = None
             if run.source and len(run.source) > 0 and run.source[0].previousNode:
@@ -164,7 +183,13 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
 
             usage = _extract_usage(run)
             is_generation = _detect_generation(node_type, run)
-            observation_type = obs_type_guess or ("generation" if is_generation else "span")
+            # Observation type selection with memory override preference -> retriever per user guidance.
+            if obs_type_guess:
+                observation_type = obs_type_guess
+            else:
+                observation_type = "generation" if is_generation else "span"
+            if "memory" in (node_type or "").lower():
+                observation_type = "retriever"
             # Determine logical input: prefer explicit inputOverride, else prior parent's raw output if available.
             raw_input_obj: Any = None
             if run.inputOverride is not None:
@@ -187,6 +212,9 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
                 "n8n.node.execution_time_ms": run.executionTime,
                 "n8n.node.execution_status": status_norm,
             }
+            if node_name in agent_parent_for_node:
+                metadata["n8n.agent.child"] = True
+                metadata["n8n.agent.parent"] = agent_parent_for_node[node_name]
             if prev_node:
                 metadata["n8n.node.previous_node"] = prev_node
             if prev_node_run is not None:
