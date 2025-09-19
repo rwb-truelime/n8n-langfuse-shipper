@@ -23,44 +23,56 @@ graph TD
 All internal data structures must be defined using Pydantic models for type safety and validation.
 
 ### 1. Raw N8N Data Models
-Create Pydantic models to represent the JSON data retrieved from the `n8n_execution_data` table. Focus on the nested structure under `data.executionData.resultData.runData`.
+These models represent the JSON data retrieved from the `n8n_execution_data` and `n8n_execution_entity` tables.
 
 ```python
-# src/n8n_data/models.py
+# src/models/n8n.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional, Union
+
 
 class NodeRunSource(BaseModel):
     previousNode: Optional[str] = None
     previousNodeRun: Optional[int] = None
 
+
 class NodeRun(BaseModel):
     startTime: int
     executionTime: int
     executionStatus: str
-    data: Dict[str, Any]
+    data: Dict[str, Any] = Field(default_factory=dict)
     source: Optional[List[NodeRunSource]] = None
     inputOverride: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, Any]] = None
 
+
 class ResultData(BaseModel):
-    runData: Dict[str, List[NodeRun]]
+    runData: Dict[str, List[NodeRun]] = Field(default_factory=dict)
+
 
 class ExecutionDataDetails(BaseModel):
     resultData: ResultData
 
+
 class ExecutionData(BaseModel):
     executionData: ExecutionDataDetails
+
 
 class WorkflowNode(BaseModel):
     name: str
     type: str
     category: Optional[str] = None
 
+
 class WorkflowData(BaseModel):
     id: str
     name: str
-    nodes: List[WorkflowNode]
+    nodes: List[WorkflowNode] = Field(default_factory=list)
+    connections: Dict[str, Any] = Field(default_factory=dict)
+
 
 class N8nExecutionRecord(BaseModel):
     id: int
@@ -76,14 +88,19 @@ class N8nExecutionRecord(BaseModel):
 These models represent the logical structure before creating OTel objects.
 
 ```python
-# src/langfuse_models/models.py
-from pydantic import BaseModel, Field
+# src/models/langfuse.py
+from __future__ import annotations
+
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
 
 class LangfuseUsage(BaseModel):
     promptTokens: Optional[int] = None
     completionTokens: Optional[int] = None
     totalTokens: Optional[int] = None
+
 
 class LangfuseGeneration(BaseModel):
     span_id: str
@@ -91,6 +108,7 @@ class LangfuseGeneration(BaseModel):
     usage: Optional[LangfuseUsage] = None
     input: Optional[Any] = None
     output: Optional[Any] = None
+
 
 class LangfuseSpan(BaseModel):
     id: str
@@ -104,6 +122,10 @@ class LangfuseSpan(BaseModel):
     output: Optional[Any] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[Dict[str, Any]] = None
+    model: Optional[str] = None
+    token_usage: Optional[LangfuseUsage] = None
+    status: Optional[str] = None
+
 
 class LangfuseTrace(BaseModel):
     id: str
@@ -114,102 +136,108 @@ class LangfuseTrace(BaseModel):
     generations: List[LangfuseGeneration] = Field(default_factory=list)
 ```
 
+## Data Parsing & Resilience
+The `data` column in `n8n_execution_data` can have multiple formats. The application must robustly parse them.
+- **Standard Format:** A JSON object containing an `executionData` key.
+- **Pointer-Compressed Format:** A top-level JSON array where objects reference other array elements by their index. Implement a resolver (`_decode_compact_pointer_execution`) to reconstruct the `runData` from this format.
+- **Alternative Paths:** The `runData` object might be located at different nested paths. The parser (`_build_execution_data`) must probe multiple candidate paths to find it.
+- **Empty/Invalid Data:** If `runData` cannot be found, the execution should still be processed, resulting in a trace with only a root span.
+
 ## Mapping Logic
-The core transformation logic resides in a dedicated `mapper` module.
+The core transformation logic resides in the `mapper` module.
 
 ### Trace Mapping
 - An `N8nExecutionRecord` maps to a single `LangfuseTrace`.
-- `LangfuseTrace.id` must be deterministic, e.g., `f"n8n-exec-{record.id}"`.
-- `LangfuseTrace.name` is `record.workflowData.name`.
-- `LangfuseTrace.timestamp` is `record.startedAt`.
-- `LangfuseTrace.metadata` must include `workflowId` and `status`.
+- `LangfuseTrace.id` must be deterministic: `f"n8n-exec-{record.id}"`.
+- A root `LangfuseSpan` is created to represent the entire execution, with its start/end times matching the execution's `startedAt`/`stoppedAt`. All other node spans are children of this root span.
 
 ### Span Mapping
-- Each `NodeRun` within `runData` maps to a `LangfuseSpan`.
-- `LangfuseSpan.id` must be deterministic, e.g., a UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"`.
-- `LangfuseSpan.start_time` is derived from `NodeRun.startTime`.
-- `LangfuseSpan.end_time` is `startTime + executionTime` (in milliseconds).
-- **Parent-Child Linking:** The parent span ID should be derived by looking up the ID of the node specified in `NodeRun.source[0].previousNode`.
+- Each `NodeRun` maps to a `LangfuseSpan`.
+- `LangfuseSpan.id` must be deterministic: a UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"`.
+- **Parent-Child Linking:** Implement a three-tier fallback logic for parent resolution:
+    1.  **Precise:** Use `source.previousNodeRun` to link to the exact parent run's deterministic ID.
+    2.  **Execution Order Fallback:** If `previousNodeRun` is absent, link to the last seen span for the `source.previousNode`.
+    3.  **Static Graph Fallback:** If runtime source is missing, use a reverse-edge graph built from `workflowData.connections` to infer a static parent.
+- **I/O Propagation:** If a `NodeRun` lacks `inputOverride`, its logical input should be inferred from the `data` field of its resolved parent node.
+- **Metadata Enrichment:** Spans must be enriched with metadata like `n8n.node.type`, `n8n.node.run_index`, `n8n.node.execution_status`, and flags indicating if I/O was truncated.
 
 ### Observation Type Mapping
-- Port the Python `observation_type_mapper.py` logic from the conversation context.
-- Create a lookup map of `node_name -> (normalized_type, category)` from `workflowData.nodes`.
+- Use the `observation_mapper.py` module to classify each node.
+- Create a lookup map of `node_name -> (type, category)` from `workflowData.nodes`.
 - Use this map to determine the `LangfuseSpan.observation_type` for each node run.
-- This value will be set as the `langfuse.observation.type` attribute on the OTel span.
 
 ### Generation Mapping
-- Identify LLM node runs by checking for specific node types (e.g., `AzureOpenAi`, `GoogleVertexChatModel`) or the presence of `tokenUsage` in the `NodeRun.data`.
-- For each LLM run, create a `LangfuseGeneration` object.
-- Map `tokenUsage` to `LangfuseGeneration.usage`.
-- Map model parameters from `inputOverride` to `gen_ai.request.*` attributes on the corresponding OTel span.
-- Map token usage to `gen_ai.usage.*` attributes.
-- Langfuse will automatically create a `generation` observation from a span containing these attributes.
+- The mapper identifies LLM node runs via heuristics (`_detect_generation`) and extracts token usage (`_extract_usage`).
+- The `LangfuseSpan` is populated with `model` and `token_usage` data.
+- The shipper will later use these fields to set the appropriate `gen_ai.*` and `model` attributes on the OTel span, allowing Langfuse to classify it as a `generation`.
 
 ### Multimodality Mapping
-n8n stores binary data within the execution JSON. Langfuse requires a hybrid approach for ingestion.
-1.  **Detect:** During mapping, identify binary data fields (e.g., a `binary` key with base64 data).
-2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content. This requires a separate, authenticated `httpx` client.
-3.  **Replace:** In the `LangfuseSpan.input` or `output` field, replace the original binary data object with the Langfuse Media Token string returned by the API (`@@@langfuseMedia:type=...|id=...|source=...@@@`).
-4.  **Transmit:** Send the OTel span with the reference string as an attribute. Langfuse UI will render the media inline.
+- This is a future requirement. The logic will be:
+    1.  **Detect:** Identify binary data fields (e.g., base64 strings in I/O).
+    2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content via a separate `httpx` client.
+    3.  **Replace:** In the span's I/O field, replace the binary data with the Langfuse Media Token string (`@@@langfuseMedia:...`).
+    4.  **Transmit:** Send the OTel span with the reference string.
 
-## OpenTelemetry Configuration
-- Use the `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` packages.
-- Configure an `OTLPSpanExporter` to point to the Langfuse OTLP endpoint: `https://<region>.cloud.langfuse.com/api/public/otel/v1/traces`.
-- Authentication must be provided via an `Authorization: Basic <base64(pk:sk)>` header. Configure this using the `OTEL_EXPORTER_OTLP_HEADERS` environment variable or directly in the exporter setup.
-- Use a `BatchSpanProcessor` for efficient network usage.
+## OpenTelemetry Shipper
+The `shipper.py` module converts the internal `LangfuseTrace` model into OTel spans and exports them.
+- **Initialization:** The OTLP exporter is configured once with the Langfuse endpoint and Basic Auth credentials derived from settings.
+- **Span Creation:** For each `LangfuseSpan`, create an OTel span with the exact `start_time` and `end_time`.
+- **Attribute Mapping:** The shipper is responsible for setting OTel attributes based on the `LangfuseSpan` model:
+    - `langfuse.observation.type` <- `observation_type`
+    - `model` & `langfuse.observation.model.name` <- `model`
+    - `gen_ai.usage.*` <- `token_usage` fields
+    - `langfuse.observation.metadata.*` <- `metadata` dictionary
+    - `langfuse.observation.level` and `status_message` for errors.
+- **Trace Attributes:** Set trace-level attributes (`langfuse.trace.name`, `langfuse.trace.metadata.*`) on the root span.
 
 ## Application Flow & Control
-- **Main Loop:** The application should be a runnable script that:
-    1.  Loads a checkpoint (last processed `executionId`).
-    2.  Enters a loop to fetch batches of executions from PostgreSQL starting after the checkpoint ID.
-    3.  For each execution, performs the full mapping to a `LangfuseTrace` object.
-    4.  Passes the `LangfuseTrace` object to a shipper/exporter class.
-    5.  The shipper creates the OTel root and child spans with correct timings and attributes.
-    6.  Updates the checkpoint after each successful batch.
-- **Checkpointing:** Store the last successfully processed `executionId` in a local file (`.backfill_checkpoint`) or a dedicated database table to ensure resumability.
-- **CLI Interface:** Use `Typer` or `argparse` to create a command-line interface for the script. It should support arguments like `--limit`, `--start-after-id`, and `--run-once`.
+- **Main Loop:** The application is a CLI script (`__main__.py`) that loads a checkpoint, streams execution batches from PostgreSQL, maps each record to a `LangfuseTrace`, passes it to the shipper, and updates the checkpoint.
+- **Checkpointing:** Use the `checkpoint.py` module to atomically store the last successfully processed `executionId` in a file, ensuring resumability.
+- **CLI Interface:** Use `Typer`. The `backfill` command must support:
+    - `--start-after-id`: Override the checkpoint.
+    - `--limit`: Limit the number of executions per run.
+    - `--dry-run`: Perform mapping but do not export data.
+    - `--debug`: Enable verbose logging for data parsing.
+    - `--debug-dump-dir`: Dump raw execution JSON to a directory for inspection.
 
 ## Key Environment Variables
-The application must be configurable via environment variables, managed by `pydantic-settings`.
+- `PG_DSN`: Full PostgreSQL connection string (takes precedence).
+- `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_PORT`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD`: Component-based DB connection variables.
+- `DB_POSTGRESDB_SCHEMA`: Database schema (default: `public`).
+- `DB_TABLE_PREFIX`: n8n table prefix (default: `n8n_`).
+- `LANGFUSE_HOST`: Base URL for Langfuse.
+- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`: Auth credentials.
+- `LOG_LEVEL`, `FETCH_BATCH_SIZE`, `TRUNCATE_FIELD_LEN`.
 
-- `PG_DSN`: PostgreSQL connection string.
-- `LANGFUSE_HOST`: The base URL for Langfuse (e.g., `https://cloud.langfuse.com`).
-- `LANGFUSE_PUBLIC_KEY`: Langfuse public key.
-- `LANGFUSE_SECRET_KEY`: Langfuse secret key.
-- `LOG_LEVEL`: Logging level (e.g., `INFO`, `DEBUG`).
-- `FETCH_BATCH_SIZE`: Number of executions to fetch from Postgres per query.
-- `TRUNCATE_FIELD_LEN`: Maximum character length for large I/O fields to prevent oversized spans.
-
-## Development Plan (Iterations)
-
-1.  **Core Setup:** Initialize the Python project, define Pydantic models for raw n8n data, and implement the PostgreSQL data source class.
-2.  **Basic Mapping & OTel:** Implement the basic trace/span mapping logic. Set up the OTel SDK and exporter to successfully send a single, simple trace to Langfuse.
-3.  **Advanced Mapping:** Integrate the observation type and generation mapping logic. Verify that spans are correctly typed and generations appear in the Langfuse UI.
-4.  **Multimodality:** Implement the hybrid media upload and reference replacement logic. Test with an execution containing an image or PDF.
-5.  **Productionization:** Implement robust checkpointing, a CLI, error handling with retries, and create a `Dockerfile`.
+## Development Plan (Next Iterations)
+1.  **Nested Spans:** Implement logic to detect and map internal tool calls or sub-runs within a single n8n node run into their own nested spans.
+2.  **Media Handling:** Implement the full multimodality mapping workflow (detect, upload, replace).
+3.  **Error Handling:** Add robust retry mechanisms for media uploads and a dead-letter queue for executions that fail to map after multiple attempts.
+4.  **Performance Tuning:** Investigate parallel processing of batches and asynchronous span exporting.
+5.  **Advanced Filtering:** Add CLI flags to filter executions by status, time window, or workflow ID.
 
 ## Key Files & Project Structure
-
 ```
 n8n-langfuse-shipper/
 ├── src/
-│   ├── __main__.py         # CLI entry point
-│   ├── config.py           # Pydantic settings
-│   ├── db.py               # PostgreSQL data source
-│   ├── mapper.py           # Core mapping logic
-│   ├── observation_mapper.py # Observation type mapping logic
-│   ├── shipper.py          # OTel and Langfuse Media API clients
+│   ├── __main__.py
+│   ├── config.py
+│   ├── db.py
+│   ├── mapper.py
+│   ├── observation_mapper.py
+│   ├── shipper.py
+│   ├── checkpoint.py
 │   └── models/
 │       ├── __init__.py
-│       ├── n8n.py          # Pydantic models for n8n data
-│       └── langfuse.py     # Pydantic models for Langfuse objects
+│       ├── n8n.py
+│       └── langfuse.py
 ├── Dockerfile
 ├── pyproject.toml
 └── README.md
 ```
 
 ## Conventions & Best Practices
-- **Idempotency:** Use deterministic UUIDs for spans and traces to prevent duplicates on re-runs.
-- **Error Handling:** Wrap all network and database operations in try/except blocks with logging and a retry mechanism (e.g., using the `tenacity` library).
-- **Logging:** Use structured logging to provide clear, queryable logs about progress, errors, and performance.
-- **Data Truncation:** Be aggressive in truncating large input/output fields (`TRUNCATE_FIELD_LEN`) to avoid hitting OTel payload size limits and to manage costs. Indicate truncation in the metadata.
+- **Idempotency:** Use deterministic UUIDs for spans and traces.
+- **Error Handling:** Use `tenacity` for retrying database connections.
+- **Logging:** Use structured logging for clear diagnostics.
+- **Data Truncation:** Aggressively truncate large I/O fields and indicate this with a metadata flag.
