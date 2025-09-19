@@ -72,6 +72,107 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 4000) -> LangfuseTrace:
+    """
+    Map an n8n execution record into a LangfuseTrace with richly annotated spans and (optionally)
+    generation objects.
+
+    This function walks every node run contained in the provided N8nExecutionRecord, constructing:
+        - A root span representing the entire workflow execution.
+        - One span per node run (stable UUID5 identifiers for deterministic idempotency).
+        - Optional LangfuseGeneration entries for node runs classified as LLM generations.
+
+    Parent / hierarchy resolution strategy (in priority order):
+        1. Agent cluster parenting: if a node connects to an agent node via an `ai_*` connection,
+             its span is parented to the agent node's first-run span.
+        2. Explicit runtime linkage: if the run's `source[0].previousNode` is present, parent to that
+             node's specific run index when available (`previousNodeRun`), else to that node's last seen span.
+        3. Graph fallback: if no explicit runtime source, choose a predecessor from the static
+             workflow connections (preferring one that has already executed).
+        4. Root fallback: default to the root span.
+
+    Observation type determination:
+        - Starts with a guess from `map_node_to_observation_type(node_type, category)`.
+        - If not determined and the run appears to be a text generation (`_detect_generation`), uses "generation".
+        - Nodes whose type name contains "memory" are forcibly labeled "retriever".
+        - Otherwise defaults to "span".
+
+    Input / output handling:
+        - Raw input is taken from `run.inputOverride` when present.
+        - Otherwise, it attempts to propagate the (raw) output of the resolved parent node, if previously cached.
+        - Raw outputs (if dict-sized under a heuristic threshold) are cached for possible downstream input inference.
+        - Both input and output are serialized and truncated (soft character limit = truncate_limit).
+        - Truncation is recorded in span metadata (`n8n.truncated.input` / `n8n.truncated.output`).
+
+    Token usage and model:
+        - Extracted via `_extract_usage(run)` if available.
+        - Model is pulled from `run.data["model"]` when `run.data` is a dict.
+
+    Error & status:
+        - Execution status is normalized to lowercase.
+        - If `run.error` is present, status is forced to "error" and `error` is attached to the span.
+
+    Agent clustering:
+        - Agent nodes are heuristically identified by node type name containing "agent" or ending with ".agent".
+        - `ai_*` edge types pointing to an agent record a logical parent-child relationship for spans.
+        - Child spans get metadata keys: `n8n.agent.child` (True) and `n8n.agent.parent`.
+
+    Deterministic IDs:
+        - Root span id: UUID5(SPAN_NAMESPACE, "n8n-exec-{execution_id}:root")
+        - Node run span id: UUID5(SPAN_NAMESPACE, "n8n-exec-{execution_id}:{node_name}:{run_index}")
+
+    Metadata keys added per span (when applicable):
+        - n8n.node.type                Original node type
+        - n8n.node.category            Node category (if any)
+        - n8n.node.run_index           Zero-based run index of that node
+        - n8n.node.execution_time_ms   Reported execution time in ms
+        - n8n.node.execution_status    Normalized status (success, error, etc.)
+        - n8n.node.previous_node       Explicit previous runtime node (if provided)
+        - n8n.node.previous_node_run   Explicit previous node run index
+        - n8n.graph.inferred_parent    True if parent was inferred from static graph (not explicit runtime source)
+        - n8n.truncated.input          True if serialized input exceeded truncate_limit
+        - n8n.truncated.output         True if serialized output exceeded truncate_limit
+        - n8n.agent.child              True if span is part of an agent cluster
+        - n8n.agent.parent             Name of agent parent node
+        - n8n.execution.id             (Root span only) Execution identifier
+
+    Performance:
+        - Time complexity is O(R) where R = total number of node runs.
+        - Space complexity is O(R) for spans plus limited caching of recent outputs.
+
+    Parameters
+    ----------
+    record : N8nExecutionRecord
+            Full n8n execution object containing workflow structure, timing, run data, and metadata.
+    truncate_limit : int, default 4000
+            Maximum character length for serialized input/output strings. Exceeding content is truncated
+            and flagged in the span metadata.
+
+    Returns
+    -------
+    LangfuseTrace
+            A populated trace object including:
+                - trace metadata (id, name, timestamp, status)
+                - root span
+                - per-node-run spans with hierarchical relationships
+                - generation entries for detected LLM generations
+
+    Does Not Raise
+    --------------
+    All internal failures in graph parsing or parent inference degrade gracefully; errors are not raised.
+
+    Example
+    -------
+    trace = map_execution_to_langfuse(n8n_record, truncate_limit=3000)
+    client.ingest_trace(trace)
+
+    Notes
+    -----
+    - This function assumes supporting helper functions and data classes:
+        map_node_to_observation_type, _detect_generation, _extract_usage, _serialize_and_truncate,
+        _epoch_ms_to_dt, LangfuseTrace, LangfuseSpan, LangfuseGeneration, and the UUID namespace constant.
+    - It is intentionally resilient: missing or malformed sections of the execution record will result
+        in best-effort spans rather than exceptions.
+    """
     trace_id = f"n8n-exec-{record.id}"
     trace = LangfuseTrace(
         id=trace_id,
