@@ -11,7 +11,7 @@ graph TD
     A[PostgreSQL Database] -->|1. Read Executions| B{n8n-langfuse-shipper}
     B -->|2. Map to OTel Traces| C[Langfuse OTLP Endpoint]
 
-    subgraph Python Service (Docker)
+    subgraph "Python Service (Docker)"
         B
     end
 
