@@ -10,23 +10,29 @@
 
 High‑throughput backfill service that reads historical n8n execution data from PostgreSQL and ships it to Langfuse via the OpenTelemetry (OTLP/HTTP) endpoint.
 
-Current status: Iteration 2 (mapping + real Postgres streaming, dry‑run exporter). OTLP export path is wired and can be enabled when credentials are provided (non‑dry run).
+Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑compressed execution decoding + stable OTLP exporting).
 
 ---
 
-## Features Implemented (Iteration 3)
+## Features Implemented (Iteration 4)
 
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
-- Deterministic span & trace ID mapping (`uuid5` namespace) in `src/mapper.py`.
+- Deterministic trace & span IDs (root trace id pattern: `n8n-exec-<executionId>`, spans via UUIDv5 composite keys) in `src/mapper.py`.
+- Hierarchical AI Agent/Tool/LanguageModel/Memory parenting using `workflowData.connections` `ai_tool`, `ai_languageModel`, `ai_memory` edge types (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
+- Chronological span emission to guarantee agent span exists before children.
+- Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
+- Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
+- Input propagation: child span input inferred from parent’s last output when `inputOverride` absent.
+- Generation detection + token usage extraction (`tokenUsage` → `gen_ai.usage.*` and Langfuse generation listing).
+- OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
-- CLI with `backfill` subcommand, supports `--start-after-id`, `--limit`, `--dry-run`.
-- OTLP shipper (`src/shipper.py`) that sets Langfuse + GenAI semantic + status attributes.
+- CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
 - Auto-construction of `PG_DSN` from n8n style `.env` variables if not explicitly set.
-- Basic integration tests for database streaming (read‑only) under `tests/`.
-- Mapper unit tests for deterministic IDs, parent resolution, generation detection, truncation flags.
-- Checkpointing support (file-based) for resumability.
+- Truncation with per-span flags (`n8n.truncated.input` / `n8n.truncated.output`).
+- Comprehensive mapper tests (determinism, hierarchy parenting, generation detection, truncation, graph fallback) & checkpoint tests.
+- File-based checkpointing for resumability.
 
 ---
 
@@ -135,11 +141,35 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 |-------------|-------------------|
 | Execution row | One trace (root span represents whole execution) |
 | Node run | Child span (deterministic ID) |
-| LLM / embedding node with token usage | Span + generation observation classification |
+| Agent/Tool/LLM/Memory relationship | Child span parented to Agent span via `ai_*` connection types |
+| LLM / embedding node with token usage | Span + generation (usage + model attributes) |
 | Node type/category | Observation type (`agent`, `tool`, `chain`, `retriever`, etc.) via mapper |
-| Token usage (`tokenUsage` in node run) | GenAI semantic attributes (`gen_ai.usage.*`) + stored in model |
+| Token usage (`tokenUsage`) | GenAI semantic attributes (`gen_ai.usage.*`) + Langfuse generation entry |
 
-Parenting logic uses `source.previousNodeRun` (deterministic parent span id) when available, falling back to last known span for that node or the root.
+Parenting precedence order:
+1. Agent hierarchy (if node has an `ai_tool` / `ai_languageModel` / `ai_memory` edge to an agent, parent = agent span).
+2. Runtime sequential (`source.previousNodeRun` → specific run ID).
+3. Runtime sequential (`source.previousNode` → last seen span for that node).
+4. Static graph fallback (reverse edge inference) if runtime links are absent.
+5. Root span fallback.
+
+Inputs are inferred from the resolved parent’s last output when a node lacks `inputOverride` (captured as JSON and truncated if necessary).
+
+Metadata added per span includes: execution timing/status, hierarchy flags (`n8n.agent.*`), truncation flags, inferred parent markers, and previous node linkage.
+
+### Execution Data Formats
+
+The n8n `data` column can appear in two shapes:
+- Standard object with `executionData.resultData.runData`.
+- Pointer‑compressed top‑level JSON array: entries reference earlier indices (saves space). The shipper reconstructs this via `_decode_compact_pointer_execution` into canonical `runData` transparently.
+
+### AI Agent Hierarchy Mapping
+
+Agent nodes (e.g. `HAL9000`) become parents of LLM, Tool, and Memory nodes connected by `ai_languageModel`, `ai_tool`, or `ai_memory` edges. This produces a nested trace tree that mirrors n8n’s LangChain-style clusters. Child spans carry:
+- `n8n.agent.parent` = agent node name
+- `n8n.agent.link_type` = one of `ai_languageModel`, `ai_tool`, `ai_memory`
+
+This prevents fragmentation into multiple traces and yields a faithful hierarchical representation in Langfuse.
 
 Each node span now includes metadata:
 - `n8n.node.run_index`, `n8n.node.execution_time_ms`, `n8n.node.execution_status`
@@ -243,13 +273,13 @@ pytest tests/test_db_stream.py::test_stream_reads_rows_without_modification -q
 
 ## Roadmap (Next Iterations)
 
-1. Nested sub-run/tool span emission (agent/tool internal calls).
-2. Media (base64 detection & upload) handling.
-3. Error retries with dead-letter logging.
-4. Performance tuning (parallel span export / chunking large traces).
-5. Additional filtering (status, time window, workflow id).
-6. Masking / PII scrubbing options.
-7. More comprehensive observation classification edge cases.
+1. Media (base64 detection & upload) handling with token replacement.
+2. Error retries / resilient OTLP + media upload with dead-letter logging.
+3. Performance tuning (parallel export, async batching, memory caps for large runs).
+4. Additional filtering flags (status, time window, workflow id inclusion/exclusion).
+5. Masking / PII scrubbing and configurable redaction rules.
+6. Extended observation classification & multimodal span enrichment.
+7. Optional tagging of agent root spans (`n8n.agent.root=true`) and richer lineage metadata.
 
 ---
 
