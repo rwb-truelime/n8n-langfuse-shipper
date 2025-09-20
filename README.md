@@ -19,7 +19,8 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
-- Deterministic trace & span IDs (root trace id pattern: `n8n-exec-<executionId>`, spans via UUIDv5 composite keys) in `src/mapper.py`.
+- Deterministic trace & span IDs (trace id: `n8n-exec-<executionId>`, span IDs via UUIDv5). Enriched trace name pattern: `<workflowName>-n8n-<executionId>`.
+ - Deterministic trace & span IDs (trace id: `n8n-exec-<executionId>`, span IDs via UUIDv5). Enriched trace name pattern: `<workflowName>-n8n-<executionId>`, plus top-level trace metadata key `executionId` for querying/filtering.
 - Hierarchical AI Agent/Tool/LanguageModel/Memory parenting using `workflowData.connections` `ai_tool`, `ai_languageModel`, `ai_memory` edge types (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
 - Chronological span emission to guarantee agent span exists before children.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
@@ -142,7 +143,7 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 
 | n8n Concept | Langfuse Structure |
 |-------------|-------------------|
-| Execution row | One trace (root span represents whole execution) |
+| Execution row | One trace (root span represents whole execution; trace name `<workflowName>-n8n-<executionId>`) |
 | Node run | Child span (deterministic ID) |
 | Agent/Tool/LLM/Memory relationship | Child span parented to Agent span via `ai_*` connection types |
 | LLM / embedding node with token usage | Span + generation (usage + model attributes) |
@@ -158,7 +159,7 @@ Parenting precedence order:
 
 Inputs are inferred from the resolved parent’s last output when a node lacks `inputOverride` (captured as JSON and truncated if necessary).
 
-Metadata added per span includes: execution timing/status, hierarchy flags (`n8n.agent.*`), truncation flags, inferred parent markers, and previous node linkage.
+Metadata: The trace carries `workflowId`, `status`, and `executionId`. Each span includes execution timing/status, hierarchy flags (`n8n.agent.*`), truncation flags, inferred parent markers, and previous node linkage.
 
 ### Execution Data Formats
 

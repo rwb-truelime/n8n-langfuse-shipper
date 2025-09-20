@@ -73,13 +73,17 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 4000) -> LangfuseTrace:
     trace_id = f"n8n-exec-{record.id}"
+    # Enriched trace name pattern: <workflowName>-n8n-<executionId>
+    base_name = record.workflowData.name or "execution"
+    enriched_trace_name = f"{base_name}-n8n-{record.id}"
     trace = LangfuseTrace(
         id=trace_id,
-        name=record.workflowData.name,
+        name=enriched_trace_name,
         timestamp=record.startedAt,
         metadata={
             "workflowId": record.workflowId,
             "status": record.status,
+            "executionId": record.id,
         },
     )
 
@@ -93,7 +97,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
     root_span = LangfuseSpan(
         id=root_span_id,
         trace_id=trace_id,
-        name=record.workflowData.name or f"execution-{record.id}",
+        name=enriched_trace_name,
         start_time=record.startedAt,
         end_time=record.stoppedAt or (record.startedAt + timedelta(milliseconds=1)),
         observation_type="span",
