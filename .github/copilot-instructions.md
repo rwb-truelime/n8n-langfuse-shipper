@@ -8,9 +8,10 @@ The service operates as a standalone ETL (Extract, Transform, Load) process, des
 
 ```mermaid
 graph TD
-    A[PostgreSQL Database] -- "1. Read Executions" --> B{n8n-langfuse-shipper};
-    B -- "2. Map to OTel Traces" --> C[Langfuse OTLP Endpoint];
-    subgraph "Python Service (Docker)"
+    A[PostgreSQL Database] -->|1. Read Executions| B{n8n-langfuse-shipper}
+    B -->|2. Map to OTel Traces| C[Langfuse OTLP Endpoint]
+
+    subgraph Python_Service_Docker [Python Service (Docker)]
         B
     end
 ```
