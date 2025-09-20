@@ -144,45 +144,47 @@ The `data` column in `n8n_execution_data` can have multiple formats. The applica
 - **Empty/Invalid Data:** If `runData` cannot be found, the execution should still be processed, resulting in a trace with only a root span.
 
 ## Mapping Logic
-The core transformation logic resides in the `mapper` module.
+The core transformation logic resides in the `mapper` module. It must use a hybrid approach, combining runtime data with the static workflow graph.
+
+### The Agent/Tool Hierarchy
+A key pattern in n8n, especially with LangChain nodes, is an "Agent" node that uses other nodes as "Tools", "LLMs", or "Memory". The `workflowData.connections` object reveals this.
+- A connection with `type: "main"` represents a sequential step.
+- A connection with `type: "ai_tool"`, `type: "ai_languageModel"`, or `type: "ai_memory"` from a component node (e.g., `Calculator`) *to* an agent node (e.g., `HAL9000`) signifies a **hierarchical relationship**.
+- In this case, the agent's span is the **parent** of the component's span.
 
 ### Trace Mapping
 - An `N8nExecutionRecord` maps to a single `LangfuseTrace`.
 - `LangfuseTrace.id` must be deterministic: `f"n8n-exec-{record.id}"`.
-- A root `LangfuseSpan` is created to represent the entire execution, with its start/end times matching the execution's `startedAt`/`stoppedAt`. All other node spans are children of this root span.
+- A root `LangfuseSpan` is created to represent the entire execution. All top-level node spans are children of this root span.
 
 ### Span Mapping
 - Each `NodeRun` maps to a `LangfuseSpan`.
 - `LangfuseSpan.id` must be deterministic: a UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"`.
-- **Parent-Child Linking:** Implement a three-tier fallback logic for parent resolution:
-    1.  **Precise:** Use `source.previousNodeRun` to link to the exact parent run's deterministic ID.
-    2.  **Execution Order Fallback:** If `previousNodeRun` is absent, link to the last seen span for the `source.previousNode`.
-    3.  **Static Graph Fallback:** If runtime source is missing, use a reverse-edge graph built from `workflowData.connections` to infer a static parent.
+- **Parent-Child Linking:** Implement a multi-tier logic for parent resolution:
+    1.  **Hierarchical (Agent/Tool):** First, check `workflowData.connections`. If a node run corresponds to a node that is connected to an Agent via a non-`main` connection type, its parent is the most recent span of that Agent.
+    2.  **Sequential (Runtime):** If not part of a hierarchy, use `run.source[0].previousNode` to find the immediate predecessor. Link to the exact run index (`previousNodeRun`) if available, otherwise link to the last seen span for that predecessor node.
+    3.  **Sequential (Static Fallback):** If runtime `source` is missing, use a reverse-edge map built from `workflowData.connections` to infer the most likely parent from the static graph.
+    4.  **Root Fallback:** If no parent can be determined, link to the root execution span.
 - **I/O Propagation:** If a `NodeRun` lacks `inputOverride`, its logical input should be inferred from the `data` field of its resolved parent node.
-- **Metadata Enrichment:** Spans must be enriched with metadata like `n8n.node.type`, `n8n.node.run_index`, `n8n.node.execution_status`, and flags indicating if I/O was truncated.
 
 ### Observation Type Mapping
-- Use the `observation_mapper.py` module to classify each node.
-- Create a lookup map of `node_name -> (type, category)` from `workflowData.nodes`.
-- Use this map to determine the `LangfuseSpan.observation_type` for each node run.
+- Use the `observation_mapper.py` module to classify each node based on its type and category. This determines the `LangfuseSpan.observation_type`.
 
 ### Generation Mapping
 - The mapper identifies LLM node runs via heuristics (`_detect_generation`) and extracts token usage (`_extract_usage`).
-- The `LangfuseSpan` is populated with `model` and `token_usage` data.
-- The shipper will later use these fields to set the appropriate `gen_ai.*` and `model` attributes on the OTel span, allowing Langfuse to classify it as a `generation`.
+- The `LangfuseSpan` is populated with `model` and `token_usage` data. The shipper will use these to set OTel attributes (`gen_ai.usage.*`, `model`), allowing Langfuse to classify the span as a `generation`.
 
 ### Multimodality Mapping
 - This is a future requirement. The logic will be:
     1.  **Detect:** Identify binary data fields (e.g., base64 strings in I/O).
-    2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content via a separate `httpx` client.
+    2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content.
     3.  **Replace:** In the span's I/O field, replace the binary data with the Langfuse Media Token string (`@@@langfuseMedia:...`).
-    4.  **Transmit:** Send the OTel span with the reference string.
 
 ## OpenTelemetry Shipper
 The `shipper.py` module converts the internal `LangfuseTrace` model into OTel spans and exports them.
-- **Initialization:** The OTLP exporter is configured once with the Langfuse endpoint and Basic Auth credentials derived from settings.
+- **Initialization:** The OTLP exporter is configured once with the Langfuse endpoint and Basic Auth credentials.
 - **Span Creation:** For each `LangfuseSpan`, create an OTel span with the exact `start_time` and `end_time`.
-- **Attribute Mapping:** The shipper is responsible for setting OTel attributes based on the `LangfuseSpan` model:
+- **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
     - `langfuse.observation.type` <- `observation_type`
     - `model` & `langfuse.observation.model.name` <- `model`
     - `gen_ai.usage.*` <- `token_usage` fields
@@ -191,28 +193,23 @@ The `shipper.py` module converts the internal `LangfuseTrace` model into OTel sp
 - **Trace Attributes:** Set trace-level attributes (`langfuse.trace.name`, `langfuse.trace.metadata.*`) on the root span.
 
 ## Application Flow & Control
-- **Main Loop:** The application is a CLI script (`__main__.py`) that loads a checkpoint, streams execution batches from PostgreSQL, maps each record to a `LangfuseTrace`, passes it to the shipper, and updates the checkpoint.
-- **Checkpointing:** Use the `checkpoint.py` module to atomically store the last successfully processed `executionId` in a file, ensuring resumability.
+- **Main Loop:** A CLI script (`__main__.py`) that loads a checkpoint, streams execution batches from PostgreSQL, maps each record to a `LangfuseTrace`, passes it to the shipper, and updates the checkpoint.
+- **Checkpointing:** Use the `checkpoint.py` module to atomically store the last successfully processed `executionId` in a file.
 - **CLI Interface:** Use `Typer`. The `backfill` command must support:
-    - `--start-after-id`: Override the checkpoint.
-    - `--limit`: Limit the number of executions per run.
-    - `--dry-run`: Perform mapping but do not export data.
-    - `--debug`: Enable verbose logging for data parsing.
-    - `--debug-dump-dir`: Dump raw execution JSON to a directory for inspection.
+    - `--start-after-id`, `--limit`, `--dry-run`, `--debug`, `--debug-dump-dir`.
 
 ## Key Environment Variables
 - `PG_DSN`: Full PostgreSQL connection string (takes precedence).
 - `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_PORT`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD`: Component-based DB connection variables.
 - `DB_POSTGRESDB_SCHEMA`: Database schema (default: `public`).
 - `DB_TABLE_PREFIX`: n8n table prefix (default: `n8n_`).
-- `LANGFUSE_HOST`: Base URL for Langfuse.
-- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`: Auth credentials.
+- `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`.
 - `LOG_LEVEL`, `FETCH_BATCH_SIZE`, `TRUNCATE_FIELD_LEN`.
 
 ## Development Plan (Next Iterations)
-1.  **Nested Spans:** Implement logic to detect and map internal tool calls or sub-runs within a single n8n node run into their own nested spans.
+1.  **Agent Hierarchy Mapping:** Implement the hierarchical parent-child linking logic using the `connections` object. This is the highest priority.
 2.  **Media Handling:** Implement the full multimodality mapping workflow (detect, upload, replace).
-3.  **Error Handling:** Add robust retry mechanisms for media uploads and a dead-letter queue for executions that fail to map after multiple attempts.
+3.  **Error Handling:** Add robust retry mechanisms for media uploads and a dead-letter queue for executions that fail to map.
 4.  **Performance Tuning:** Investigate parallel processing of batches and asynchronous span exporting.
 5.  **Advanced Filtering:** Add CLI flags to filter executions by status, time window, or workflow ID.
 
