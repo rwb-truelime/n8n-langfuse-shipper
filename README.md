@@ -2,7 +2,7 @@
 
 <!-- Badges -->
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![Status](https://img.shields.io/badge/status-Iteration%203-informational)
+![Status](https://img.shields.io/badge/status-Iteration%204-informational)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
@@ -33,6 +33,7 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 - Truncation with per-span flags (`n8n.truncated.input` / `n8n.truncated.output`).
 - Comprehensive mapper tests (determinism, hierarchy parenting, generation detection, truncation, graph fallback) & checkpoint tests.
 - File-based checkpointing for resumability.
+- Explicit schema/prefix override passed from settings to extractor (blank `DB_TABLE_PREFIX` respected, no silent fallback) plus startup diagnostic log of resolved tables.
 
 ---
 
@@ -81,7 +82,7 @@ The service reads settings via environment variables (`pydantic-settings`). Eith
 |---------|-------------|
 | Full DSN override | `PG_DSN` |
 | Component DB vars (used if `PG_DSN` blank) | `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_PORT`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD` |
-| Schema / table prefix | `DB_POSTGRESDB_SCHEMA` (default `public`), `DB_TABLE_PREFIX` (default `n8n_`) |
+| Schema / table prefix | `DB_POSTGRESDB_SCHEMA` (default `public`), `DB_TABLE_PREFIX` (default `n8n_`; set to empty string to disable prefix) |
 | Langfuse endpoint | `LANGFUSE_HOST` (e.g. `https://cloud.langfuse.com`) |
 | Auth keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
 | Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
@@ -104,6 +105,8 @@ set -x LANGFUSE_SECRET_KEY lf_sk_...
 ```
 
 If both component vars and `PG_DSN` are set, `PG_DSN` takes precedence.
+
+Prefix semantics: If `DB_TABLE_PREFIX` is unset, it defaults to `n8n_`. If it is present but blank (`DB_TABLE_PREFIX=`), no prefix is applied (tables expected as `execution_entity`, `execution_data`).
 
 ---
 
@@ -237,6 +240,10 @@ env.n8n-lf; python -m src backfill --limit 50 --dry-run
 - If you see zero rows: verify `DB_TABLE_PREFIX` and `DB_POSTGRESDB_SCHEMA` match your n8n deployment.
 - Large payload warnings: reduce `FETCH_BATCH_SIZE` or lower `TRUNCATE_FIELD_LEN`.
 - Need verbose output: set `LOG_LEVEL=DEBUG` before running the CLI.
+- Prefix mismatch / missing tables: On startup you should see a line like:
+	`DB init: schema=public prefix='' entity_table=execution_entity data_table=execution_data (explicit_prefix=True)`
+	If it still shows `prefix='n8n_'` when you expected none, ensure `.env` has `DB_TABLE_PREFIX=` (not commented) and is loaded. If your DB actually uses prefixed tables, either unset the variable or set `DB_TABLE_PREFIX=n8n_`.
+	An `UndefinedTable` or error mentioning `n8n_execution_entity` means the prefix doesn't match your actual table names.
 
 ---
 
