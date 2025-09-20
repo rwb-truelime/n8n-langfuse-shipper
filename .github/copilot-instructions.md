@@ -11,9 +11,10 @@ graph TD
     A[PostgreSQL Database] -->|1. Read Executions| B{n8n-langfuse-shipper}
     B -->|2. Map to OTel Traces| C[Langfuse OTLP Endpoint]
 
-    subgraph Python_Service_Docker [Python Service (Docker)]
+    subgraph Python Service (Docker)
         B
     end
+
 ```
 
 1.  **Extract:** The service connects to the n8n PostgreSQL database and streams execution records (`n8n_execution_entity` joined with `n8n_execution_data`).
