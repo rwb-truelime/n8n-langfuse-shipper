@@ -318,7 +318,12 @@ def backfill(
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
     typer.echo("Starting backfill with mapping...")
-    source = ExecutionSource(settings.PG_DSN)
+    source = ExecutionSource(
+        settings.PG_DSN,
+        batch_size=settings.FETCH_BATCH_SIZE,
+        schema=settings.DB_POSTGRESDB_SCHEMA or None,
+        table_prefix=settings.DB_TABLE_PREFIX if settings.DB_TABLE_PREFIX is not None else None,
+    )
 
     cp_path = checkpoint_file or settings.CHECKPOINT_FILE
     effective_start_after = start_after_id

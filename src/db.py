@@ -29,16 +29,59 @@ class ExecutionSource:
     Fetches joined rows from `n8n_execution_entity` and `n8n_execution_data` incrementally by id.
     """
 
-    def __init__(self, dsn: str, batch_size: int = DEFAULT_BATCH_SIZE):
+    def __init__(
+        self,
+        dsn: str,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        *,
+        schema: Optional[str] = None,
+        table_prefix: Optional[str] = None,
+    ):
+        """Create a new execution source.
+
+        Args:
+            dsn: Postgres connection string.
+            batch_size: Fetch batch size.
+            schema: Override DB schema (falls back to env then 'public').
+            table_prefix: Explicit table prefix. Use empty string for none. If None, fallback to env semantics.
+        """
         self._dsn = dsn
         self._batch_size = batch_size
-        self._schema = os.environ.get("DB_POSTGRESDB_SCHEMA") or "public"
-        self._table_prefix = os.environ.get("DB_TABLE_PREFIX") or "n8n_"
+        # Resolve schema
+        if schema is not None:
+            self._schema = schema or "public"
+        else:
+            self._schema = os.environ.get("DB_POSTGRESDB_SCHEMA") or "public"
+        # Resolve prefix with explicit parameter precedence
+        if table_prefix is not None:
+            # Caller explicitly provided (may be empty string meaning no prefix)
+            self._table_prefix = table_prefix
+        else:
+            # Table prefix semantics:
+            #   - If DB_TABLE_PREFIX is UNSET -> default to 'n8n_'
+            #   - If DB_TABLE_PREFIX is set to empty string -> no prefix
+            #   - Otherwise use provided value verbatim
+            _raw_prefix = os.environ.get("DB_TABLE_PREFIX")
+            if _raw_prefix is None:
+                self._table_prefix = "n8n_"
+            else:
+                self._table_prefix = _raw_prefix  # may be empty string (meaning no prefix)
         # Basic safety: allow only alnum + underscore in prefix & schema
         if not re.fullmatch(r"[A-Za-z0-9_]+", self._schema):
             raise ValueError("Invalid schema name")
         if not re.fullmatch(r"[A-Za-z0-9_]*", self._table_prefix):
             raise ValueError("Invalid table prefix")
+        # Precompute table names for logging / diagnostics
+        self._entity_table_name = f"{self._table_prefix}execution_entity"
+        self._data_table_name = f"{self._table_prefix}execution_data"
+        logger.info(
+            "DB init: schema=%s prefix=%r entity_table=%s data_table=%s (explicit_prefix=%s)",
+            self._schema,
+            self._table_prefix,
+            self._entity_table_name,
+            self._data_table_name,
+            table_prefix is not None,
+        )
 
     @asynccontextmanager
     async def _connect(self) -> AsyncGenerator[AsyncConnection, None]:  # type: ignore
@@ -65,8 +108,8 @@ class ExecutionSource:
         self, conn: Any, last_id: int, limit: int
     ) -> List[Dict[str, Any]]:  # conn typed as Any for compatibility
         # Table names with prefix
-        entity_table = f'"{self._schema}"."{self._table_prefix}execution_entity"'
-        data_table = f'"{self._schema}"."{self._table_prefix}execution_data"'
+        entity_table = f'"{self._schema}"."{self._entity_table_name}"'
+        data_table = f'"{self._schema}"."{self._data_table_name}"'
         sql = (
             f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
             f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
@@ -78,7 +121,26 @@ class ExecutionSource:
             'LIMIT %s'
         )
         async with conn.cursor(row_factory=dict_row) as cur:  # type: ignore
-            await cur.execute(sql, (last_id, limit))
+            try:
+                await cur.execute(sql, (last_id, limit))
+            except Exception as ex:  # noqa: BLE001 broad for friendly diagnostics then re-raise
+                # Rollback transaction if it's in failed state to allow subsequent attempts
+                try:
+                    if psycopg is not None and isinstance(ex, getattr(psycopg.errors, "InFailedSqlTransaction", tuple())):
+                        await conn.rollback()
+                except Exception:  # pragma: no cover
+                    pass
+                # Friendly message for missing tables (likely prefix mismatch)
+                if psycopg is not None and isinstance(ex, getattr(psycopg.errors, "UndefinedTable", tuple())):
+                    logger.error(
+                        "Table lookup failed. Attempted tables: %s, %s (schema=%s, prefix=%r). "
+                        "If your n8n instance uses a different prefix set DB_TABLE_PREFIX accordingly or leave it unset for default 'n8n_'.",
+                        self._entity_table_name,
+                        self._data_table_name,
+                        self._schema,
+                        self._table_prefix,
+                    )
+                raise
             rows = await cur.fetchall()
             return rows  # type: ignore[return-value]
 
