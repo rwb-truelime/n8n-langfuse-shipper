@@ -11,6 +11,7 @@ from typing import Dict
 from datetime import datetime
 
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
@@ -55,7 +56,15 @@ def _init_otel(settings: Settings) -> None:
         headers={"Authorization": f"Basic {auth_b64}"},
         timeout=settings.OTEL_EXPORTER_OTLP_TIMEOUT,
     )
-    provider = TracerProvider()
+    resource = Resource.create(
+        {
+            "service.name": "n8n-langfuse-shipper",
+            "service.version": "0.1.0",  # TODO: optionally load from package metadata
+            "telemetry.sdk.language": "python",
+            "telemetry.auto.version": "manual",  # indicates manual instrumentation
+        }
+    )
+    provider = TracerProvider(resource=resource)
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     _initialized = True
@@ -127,6 +136,25 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         if span_model.parent_id is None:
             for k, v in trace_model.metadata.items():
                 span_ot.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
+            # Duplicate key forms for convenient querying
+            if "executionId" in trace_model.metadata:
+                span_ot.set_attribute("n8n.execution.id", trace_model.metadata["executionId"])  # flat convenience
             span_ot.set_attribute("langfuse.trace.name", trace_model.name)
+            exec_id_val = trace_model.metadata.get("executionId")
+            if exec_id_val is not None:
+                span_ot.set_attribute("langfuse.execution.id", exec_id_val)
+            wf_id_val = trace_model.metadata.get("workflowId")
+            if wf_id_val is not None:
+                span_ot.set_attribute("langfuse.workflow.id", wf_id_val)
         span_ot.end(end_time=end_ns)
         ctx_lookup[span_model.id] = span_ot.get_span_context()
+
+
+def shutdown_exporter():  # pragma: no cover - simple shutdown hook
+    """Flush and shutdown tracer provider (call at end of short-lived process)."""
+    provider = trace.get_tracer_provider()
+    try:
+        if hasattr(provider, "shutdown"):
+            provider.shutdown()  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover
+        logger.debug("Error during tracer provider shutdown", exc_info=True)
