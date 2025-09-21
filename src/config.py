@@ -37,9 +37,10 @@ class Settings(BaseSettings):
     # Logging & runtime behavior
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     FETCH_BATCH_SIZE: int = Field(default=100, description="Batch size for fetching executions")
+    # NOTE: Default truncation disabled per design choice: keep full textual JSON except binary/base64
     TRUNCATE_FIELD_LEN: int = Field(
-        default=4000,
-        description="Max length for large text fields (input/output) before truncation",
+        default=0,
+        description="Max length for large text fields (input/output) before truncation (0 = disabled)",
     )
 
     # Future: additional tuning parameters

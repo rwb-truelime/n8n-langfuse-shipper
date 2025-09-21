@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
+import re
 from uuid import uuid5, UUID, NAMESPACE_DNS
 
 from .models.n8n import N8nExecutionRecord, NodeRun
@@ -32,41 +33,49 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 
-def _contains_binary_marker(d: Any) -> bool:
-    """Heuristic: detect presence of binary base64 data in typical n8n node I/O structures.
-    Looks for nested dict path containing keys like 'binary' -> node -> data -> 'data' (base64) with mimeType.
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")  # long pure base64 chunk
+
+
+def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
+    """Detect probable binary base64 blobs.
+    Signals true when:
+      - Standard n8n binary structure with mimeType + long data field.
+      - Any string value looks like a large base64 block (>200 chars, matches regex) or starts with /9j/ (jpeg magic in base64).
+    Depth limited to avoid excessive recursion.
     """
+    if depth > 4:
+        return False
     try:
         if isinstance(d, dict):
             if "binary" in d and isinstance(d["binary"], dict):
-                # If any nested value under binary has a dict containing 'data' and mimeType
                 for v in d["binary"].values():
                     if isinstance(v, dict):
                         data_section = v.get("data") if isinstance(v.get("data"), dict) else v
                         if isinstance(data_section, dict):
-                            # Look for mimeType and long 'data' field
                             mime = data_section.get("mimeType") or data_section.get("mime_type")
                             b64 = data_section.get("data")
-                            if mime and isinstance(b64, str) and len(b64) > 256:
+                            if mime and isinstance(b64, str) and (len(b64) > 200 and (_BASE64_RE.match(b64) or b64.startswith("/9j/"))):
                                 return True
-            # Recurse a limited depth
-            for val in list(d.values())[:10]:
-                if _contains_binary_marker(val):
+            for val in d.values():
+                if _contains_binary_marker(val, depth + 1):
                     return True
         elif isinstance(d, list):
-            for item in d[:10]:  # limit breadth
-                if _contains_binary_marker(item):
+            for item in d[:25]:
+                if _contains_binary_marker(item, depth + 1):
                     return True
+        elif isinstance(d, str):
+            if (len(d) > 200 and (_BASE64_RE.match(d) or d.startswith("/9j/"))):
+                return True
     except Exception:
         return False
     return False
 
 
 def _strip_binary_payload(obj: Any) -> Any:
-    """Replace large binary base64 payload sections with a placeholder string.
-    Returns a shallow-copied structure with replacements.
+    """Replace nested binary sections & large base64 strings with placeholder references.
+    Preserves structure but inserts marker objects: {"_binary": true, "note": "omitted", ...meta}
     """
-    placeholder = "Binary data omitted"
+    placeholder_text = "binary omitted"
     try:
         if isinstance(obj, dict):
             new_d = {}
@@ -78,20 +87,35 @@ def _strip_binary_payload(obj: Any) -> Any:
                         if isinstance(bv, dict):
                             bv2 = dict(bv)
                             data_section = bv2.get("data")
+                            # Case 1: legacy assumption where data_section is a dict containing its own 'data'
                             if isinstance(data_section, dict) and isinstance(data_section.get("data"), str):
                                 ds = data_section.copy()
-                                if len(ds.get("data", "")) > 64:  # assume large
-                                    ds["data"] = placeholder
+                                raw_b64 = ds.get("data", "")
+                                if len(raw_b64) > 64:
+                                    ds["data"] = placeholder_text
+                                    ds["_omitted_len"] = len(raw_b64)
                                     bv2["data"] = ds
+                            # Case 2: common n8n shape where bv2['data'] is directly the base64 string alongside mimeType/fileType
+                            elif isinstance(data_section, str) and (len(data_section) > 64 and (_BASE64_RE.match(data_section) or data_section.startswith("/9j/"))):
+                                bv2["_omitted_len"] = len(data_section)
+                                bv2["data"] = placeholder_text
                             new_bin[bk] = bv2
                         else:
                             new_bin[bk] = bv
                     new_d[k] = new_bin
+                elif isinstance(v, str) and (len(v) > 200 and (_BASE64_RE.match(v) or v.startswith("/9j/"))):
+                    new_d[k] = {"_binary": True, "note": placeholder_text, "_omitted_len": len(v)}
                 else:
                     new_d[k] = _strip_binary_payload(v)
             return new_d
         if isinstance(obj, list):
-            return [_strip_binary_payload(x) for x in obj]
+            out_list = []
+            for x in obj:
+                if isinstance(x, str) and (len(x) > 200 and (_BASE64_RE.match(x) or x.startswith("/9j/"))):
+                    out_list.append({"_binary": True, "note": placeholder_text, "_omitted_len": len(x)})
+                else:
+                    out_list.append(_strip_binary_payload(x))
+            return out_list
     except Exception:
         return obj
     return obj

@@ -87,7 +87,7 @@ The service reads settings via environment variables (`pydantic-settings`). Eith
 | Auth keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
 | Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Batch size | `FETCH_BATCH_SIZE` (default 100) |
-| Truncation length | `TRUNCATE_FIELD_LEN` (default 4000 chars, set 0 to disable). CLI `--truncate-len` overrides. Binary payloads replaced with placeholder when detected. |
+| Truncation length | `TRUNCATE_FIELD_LEN` (default 0 = disabled). CLI `--truncate-len` overrides. Binary/base64 payloads are always removed (structure preserved) regardless of truncation. |
 | Checkpoint file | `CHECKPOINT_FILE` |
 
 Example (fish shell):
@@ -288,9 +288,23 @@ The custom hook `ensure-notice-present` blocks commits if the `NOTICE` header is
 
 ---
 
+## Binary / Large Payload Handling
+
+Binary or very large base64 payloads are removed pre-export to avoid excessive OTLP span sizes while retaining structural context.
+
+Detection heuristics:
+- Standard n8n `binary` node structure (`binary` -> item -> `{ data: <b64>, mimeType: ... }`).
+- Any long (>200 chars) base64-looking string (regex match) or strings starting with common base64 magic like `/9j/` (JPEG).
+
+Replacement:
+- In `binary` objects: `data` value replaced with `binary omitted` plus `_omitted_len` metadata.
+- Standalone strings: replaced with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <len> }`.
+
+This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future environment knobs (planned): `BINARY_PLACEHOLDER`, `BINARY_MIN_LEN`.
+
 ## Roadmap (Next Iterations)
 
-1. Media (base64 detection & upload) handling with token replacement.
+1. Media upload workflow (store omitted binaries via Langfuse media API + token substitution).
 2. Error retries / resilient OTLP + media upload with dead-letter logging.
 3. Performance tuning (parallel export, async batching, memory caps for large runs).
 4. Additional filtering flags (status, time window, workflow id inclusion/exclusion).
