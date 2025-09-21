@@ -315,6 +315,10 @@ def backfill(
     debug_dump_dir: Optional[str] = typer.Option(
         None, help="Directory to dump raw execution data JSON when debug enabled"
     ),
+    truncate_len: Optional[int] = typer.Option(
+        None,
+        help="Override truncation length for input/output serialization (0 disables truncation). Overrides TRUNCATE_FIELD_LEN env setting.",
+    ),
 ):
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
@@ -368,7 +372,10 @@ def backfill(
                     logging.getLogger(__name__).info("Dumped raw data JSON to %s", dump_path)
                 except Exception as e:
                     logging.getLogger(__name__).warning("Failed dumping raw data JSON: %s", e)
-            trace = map_execution_to_langfuse(record, truncate_limit=settings.TRUNCATE_FIELD_LEN)
+            effective_trunc = settings.TRUNCATE_FIELD_LEN if truncate_len is None else truncate_len
+            if effective_trunc == 0:
+                effective_trunc = None  # signal no truncation
+            trace = map_execution_to_langfuse(record, truncate_limit=effective_trunc)
             span_count = len(trace.spans)
             if span_count <= 1:
                 logging.getLogger(__name__).warning(

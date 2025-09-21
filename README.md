@@ -87,7 +87,7 @@ The service reads settings via environment variables (`pydantic-settings`). Eith
 | Auth keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
 | Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Batch size | `FETCH_BATCH_SIZE` (default 100) |
-| Truncation length | `TRUNCATE_FIELD_LEN` (default 4000 chars) |
+| Truncation length | `TRUNCATE_FIELD_LEN` (default 4000 chars, set 0 to disable). CLI `--truncate-len` overrides. Binary payloads replaced with placeholder when detected. |
 | Checkpoint file | `CHECKPOINT_FILE` |
 
 Example (fish shell):
@@ -238,7 +238,7 @@ env.n8n-lf; python -m src backfill --limit 50 --dry-run
 
 ### 7. Troubleshooting Tips
 - If you see zero rows: verify `DB_TABLE_PREFIX` and `DB_POSTGRESDB_SCHEMA` match your n8n deployment.
-- Large payload warnings: reduce `FETCH_BATCH_SIZE` or lower `TRUNCATE_FIELD_LEN`.
+- Large payload warnings: reduce `FETCH_BATCH_SIZE` or lower `TRUNCATE_FIELD_LEN`. Set `--truncate-len 0` (or env `TRUNCATE_FIELD_LEN=0`) to disable truncation (binary data still omitted with placeholder).
 - Need verbose output: set `LOG_LEVEL=DEBUG` before running the CLI.
 - Prefix mismatch / missing tables: On startup you should see a line like:
 	`DB init: schema=public prefix='' entity_table=execution_entity data_table=execution_data (explicit_prefix=True)`

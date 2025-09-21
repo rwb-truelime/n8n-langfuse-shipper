@@ -9,7 +9,7 @@ Enhancements (Iteration 3):
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid5, UUID, NAMESPACE_DNS
 
 from .models.n8n import N8nExecutionRecord, NodeRun
@@ -32,21 +32,92 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
 
 
-def _serialize_and_truncate(obj: Any, limit: int) -> Tuple[Optional[str], bool]:
+def _contains_binary_marker(d: Any) -> bool:
+    """Heuristic: detect presence of binary base64 data in typical n8n node I/O structures.
+    Looks for nested dict path containing keys like 'binary' -> node -> data -> 'data' (base64) with mimeType.
+    """
+    try:
+        if isinstance(d, dict):
+            if "binary" in d and isinstance(d["binary"], dict):
+                # If any nested value under binary has a dict containing 'data' and mimeType
+                for v in d["binary"].values():
+                    if isinstance(v, dict):
+                        data_section = v.get("data") if isinstance(v.get("data"), dict) else v
+                        if isinstance(data_section, dict):
+                            # Look for mimeType and long 'data' field
+                            mime = data_section.get("mimeType") or data_section.get("mime_type")
+                            b64 = data_section.get("data")
+                            if mime and isinstance(b64, str) and len(b64) > 256:
+                                return True
+            # Recurse a limited depth
+            for val in list(d.values())[:10]:
+                if _contains_binary_marker(val):
+                    return True
+        elif isinstance(d, list):
+            for item in d[:10]:  # limit breadth
+                if _contains_binary_marker(item):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _strip_binary_payload(obj: Any) -> Any:
+    """Replace large binary base64 payload sections with a placeholder string.
+    Returns a shallow-copied structure with replacements.
+    """
+    placeholder = "Binary data omitted"
+    try:
+        if isinstance(obj, dict):
+            new_d = {}
+            for k, v in obj.items():
+                if k == "binary" and isinstance(v, dict):
+                    # replace inner binary data parts
+                    new_bin = {}
+                    for bk, bv in v.items():
+                        if isinstance(bv, dict):
+                            bv2 = dict(bv)
+                            data_section = bv2.get("data")
+                            if isinstance(data_section, dict) and isinstance(data_section.get("data"), str):
+                                ds = data_section.copy()
+                                if len(ds.get("data", "")) > 64:  # assume large
+                                    ds["data"] = placeholder
+                                    bv2["data"] = ds
+                            new_bin[bk] = bv2
+                        else:
+                            new_bin[bk] = bv
+                    new_d[k] = new_bin
+                else:
+                    new_d[k] = _strip_binary_payload(v)
+            return new_d
+        if isinstance(obj, list):
+            return [_strip_binary_payload(x) for x in obj]
+    except Exception:
+        return obj
+    return obj
+
+
+def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[str], bool]:
     """Serialize obj to compact JSON (fallback to str) and truncate if needed.
 
+    If limit is None, truncation is disabled (except binary sections replaced by placeholder).
     Returns (serialized_value_or_None, truncated_flag).
     """
     if obj is None:
         return None, False
+    # Binary detection & stripping before serialization
+    try:
+        if _contains_binary_marker(obj):
+            obj = _strip_binary_payload(obj)
+    except Exception:
+        pass
     try:
         import json
-
         raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         raw = str(obj)
     truncated = False
-    if len(raw) > limit:
+    if isinstance(limit, int) and limit > 0 and len(raw) > limit:
         truncated = True
         raw = raw[:limit] + f"...<truncated {len(raw)-limit} chars>"
     return raw, truncated
@@ -71,7 +142,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     )
 
 
-def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 4000) -> LangfuseTrace:
+def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
     # Keep deterministic trace id for idempotency; retain existing pattern to avoid breaking historical IDs.
     trace_id = f"n8n-exec-{record.id}"
     # New naming convention: trace name is just the workflow name (fallback 'execution').
@@ -264,7 +335,10 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
         trace.spans.append(span)
         last_span_for_node[node_name] = span_id
         try:
-            if isinstance(raw_output_obj, dict) and len(str(raw_output_obj)) < truncate_limit * 2:
+            size_guard_ok = True
+            if truncate_limit is not None and isinstance(truncate_limit, int):
+                size_guard_ok = len(str(raw_output_obj)) < truncate_limit * 2
+            if isinstance(raw_output_obj, dict) and size_guard_ok:
                 last_output_data[node_name] = raw_output_obj
         except Exception:
             pass
