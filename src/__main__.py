@@ -5,6 +5,7 @@ from typing import Optional, Any
 import logging
 import asyncio
 from pydantic import ValidationError
+import os
 
 from .config import get_settings
 from .db import ExecutionSource
@@ -317,6 +318,8 @@ def backfill(
 ):
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
+    if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
+        typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
     typer.echo("Starting backfill with mapping...")
     source = ExecutionSource(
         settings.PG_DSN,
