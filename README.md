@@ -3,7 +3,7 @@
 <!-- Badges -->
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![Status](https://img.shields.io/badge/status-Iteration%204-informational)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
 <!-- (Optionally replace placeholders with real workflow badges once CI is added) -->
@@ -269,6 +269,16 @@ Run focused test:
 pytest tests/test_db_stream.py::test_stream_reads_rows_without_modification -q
 ```
 
+### Pre-commit Hooks
+
+Install git hooks (includes NOTICE guard):
+
+```fish
+pre-commit install
+```
+
+The custom hook `ensure-notice-present` blocks commits if the `NOTICE` header is changed or removed. Update `scripts/check_notice.py` intentionally if the copyright year rolls over.
+
 ---
 
 ## Security & Safety
@@ -301,8 +311,36 @@ pytest tests/test_db_stream.py::test_stream_reads_rows_without_modification -q
 
 ---
 
+## Attribution
+
+This project requests (but does not legally require beyond the Apache 2.0 NOTICE preservation) a visible credit in any UI, documentation, or public site where its functionality is exposed. A suggested phrase:
+
+> Powered by n8n-langfuse-shipper (Apache 2.0)
+
+If space allows, please link to the repository:
+`https://github.com/rwb-truelime/n8n-langfuse-shipper`
+
+If you redistribute source or binaries, you **must** retain the `LICENSE` file and the `NOTICE` file per the Apache License 2.0. You may append your own notices to `NOTICE` when distributing a derivative.
+
+For commercial or closed-source use, no special permission is required beyond compliance with the Apache 2.0 terms.
+
+If you have an alternative attribution format (e.g. consolidated vendor credits page), that is fine—keep the contents of `NOTICE` intact.
+
+### NOTICE Guard Configuration
+The pre-commit hook reads `notice_check.toml` for required substrings and header validation. Adjust that file (not the script) when:
+- Updating the copyright year
+- Adding additional mandatory attribution lines
+
+Example (`notice_check.toml`):
+```
+[notice]
+required_substrings = ["n8n-langfuse-shipper", "Apache License, Version 2.0", "Copyright 2025 Rodger Blom"]
+header_must_contain = "n8n-langfuse-shipper"
+header_search_chars = 250
+```
+
 ## License
 
-MIT
+Apache License 2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
 
 

@@ -2,10 +2,10 @@
 name = "n8n-langfuse-shipper"
 version = "0.1.0"
 description = "High-throughput backfill service to ship n8n execution data to Langfuse via OpenTelemetry"
-authors = [ { name = "Your Name", email = "you@example.com" } ]
+authors = [ { name = "Rodger Blom", email = "rodger.blom@truelime.nl" } ]
 requires-python = ">=3.12"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 
 # Core runtime dependencies
 dependencies = [
@@ -25,7 +25,8 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0"
+    "pytest-asyncio>=0.23.0",
+    "pre-commit>=3.7.0"
 ]
 
 [build-system]

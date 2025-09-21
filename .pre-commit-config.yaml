@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+  - repo: local
+    hooks:
+      - id: ensure-notice-present
+        name: Ensure NOTICE file present and unmodified
+        entry: python scripts/check_notice.py
+        language: system
+        pass_filenames: false
+        stages: [commit]

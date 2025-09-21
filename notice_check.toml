@@ -1,0 +1,13 @@
+[notice]
+# List of substrings that must appear somewhere in NOTICE.
+required_substrings = [
+  "n8n-langfuse-shipper",
+  "Apache License, Version 2.0",
+  "Copyright 2025 Rodger Blom"
+]
+
+# A substring that must appear within the first N characters (see header_search_chars)
+header_must_contain = "n8n-langfuse-shipper"
+
+# How many leading characters of NOTICE to search for header_must_contain
+header_search_chars = 250
