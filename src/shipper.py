@@ -136,13 +136,8 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         if span_model.parent_id is None:
             for k, v in trace_model.metadata.items():
                 span_ot.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
-            # Duplicate key forms for convenient querying
-            if "executionId" in trace_model.metadata:
-                span_ot.set_attribute("n8n.execution.id", trace_model.metadata["executionId"])  # flat convenience
+            # executionId removed from metadata; root span already has n8n.execution.id via original span metadata
             span_ot.set_attribute("langfuse.trace.name", trace_model.name)
-            exec_id_val = trace_model.metadata.get("executionId")
-            if exec_id_val is not None:
-                span_ot.set_attribute("langfuse.execution.id", exec_id_val)
             wf_id_val = trace_model.metadata.get("workflowId")
             if wf_id_val is not None:
                 span_ot.set_attribute("langfuse.workflow.id", wf_id_val)

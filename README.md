@@ -19,7 +19,7 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
-- Deterministic trace & span IDs (trace id: `n8n-exec-<executionId>`, span IDs via UUIDv5). Trace name now equals the workflow name (fallback: `execution`). Top-level trace metadata key `executionId` retained for querying/filtering.
+- Deterministic trace & span IDs (trace id: `n8n-exec-<executionId>`, span IDs via UUIDv5). Trace name now equals the workflow name (fallback: `execution`). Execution id exposed as span metadata key `n8n.execution.id` only (no duplicate in trace metadata).
 - Hierarchical AI Agent/Tool/LanguageModel/Memory parenting using `workflowData.connections` `ai_tool`, `ai_languageModel`, `ai_memory` edge types (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
 - Chronological span emission to guarantee agent span exists before children.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
@@ -158,7 +158,7 @@ Parenting precedence order:
 
 Inputs are inferred from the resolved parent’s last output when a node lacks `inputOverride` (captured as JSON and truncated if necessary).
 
-Metadata: The trace carries `workflowId`, `status`, and `executionId`. Each span includes execution timing/status, hierarchy flags (`n8n.agent.*`), truncation flags, inferred parent markers, and previous node linkage.
+Metadata: The trace carries `workflowId` and `status`. The execution id is exposed once via root span metadata key `n8n.execution.id` (not duplicated in trace metadata). Each span includes execution timing/status, hierarchy flags (`n8n.agent.*`), truncation flags, inferred parent markers, and previous node linkage.
 
 ### Execution Data Formats
 

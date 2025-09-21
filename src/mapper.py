@@ -83,7 +83,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
         metadata={
             "workflowId": record.workflowId,
             "status": record.status,
-            "executionId": record.id,
+            # executionId removed to avoid duplication; use root span metadata key n8n.execution.id instead
         },
     )
 
