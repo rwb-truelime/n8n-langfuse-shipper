@@ -72,13 +72,13 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 4000) -> LangfuseTrace:
+    # Keep deterministic trace id for idempotency; retain existing pattern to avoid breaking historical IDs.
     trace_id = f"n8n-exec-{record.id}"
-    # Enriched trace name pattern: <workflowName>-n8n-<executionId>
+    # New naming convention: trace name is just the workflow name (fallback 'execution').
     base_name = record.workflowData.name or "execution"
-    enriched_trace_name = f"{base_name}-n8n-{record.id}"
     trace = LangfuseTrace(
         id=trace_id,
-        name=enriched_trace_name,
+        name=base_name,
         timestamp=record.startedAt,
         metadata={
             "workflowId": record.workflowId,
@@ -97,7 +97,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: int = 
     root_span = LangfuseSpan(
         id=root_span_id,
         trace_id=trace_id,
-        name=enriched_trace_name,
+        name=base_name,
         start_time=record.startedAt,
         end_time=record.stoppedAt or (record.startedAt + timedelta(milliseconds=1)),
         observation_type="span",
