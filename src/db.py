@@ -117,19 +117,19 @@ class ExecutionSource:
         data_table = f'"{self._schema}"."{self._data_table_name}"'
         if self._require_execution_metadata:
             meta_table = f'"{self._schema}"."{self._metadata_table_name}"'
-            # Only select executions that have a metadata row with key='executionId' and value matching e.id
+            # Only select executions that have at least one metadata row referencing them (ANY key/value).
+            # Use EXISTS to avoid row multiplication from multiple metadata rows.
             sql = (
                 f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
                 f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
                 f'd."workflowData" AS "workflowData", d."data" AS data '
                 f'FROM {entity_table} e '
                 f'JOIN {data_table} d ON e.id = d."executionId" '
-                f'JOIN {meta_table} m ON m."executionId" = e.id AND m."key" = %s AND m."value" = CAST(e.id AS TEXT) '
-                'WHERE e.id > %s '
+                f'WHERE e.id > %s AND EXISTS (SELECT 1 FROM {meta_table} m WHERE m."executionId" = e.id) '
                 'ORDER BY e.id ASC '
                 'LIMIT %s'
             )
-            params = ("executionId", last_id, limit)
+            params = (last_id, limit)
         else:
             sql = (
                 f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
