@@ -319,17 +319,28 @@ def backfill(
         None,
         help="Override truncation length for input/output serialization (0 disables truncation). Overrides TRUNCATE_FIELD_LEN env setting.",
     ),
+    require_execution_metadata: bool = typer.Option(
+        None,
+        help="If set, only process executions that have a metadata row (execution_metadata) with key='executionId' and value matching the execution id.",
+    ),
 ):
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
         typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
     typer.echo("Starting backfill with mapping...")
+    # Determine metadata filter flag: CLI overrides env/settings
+    require_meta_flag = (
+        require_execution_metadata
+        if require_execution_metadata is not None
+        else settings.REQUIRE_EXECUTION_METADATA
+    )
     source = ExecutionSource(
         settings.PG_DSN,
         batch_size=settings.FETCH_BATCH_SIZE,
         schema=settings.DB_POSTGRESDB_SCHEMA or None,
         table_prefix=settings.DB_TABLE_PREFIX if settings.DB_TABLE_PREFIX is not None else None,
+        require_execution_metadata=require_meta_flag,
     )
 
     cp_path = checkpoint_file or settings.CHECKPOINT_FILE

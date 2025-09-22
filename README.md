@@ -88,6 +88,7 @@ The service reads settings via environment variables (`pydantic-settings`). Eith
 | Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Batch size | `FETCH_BATCH_SIZE` (default 100) |
 | Truncation length | `TRUNCATE_FIELD_LEN` (default 0 = disabled). CLI `--truncate-len` overrides. Binary/base64 payloads are always removed (structure preserved) regardless of truncation. |
+| Require execution metadata match | `REQUIRE_EXECUTION_METADATA` (default false). Only fetch executions that have a row in `execution_metadata` with `key='executionId'` and `value` equal to the execution id. CLI `--require-execution-metadata` overrides. |
 | Checkpoint file | `CHECKPOINT_FILE` |
 
 Example (fish shell):

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
         description="Path to file storing last processed execution id",
     )
 
+    # Filtering: only process executions that have at least one metadata row whose key='executionId' and whose value equals the execution id.
+    REQUIRE_EXECUTION_METADATA: bool = Field(
+        default=False,
+        description=(
+            "If true, only executions having a row in <prefix>execution_metadata where key='executionId' and value matches the execution id are fetched."
+        ),
+    )
+
     @model_validator(mode="after")
     def build_dsn_if_needed(self):  # type: ignore[override]
         if not self.PG_DSN and self.DB_POSTGRESDB_HOST and self.DB_POSTGRESDB_DATABASE:

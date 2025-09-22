@@ -36,6 +36,7 @@ class ExecutionSource:
         *,
         schema: Optional[str] = None,
         table_prefix: Optional[str] = None,
+        require_execution_metadata: bool = False,
     ):
         """Create a new execution source.
 
@@ -74,12 +75,16 @@ class ExecutionSource:
         # Precompute table names for logging / diagnostics
         self._entity_table_name = f"{self._table_prefix}execution_entity"
         self._data_table_name = f"{self._table_prefix}execution_data"
+        self._metadata_table_name = f"{self._table_prefix}execution_metadata"
+        self._require_execution_metadata = require_execution_metadata
         logger.info(
-            "DB init: schema=%s prefix=%r entity_table=%s data_table=%s (explicit_prefix=%s)",
+            "DB init: schema=%s prefix=%r entity_table=%s data_table=%s metadata_table=%s require_exec_meta=%s (explicit_prefix=%s)",
             self._schema,
             self._table_prefix,
             self._entity_table_name,
             self._data_table_name,
+            self._metadata_table_name,
+            self._require_execution_metadata,
             table_prefix is not None,
         )
 
@@ -110,19 +115,36 @@ class ExecutionSource:
         # Table names with prefix
         entity_table = f'"{self._schema}"."{self._entity_table_name}"'
         data_table = f'"{self._schema}"."{self._data_table_name}"'
-        sql = (
-            f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
-            f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
-            f'd."workflowData" AS "workflowData", d."data" AS data '
-            f'FROM {entity_table} e '
-            f'JOIN {data_table} d ON e.id = d."executionId" '
-            'WHERE e.id > %s '
-            'ORDER BY e.id ASC '
-            'LIMIT %s'
-        )
+        if self._require_execution_metadata:
+            meta_table = f'"{self._schema}"."{self._metadata_table_name}"'
+            # Only select executions that have a metadata row with key='executionId' and value matching e.id
+            sql = (
+                f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
+                f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
+                f'd."workflowData" AS "workflowData", d."data" AS data '
+                f'FROM {entity_table} e '
+                f'JOIN {data_table} d ON e.id = d."executionId" '
+                f'JOIN {meta_table} m ON m."executionId" = e.id AND m."key" = %s AND m."value" = CAST(e.id AS TEXT) '
+                'WHERE e.id > %s '
+                'ORDER BY e.id ASC '
+                'LIMIT %s'
+            )
+            params = ("executionId", last_id, limit)
+        else:
+            sql = (
+                f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
+                f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
+                f'd."workflowData" AS "workflowData", d."data" AS data '
+                f'FROM {entity_table} e '
+                f'JOIN {data_table} d ON e.id = d."executionId" '
+                'WHERE e.id > %s '
+                'ORDER BY e.id ASC '
+                'LIMIT %s'
+            )
+            params = (last_id, limit)
         async with conn.cursor(row_factory=dict_row) as cur:  # type: ignore
             try:
-                await cur.execute(sql, (last_id, limit))
+                await cur.execute(sql, params)
             except Exception as ex:  # noqa: BLE001 broad for friendly diagnostics then re-raise
                 # Rollback transaction if it's in failed state to allow subsequent attempts
                 try:
