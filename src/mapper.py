@@ -360,10 +360,11 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
         last_span_for_node[node_name] = span_id
         try:
             size_guard_ok = True
-            if truncate_limit is not None and isinstance(truncate_limit, int):
+            # Only enforce size guard when truncation is active (>0). When disabled (<=0 or None), always cache.
+            if truncate_limit is not None and isinstance(truncate_limit, int) and truncate_limit > 0:
                 size_guard_ok = len(str(raw_output_obj)) < truncate_limit * 2
             if isinstance(raw_output_obj, dict) and size_guard_ok:
-                last_output_data[node_name] = raw_output_obj
+                last_output_data[node_name] = raw_output_data = raw_output_obj
         except Exception:
             pass
         if is_generation:
