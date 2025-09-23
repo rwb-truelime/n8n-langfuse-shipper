@@ -6,19 +6,48 @@ This project is a Python-based microservice to perform a high-throughput backfil
 ## Document Sync & Version Policy
 This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift. Last major sync: 2025-09-23.
 
+### Mermaid Diagram Authoring Guidelines (Strict)
+To avoid recurrent rendering / parse issues, ALL Mermaid diagrams in this repository MUST follow the simplified style below. Treat this as a hard rule (update tests/docs if you intentionally need richer syntax later):
+
+1. Use only `graph TD` (top‑down) unless a compelling reason exists; then document the rationale inline.
+2. Node labels: ASCII only, short (1–3 words). No HTML tags (`<br/>`), no Unicode arrows (e.g. `→`), no emojis, no parentheses inside labels; prefer `Parent Resolve` instead of `Parent Resolver (Agent)`.
+3. Multi-line labels are forbidden (no `\n`, no `<br/>`). If extra context needed, put a `%%` comment beneath the node.
+4. Subgraph syntax: `subgraph IDENTIFIER [Readable Title]` — identifier must be alphanumeric/underscore; do not rely on spaces or punctuation in the identifier.
+5. Edges: plain `-->` or dotted `-.->` only. No link text or styles unless absolutely required; if used, add a justification comment.
+6. Comments: only `%%` full-line comments. Remove HTML comment forms (`<!-- ... -->`).
+7. No class/style/link directives (`classDef`, `style`, `linkStyle`, `click`) in baseline diagrams. Introduce them only with prior review and add a note explaining necessity.
+8. Keep diagrams minimal: prefer one high-level pipeline diagram. Additional diagrams (e.g., parent precedence) should also follow the same simplified constraints.
+9. Validate each diagram in the Mermaid Live Editor (default settings) before committing.
+10. If a richer diagram is needed (colors, multiline), add a second simplified fallback version immediately below and mark the richer one as optional.
+
+Violation of these guidelines should be treated like breaking an invariant—submit a corrective patch alongside any diagram change reverting to the simplified form.
+
 ## Big Picture Architecture
 The service operates as a standalone ETL (Extract, Transform, Load) process, designed for containerized, cron-based execution.
 
 ```mermaid
 graph TD
-<!-- KEY INVARIANTS START -->
-## Key Invariants (Do Not Break)
-    B -->|2. Map to OTel Traces| C[Langfuse OTLP Endpoint]
-
-    subgraph "Python Service (Docker)"
-        B
-<!-- KEY INVARIANTS END -->
+    %% Simplified (HTML line breaks & special arrows removed for broad Mermaid compatibility)
+    subgraph PIPELINE [Python Service]
+        A[Extract] --> PD[Pointer Decode]
+        PD --> TR[Transform]
+        TR --> PR[Parent Resolve]
+        PR --> IP[Input Propagate]
+        IP --> BS[Binary Strip/Truncate]
+        BS --> EX[Export]
+        EX --> BP[Backpressure]
+        BP --> CK[Checkpoint]
     end
+    EX --> LF[Langfuse OTLP]
+    CK -.-> A
+
+    %% Legend (conceptual only; keep terse for parser):
+    %% Pointer Decode = reconstruct runData when compact
+    %% Parent Resolve = agent + runtime + graph precedence
+    %% Input Propagate = infer child input from parent output
+    %% Binary Strip/Truncate = unconditional binary redaction + optional truncation
+    %% Backpressure = flush + sleep controls
+    %% Checkpoint = last processed execution id persistence
 
 ```
 Canonical definitions live in `src/models/n8n.py`. Do NOT inline-edit model shapes here—change the code + tests + then update this narrative only if semantics (fields / meaning) shift. The models cover execution entity metadata, workflow graph (`WorkflowData`), and runtime node runs (`NodeRun`).
