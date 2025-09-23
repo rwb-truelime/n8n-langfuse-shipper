@@ -86,6 +86,11 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
         span_ot.set_attribute("model", span_model.model)
     if span_model.status:
         span_ot.set_attribute("langfuse.observation.status", span_model.status)
+    # Explicit level / status_message provided (non-error spans included)
+    if span_model.level:
+        span_ot.set_attribute("langfuse.observation.level", span_model.level)
+    if span_model.status_message:
+        span_ot.set_attribute("langfuse.observation.status_message", span_model.status_message)
     if span_model.usage:
         if span_model.usage.input is not None:
             span_ot.set_attribute("gen_ai.usage.input_tokens", span_model.usage.input)
@@ -109,8 +114,11 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
         if v is not None:
             span_ot.set_attribute(f"langfuse.observation.metadata.{k}", str(v))
     if span_model.error:
-        span_ot.set_attribute("langfuse.observation.level", "ERROR")
-        span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
+        # Only override level/status_message if not explicitly set above
+        if "langfuse.observation.level" not in getattr(span_ot, "attributes", {}):  # defensive for dummy test spans
+            span_ot.set_attribute("langfuse.observation.level", "ERROR")
+        if not span_model.status_message:
+            span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
 
 
 _trace_export_count = 0

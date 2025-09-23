@@ -78,3 +78,41 @@ def test_root_flag_and_trace_identity_serialization():
     assert dummy.attributes["langfuse.trace.tags"] == '["alpha","beta"]'
     assert dummy.attributes["langfuse.trace.input"] == '{"q":"hello"}'
     assert dummy.attributes["langfuse.trace.output"] == '{"a":"world"}'
+
+
+def test_level_and_status_message_non_error():
+    now = datetime.now(timezone.utc)
+    span_model = LangfuseSpan(
+        id="s-level",
+        trace_id="t3",
+        parent_id=None,
+        name="LevelSpan",
+        start_time=now,
+        end_time=now,
+        level="INFO",
+        status_message="processing complete",
+    )
+    dummy = DummySpan()
+    _apply_span_attributes(dummy, span_model)
+    assert dummy.attributes.get("langfuse.observation.level") == "INFO"
+    assert dummy.attributes.get("langfuse.observation.status_message") == "processing complete"
+
+
+def test_error_does_not_override_explicit_level_status():
+    now = datetime.now(timezone.utc)
+    span_model = LangfuseSpan(
+        id="s-level-err",
+        trace_id="t4",
+        parent_id=None,
+        name="LevelErrSpan",
+        start_time=now,
+        end_time=now,
+        level="WARNING",
+        status_message="pre-set message",
+        error={"message": "boom"},
+    )
+    dummy = DummySpan()
+    _apply_span_attributes(dummy, span_model)
+    # Should retain explicit level/status_message
+    assert dummy.attributes.get("langfuse.observation.level") == "WARNING"
+    assert dummy.attributes.get("langfuse.observation.status_message") == "pre-set message"
