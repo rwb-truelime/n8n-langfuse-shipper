@@ -88,20 +88,19 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
         span_ot.set_attribute("langfuse.observation.status", span_model.status)
     if span_model.usage:
         if span_model.usage.input is not None:
-            span_ot.set_attribute("gen_ai.usage.prompt_tokens", span_model.usage.input)
+            span_ot.set_attribute("gen_ai.usage.input_tokens", span_model.usage.input)
         if span_model.usage.output is not None:
-            span_ot.set_attribute("gen_ai.usage.completion_tokens", span_model.usage.output)
+            span_ot.set_attribute("gen_ai.usage.output_tokens", span_model.usage.output)
         if span_model.usage.total is not None:
             span_ot.set_attribute("gen_ai.usage.total_tokens", span_model.usage.total)
-        # Emit consolidated JSON usage_details with only present keys (Langfuse parity)
+        # Emit consolidated JSON usage_details with only present keys (Langfuse parity) using *_tokens names
         usage_details = {}
         if span_model.usage.input is not None:
-            usage_details["input"] = span_model.usage.input
+            usage_details["input_tokens"] = span_model.usage.input
         if span_model.usage.output is not None:
-            usage_details["output"] = span_model.usage.output
+            usage_details["output_tokens"] = span_model.usage.output
         if span_model.usage.total is not None:
-            usage_details["total"] = span_model.usage.total
-        # Only set if at least one key present
+            usage_details["total_tokens"] = span_model.usage.total
         if usage_details:
             import json as _json
             span_ot.set_attribute("langfuse.observation.usage_details", _json.dumps(usage_details, separators=(",", ":")))

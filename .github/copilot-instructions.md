@@ -279,7 +279,7 @@ Notes:
 If matched:
 * Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
 * `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
-* OTLP exporter emits `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
+* OTLP exporter emits `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
 ### Multimodality Mapping (Future)
 - Phase not yet implemented (see Media & Multimodality Roadmap). Planned flow once enabled:
@@ -290,7 +290,7 @@ If matched:
  **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
      - `langfuse.observation.type`
      - `model` & `langfuse.observation.model.name` (when `model` present)
-     - `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` (from normalized `input`/`output`/`total`)
+    - `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` (from normalized `input`/`output`/`total`; legacy prompt/completion names removed)
      - `langfuse.observation.usage_details` (JSON string containing only present keys among `input`/`output`/`total`)
      - `langfuse.observation.status` (normalized status) when available
      - `langfuse.observation.metadata.*` (flattened span metadata)

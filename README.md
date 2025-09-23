@@ -294,7 +294,7 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Agent/Tool/LLM/Memory relationship | Child span parented to Agent span via `ai_*` connection types |
 | LLM / embedding node with token usage | Single span classified as generation (usage + model attributes) |
 | Node type/category | Observation type (`agent`, `tool`, `chain`, `retriever`, etc.) via mapper |
-| Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total) | Normalized to input/output/total then emitted as `gen_ai.usage.prompt_tokens|completion_tokens|total_tokens` |
+| Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total) | Normalized to input/output/total then emitted as `gen_ai.usage.input_tokens|output_tokens|total_tokens` (legacy prompt/completion names removed) |
 
 Parenting precedence order:
 1. Agent hierarchy (if node has an `ai_tool` / `ai_languageModel` / `ai_memory` edge to an agent, parent = agent span).

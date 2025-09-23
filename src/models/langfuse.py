@@ -10,10 +10,10 @@ class LangfuseUsage(BaseModel):
 
     Mapper normalizes any incoming n8n `tokenUsage` variants (promptTokens/completionTokens/totalTokens
     OR prompt/completion/total OR already-normalized input/output/total) into this shape.
-    Exporter maps:
-        input  -> gen_ai.usage.prompt_tokens
-        output -> gen_ai.usage.completion_tokens
-        total  -> gen_ai.usage.total_tokens
+    Exporter maps (OTel GenAI spec current names, legacy names removed):
+        input  -> gen_ai.usage.input_tokens
+        output -> gen_ai.usage.output_tokens
+        total  -> gen_ai.usage.total_tokens (still accepted in spec)
     """
     input: Optional[int] = None
     output: Optional[int] = None

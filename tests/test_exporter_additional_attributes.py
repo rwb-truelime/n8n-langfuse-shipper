@@ -28,12 +28,12 @@ def test_usage_details_json_emitted_only_present_keys():
     )
     dummy = DummySpan()
     _apply_span_attributes(dummy, span_model)
-    # Should include prompt + total but omit output in JSON
+    # Should include input_tokens + total_tokens but omit output_tokens in JSON (since output None)
     usage_json = dummy.attributes.get("langfuse.observation.usage_details")
     assert usage_json is not None
-    assert '"input":5' in usage_json
-    assert '"total":7' in usage_json
-    assert 'output' not in usage_json  # ensure absent key not serialized
+    assert '"input_tokens":5' in usage_json
+    assert '"total_tokens":7' in usage_json
+    assert 'output_tokens' not in usage_json  # ensure absent key not serialized
 
 
 def test_root_flag_and_trace_identity_serialization():
