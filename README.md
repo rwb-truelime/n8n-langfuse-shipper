@@ -19,7 +19,7 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
-- Deterministic trace & span IDs (trace id: `n8n-exec-<executionId>`, span IDs via UUIDv5). Trace name now equals the workflow name (fallback: `execution`). Execution id exposed as span metadata key `n8n.execution.id` only (no duplicate in trace metadata).
+- Deterministic trace & span IDs (trace id = raw `<executionId>` string, span IDs via UUIDv5). Trace name equals the workflow name (fallback: `execution`). Execution id exposed as span metadata key `n8n.execution.id` only (not duplicated in trace metadata). This shipper assumes exactly ONE n8n instance per Langfuse project—use separate Langfuse projects (keys) for additional instances to avoid execution id collisions.
 - Hierarchical AI Agent/Tool/LanguageModel/Memory parenting using `workflowData.connections` `ai_tool`, `ai_languageModel`, `ai_memory` edge types (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
 - Chronological span emission to guarantee agent span exists before children.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
@@ -74,22 +74,113 @@ pytest -q
 
 ---
 
-## Configuration
+## Configuration Overview
 
-The service reads settings via environment variables (`pydantic-settings`). Either provide a full DSN or rely on n8n component variables:
+The shipper is configured by environment variables (loaded via `pydantic-settings`) and optionally overridden by CLI flags. This section lists **all** supported knobs with defaults, effects, and override pathways.
 
-| Purpose | Variable(s) |
-|---------|-------------|
-| Full DSN override | `PG_DSN` |
-| Component DB vars (used if `PG_DSN` blank) | `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_PORT`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD` |
-| Schema / table prefix | `DB_POSTGRESDB_SCHEMA` (default `public`), `DB_TABLE_PREFIX` (default `n8n_`; set to empty string to disable prefix) |
-| Langfuse endpoint | `LANGFUSE_HOST` (e.g. `https://cloud.langfuse.com`) |
-| Auth keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` |
-| Optional OTLP override | `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| Batch size | `FETCH_BATCH_SIZE` (default 100) |
-| Truncation length | `TRUNCATE_FIELD_LEN` (default 0 = disabled). CLI `--truncate-len` overrides. Binary/base64 payloads are always removed (structure preserved) regardless of truncation. |
-| Require execution metadata match | `REQUIRE_EXECUTION_METADATA` (default false). Only fetch executions that have a row in `execution_metadata` with `key='executionId'` and `value` equal to the execution id. CLI `--require-execution-metadata` overrides. |
-| Checkpoint file | `CHECKPOINT_FILE` |
+### Precedence Rules
+1. CLI flag (if provided)
+2. Environment variable
+3. Internal default
+
+### Core Environment Variables
+
+| Variable | Default | CLI Override | Description |
+|----------|---------|--------------|-------------|
+| `PG_DSN` | "" | (none) | Full Postgres DSN. If set, component DB vars are ignored for DSN construction. |
+| `DB_POSTGRESDB_HOST` | - | (none) | DB host (used only if `PG_DSN` empty). |
+| `DB_POSTGRESDB_PORT` | `5432` | (none) | DB port. |
+| `DB_POSTGRESDB_DATABASE` | - | (none) | DB name. |
+| `DB_POSTGRESDB_USER` | `postgres` | (none) | DB user (if DSN built). |
+| `DB_POSTGRESDB_PASSWORD` | "" | (none) | DB password (optional). |
+| `DB_POSTGRESDB_SCHEMA` | `public` | (none) | DB schema for tables. |
+| `DB_TABLE_PREFIX` | `n8n_` (unset) / none (blank) | (none) | Table name prefix. Unset ⇒ `n8n_`; set to empty string ⇒ no prefix; any other explicit value used verbatim. |
+| `FETCH_BATCH_SIZE` | `100` | (none) | Max executions fetched per DB batch. |
+| `CHECKPOINT_FILE` | `.backfill_checkpoint` | `--checkpoint-file` | Path for last processed execution id. |
+| `TRUNCATE_FIELD_LEN` | `0` | `--truncate-len` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
+| `REQUIRE_EXECUTION_METADATA` | `false` | `--require-execution-metadata / --no-require-execution-metadata` | Only include executions having at least one row in `<prefix>execution_metadata` with matching id. |
+| `LOG_LEVEL` | `INFO` | (none) | Python logging level (`DEBUG`, `INFO`, etc.). |
+
+### Langfuse / OTLP Export
+
+| Variable | Default | CLI Override | Description |
+|----------|---------|--------------|-------------|
+| `LANGFUSE_HOST` | "" | (none) | Base Langfuse host; exporter appends `/api/public/otel/v1/traces` if needed. |
+| `LANGFUSE_PUBLIC_KEY` | "" | (none) | Langfuse public key (Basic Auth). |
+| `LANGFUSE_SECRET_KEY` | "" | (none) | Langfuse secret key (Basic Auth). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `None` | (none) | Full OTLP trace endpoint override (bypasses host derivation). |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `30` | (none) | OTLP HTTP request timeout (seconds). |
+
+### Reliability / Backpressure (Phase 1)
+
+| Variable | Default | CLI Override | Description |
+|----------|---------|--------------|-------------|
+| `FLUSH_EVERY_N_TRACES` | `1` | (none) | Force `force_flush()` after every N traces (1 = after each trace). |
+| `OTEL_MAX_QUEUE_SIZE` | `10000` | (none) | Span queue capacity for `BatchSpanProcessor`. Prevents unbounded memory. |
+| `OTEL_MAX_EXPORT_BATCH_SIZE` | `512` | (none) | Max spans per OTLP export request. |
+| `OTEL_SCHEDULED_DELAY_MILLIS` | `200` | (none) | Max delay before a batch is exported (ms). Lower = lower latency, higher overhead. |
+| `EXPORT_QUEUE_SOFT_LIMIT` | `5000` | `--export-queue-soft-limit` | Approx backlog (created - last flushed) threshold triggering a small sleep. |
+| `EXPORT_SLEEP_MS` | `75` | `--export-sleep-ms` | Sleep duration (ms) when backlog exceeds soft limit. |
+
+### Derived / Internal Behavior
+| Aspect | Determination |
+|--------|--------------|
+| DSN Construction | If `PG_DSN` empty and host+db present, DSN auto-built. |
+| Prefix Logic | Unset prefix ⇒ `n8n_`; explicit empty string ⇒ no prefix. |
+| Binary Redaction | Always on (independent of truncation). Large/base64-like payloads replaced with placeholders. |
+| Root Span ID Strategy | Deterministic (UUIDv5 seed) with root span ended *after* children for reliability. |
+| Flush Strategy | Forced every `FLUSH_EVERY_N_TRACES`. Backpressure sleep if backlog > soft limit. |
+
+### Example Minimal Environment (fish shell)
+Use either a single `PG_DSN` or the component variables:
+```fish
+set -x PG_DSN postgresql://n8n:n8n@localhost:5432/n8n
+set -x LANGFUSE_HOST https://cloud.langfuse.com
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
+set -x LANGFUSE_SECRET_KEY lf_sk_...
+```
+
+Component style (auto-build DSN):
+```fish
+set -x DB_POSTGRESDB_HOST localhost
+set -x DB_POSTGRESDB_DATABASE n8n
+set -x DB_POSTGRESDB_USER n8n
+set -x DB_POSTGRESDB_PASSWORD n8n
+set -x LANGFUSE_HOST https://cloud.langfuse.com
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
+set -x LANGFUSE_SECRET_KEY lf_sk_...
+```
+
+### Override Reliability at Runtime (CLI)
+If you want to temporarily throttle without changing env:
+```fish
+python -m src backfill --limit 500 --no-dry-run \
+	--export-queue-soft-limit 2000 \
+	--export-sleep-ms 120
+```
+
+### Truncation & Binary Clarifications
+| Case | Behavior |
+|------|----------|
+| `TRUNCATE_FIELD_LEN=0` | No textual truncation. Binary/base64 still redacted. |
+| `TRUNCATE_FIELD_LEN>0` | Input/output longer than limit truncated; metadata flags set. |
+| Binary field (n8n `binary` object) | `data` replaced with placeholder & omitted length. |
+| Long base64-looking string | Replaced with structured placeholder object. |
+
+### Metadata Filtering Semantics
+When `REQUIRE_EXECUTION_METADATA=true` (or CLI flag), the query adds an `EXISTS` subquery requiring at least one row in `<prefix>execution_metadata` where `executionId = execution.id`. This is not a key/value equality filter; presence alone suffices.
+
+### Reliability Tuning Guidelines
+- Increase `OTEL_MAX_QUEUE_SIZE` if you see frequent backpressure sleeps but have memory headroom.
+- Increase `FLUSH_EVERY_N_TRACES` (e.g. 5 or 10) to reduce flush overhead on very large runs; retain periodic flush to avoid root-span loss on abrupt exit.
+- Lower `OTEL_SCHEDULED_DELAY_MILLIS` for near real-time ingestion; raise it to batch more aggressively.
+- Adjust `EXPORT_QUEUE_SOFT_LIMIT` and `EXPORT_SLEEP_MS` together; a larger limit with a slightly longer sleep can smooth throughput without overloading the exporter.
+
+---
+
+**Legacy Note:** Earlier iterations duplicated the execution id in trace metadata; now it appears only once as root span metadata key `n8n.execution.id`.
+
+---
 
 Example (fish shell):
 

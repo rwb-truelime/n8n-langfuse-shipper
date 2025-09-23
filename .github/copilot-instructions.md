@@ -24,7 +24,7 @@ graph TD
 ## Key Invariants (Do Not Break)
 1. One n8n execution row (entity+data) → exactly one Langfuse trace.
 2. Deterministic identifiers:
-    - Trace id: `n8n-exec-<executionId>` (string tag; final OTel trace id is auto-generated per exporter rules but this string is embedded and used for deterministic span id salt).
+    - Trace id: `<executionId>` (stringified raw n8n execution primary key). Simplicity takes priority for human search in Langfuse. This project supports EXACTLY ONE n8n instance per Langfuse project; if you have multiple n8n instances, create separate Langfuse projects (distinct public/secret keys) to avoid id collisions.
     - Root span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:root"`).
     - Node span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:{node_name}:{run_index}"`).
 3. Execution id appears once only as root span metadata key: `n8n.execution.id` (not duplicated at trace metadata level).
@@ -174,7 +174,7 @@ A key pattern in n8n, especially with LangChain nodes, is an "Agent" node that u
 
 ### Trace Mapping
 - An `N8nExecutionRecord` maps to a single `LangfuseTrace`.
-- `LangfuseTrace.id` must be deterministic: `f"n8n-exec-{record.id}"`.
+- `LangfuseTrace.id` must be deterministic: `str(record.id)` (raw execution id as string). One n8n instance per Langfuse project is REQUIRED; do not mix multiple databases into one project or execution id collisions may occur.
 - A root `LangfuseSpan` is created to represent the entire execution. All top-level node spans are children of this root span.
 
 ### Span Mapping
