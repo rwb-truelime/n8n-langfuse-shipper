@@ -22,6 +22,30 @@ To avoid recurrent rendering / parse issues, ALL Mermaid diagrams in this reposi
 
 Violation of these guidelines should be treated like breaking an invariant—submit a corrective patch alongside any diagram change reverting to the simplified form.
 
+## Glossary (Authoritative Short Definitions)
+Concise definitions of recurring terms (use these exact meanings in code comments, docs, and tests). Adding a new conceptual term? – update here in same PR.
+
+* Agent Hierarchy: Parent-child relationship inferred from non-`main` workflow connections (`ai_tool`, `ai_languageModel`, `ai_memory`) making the agent span the parent.
+* Backpressure: Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) that triggers exporter flush + sleep (`EXPORT_SLEEP_MS`).
+* Binary Stripping: Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
+* Checkpoint: Persistent last processed execution id stored on successful export; guarantees idempotent resume.
+* Deterministic IDs: Stable UUIDv5 span ids and raw execution id as logical trace id; re-processing identical input yields identical structure and ids.
+* Execution (n8n execution row): Single joined `execution_entity` + `execution_data` record; maps to exactly one Langfuse trace.
+* Execution id: Raw integer primary key of the n8n execution row; appears only once as root span metadata `n8n.execution.id`.
+* Generation: Span classified as an LLM call via heuristics (`tokenUsage` presence OR provider substring) optionally with token usage and model metadata.
+* Human-readable Trace ID (OTLP): 32-hex trace id produced by `_build_human_trace_id` embedding zero‑padded execution id digits as suffix; distinct from logical trace id string.
+* Input Propagation: Injecting parent span raw output as child logical input when `inputOverride` absent.
+* Multimodality (Future): Planned binary/media upload phase replacing placeholders with Langfuse media tokens (feature-flag gated, not implemented).
+* NodeRun: Runtime execution instance of a workflow node (with timing, status, source chain info, outputs, error).
+* Observation Type: Semantic classification (agent/tool/chain/etc.) derived by `observation_mapper.py` fallback chain (exact → regex → category → default span).
+* Parent Resolution Precedence: Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
+* Pointer-Compressed Execution: Alternative list-based JSON encoding using index string references; reconstructed into canonical `runData` by `_decode_compact_pointer_execution`.
+* Root Span: Span representing entire execution; holds execution id metadata; parent of all top-level node spans.
+* runData: Canonical dict mapping node name → list[NodeRun] reconstructed or parsed from execution data JSON.
+* Truncation: Optional length limiting of stringified input/output fields when `TRUNCATE_FIELD_LEN > 0`; does not disable binary stripping.
+* Usage Extraction: Direct pass-through of `promptTokens`, `completionTokens`, `totalTokens` fields when present; never synthesizes totals.
+
+
 ## Big Picture Architecture
 The service operates as a standalone ETL (Extract, Transform, Load) process, designed for containerized, cron-based execution.
 
@@ -55,8 +79,6 @@ Canonical definitions live in `src/models/n8n.py`. Do NOT inline-edit model shap
 2.  **Transform:** Each execution record is transformed into a single Langfuse trace. The nodes within the execution are mapped to nested OpenTelemetry spans. This includes mapping specific AI node runs to Langfuse `Generation` objects via semantic attributes and handling multimodal (binary) data.
 3.  **Load:** The transformed trace and its spans are exported to the Langfuse OTLP endpoint using the OpenTelemetry SDK.
 Canonical definitions live in `src/models/langfuse.py`. These are the internal logical structures prior to OTLP span creation (trace, span, generation, usage). Extend with extreme caution: new fields demand tests & README alignment.
-## Key Invariants (Do Not Break)
-1. One n8n execution row (entity+data) → exactly one Langfuse trace.
 <!-- MEDIA ROADMAP START -->
 ## Media & Multimodality Roadmap
 Current (implemented): detection + placeholder redaction of large/binary payloads (see Binary Handling). Mapping layer remains PURE—no network calls for media.
@@ -73,16 +95,16 @@ Guardrails:
 * Any new env vars enabling upload require README + tests + here update in same PR.
 * A feature flag (future: `ENABLE_MEDIA_UPLOAD`) must default to disabled.
 <!-- MEDIA ROADMAP END -->
-   - Node span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:{node_name}:{run_index}"`).
+1. One n8n execution row (entity+data) maps to exactly one Langfuse trace.
+2. Node span id format: `UUIDv5(namespace=SPAN_NAMESPACE, name=f"{trace_id}:{node_name}:{run_index}")` (deterministic per node run index).
 3. execution id appears only once: root span metadata key `n8n.execution.id` (never duplicated elsewhere).
 4. All timestamps are timezone-aware UTC. Any naive datetime encountered is normalized to UTC (tests enforce no naive patterns). Never use `datetime.utcnow()`.
-5. Spans are emitted strictly in chronological order (NodeRun `startTime`) so parents precede children.
-* Export order mirrors creation order; parents precede children.
-7. Binary/base64 stripping ALWAYS applies. Truncation is opt-in (`TRUNCATE_FIELD_LEN=0` disables truncation but not binary stripping).
-8. Parsing failures still yield a root span; never drop an execution silently.
-9. All internal data structures defined with Pydantic models (validation + type safety mandatory).
-10. Database access is read-only (SELECTs only) and respects dynamic table prefix logic.
-11. Determinism: identical input rows yield identical span/trace ids & structures (aside from inherently varying runtime like sequence ordering which is stable by design).
+5. Spans are emitted strictly in chronological order (NodeRun `startTime`) so parents precede children; export order mirrors creation order.
+6. Binary/base64 stripping ALWAYS applies. Truncation is opt-in (`TRUNCATE_FIELD_LEN=0` disables truncation but not binary stripping).
+7. Parsing failures still yield a root span; never drop an execution silently.
+8. All internal data structures defined with Pydantic models (validation + type safety mandatory).
+9. Database access is read-only (SELECTs only) and respects dynamic table prefix logic.
+10. Determinism: identical input rows yield identical span/trace ids & structures (aside from inherently varying runtime like sequence ordering which is stable by design).
 
 ## Core Data Models (Pydantic)
 All internal data structures must be defined using Pydantic models for type safety and validation.
@@ -248,41 +270,31 @@ Additional implemented behavior:
 * Input propagation caching only size-guards when truncation active (`truncate_limit > 0`). When disabled, propagation always occurs.
 
 ### Observation Type Mapping
-- Use the `observation_mapper.py` module to classify each node based on its type and category. This determines the `LangfuseSpan.observation_type`.
- - Fallback chain (`map_node_to_observation_type`): (1) exact node type mapping → (2) category-based heuristic → (3) default "span". Additions require tests.
+Use the `observation_mapper.py` module to classify each node based on its type and category. See the later "Observation Type Mapping" section (deduplicated) for the authoritative fallback chain.
 
 ### Generation Mapping
- Use the `observation_mapper.py` module to classify each node based on its type and category. This determines the `LangfuseSpan.observation_type`.
- Fallback chain (`map_node_to_observation_type`): (1) exact node type mapping → (2) regex rule match (`REGEX_RULES`) → (3) category-based heuristic → (4) default "span". Additions or reorderings require updated tests & README.
-Heuristics (ordered):
-1. Presence of a `tokenUsage` object inside `run.data` (primary explicit signal).
-2. Fallback: node type contains provider substring (case-insensitive): `openai`, `anthropic`, `gemini`, `vertex`, `mistral`, `groq`, `gpt`, `cohere`.
+See the later "Generation Mapping" section for the current heuristics (deduplicated; outdated provider list removed here).
+
+### Generation Mapping (Authoritative)
+Heuristics (ordered, current implementation):
+1. Presence of a `tokenUsage` object inside `run.data` (explicit signal).
+2. Fallback: node type contains (case-insensitive) any of: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`.
+
+Notes:
+* Older generic markers like `vertex`, `gpt`, `cohere` are NOT presently used—adding them requires tests + README + instructions update.
+* Never infer a generation purely from output length or presence of text.
+* Extending the heuristic list requires updating `tests/test_generation_heuristic.py`.
 
 If matched:
-* Populate `LangfuseSpan.model` (provider-specific extraction when available else best-effort from node type/name).
-* Populate `LangfuseSpan.token_usage` mapping fields to `promptTokens`, `completionTokens`, `totalTokens` (derive total when both components present).
-* Shipper emits OTLP attributes: `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens`, `model`, `langfuse.observation.model.name`.
+* Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
+* `_extract_usage` passes through `promptTokens`, `completionTokens`, `totalTokens` exactly if present; it does NOT synthesize `totalTokens`.
+* OTLP exporter emits `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
-Never infer a generation purely from content length or presence of text. Add new provider heuristics only with matching tests.
-
-### Multimodality Mapping
-- This is a future requirement. The logic will be:
-    1.  **Detect:** Identify binary data fields (e.g., base64 strings in I/O).
- Heuristics (ordered, current implementation):
- 1. Presence of a `tokenUsage` object inside `run.data` (explicit signal).
- 2. Fallback: node type contains (case-insensitive) any of: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`.
-
- Notes:
- * Older generic markers like `vertex`, `gpt`, `cohere` are NOT presently used—adding them requires tests + README + instructions update.
- * Never infer a generation purely from output length or presence of text.
- * Extending the heuristic list requires updating `tests/test_generation_heuristic.py`.
-
- If matched:
- * Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
- * `_extract_usage` passes through `promptTokens`, `completionTokens`, `totalTokens` exactly if present; it does NOT synthesize `totalTokens`.
- * OTLP exporter emits `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
-    2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content.
-    3.  **Replace:** In the span's I/O field, replace the binary data with the Langfuse Media Token string (`@@@langfuseMedia:...`).
+### Multimodality Mapping (Future)
+- Phase not yet implemented (see Media & Multimodality Roadmap). Planned flow once enabled:
+    1. Detect binary fields.
+    2. Upload via Langfuse media API (feature flag gated).
+    3. Replace placeholders with `@@@langfuseMedia:<token>`; failures retain placeholders and do not abort trace export.
 
  **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
      - `langfuse.observation.type`
