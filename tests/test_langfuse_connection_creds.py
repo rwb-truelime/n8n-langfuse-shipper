@@ -20,8 +20,10 @@ with langfuse.start_as_current_span(
     ):
         pass
 
-    with langfuse.start_as_current_generation(
+    # Use new unified observation API (generation type) to avoid deprecated helper
+    with langfuse.start_as_current_observation(
         name="sample-generation",
+        as_type="generation",
         input="What is 2+2?",
         output="4",
         model="dummy-model",
