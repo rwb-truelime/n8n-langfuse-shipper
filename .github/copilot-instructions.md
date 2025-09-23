@@ -43,7 +43,7 @@ Concise definitions of recurring terms (use these exact meanings in code comment
 * Root Span: Span representing entire execution; holds execution id metadata; parent of all top-level node spans.
 * runData: Canonical dict mapping node name → list[NodeRun] reconstructed or parsed from execution data JSON.
 * Truncation: Optional length limiting of stringified input/output fields when `TRUNCATE_FIELD_LEN > 0`; does not disable binary stripping.
-* Usage Extraction: Direct pass-through of `promptTokens`, `completionTokens`, `totalTokens` fields when present; never synthesizes totals.
+* Usage Extraction: Normalize `tokenUsage` variants (promptTokens/completionTokens/totalTokens, prompt/completion/total, input/output/total) into canonical `input`, `output`, `total` counts (synthesizing `total` as input+output when absent).
 
 
 ## Big Picture Architecture
@@ -191,17 +191,9 @@ from pydantic import BaseModel, Field
 
 
 class LangfuseUsage(BaseModel):
-    promptTokens: Optional[int] = None
-    completionTokens: Optional[int] = None
-    totalTokens: Optional[int] = None
-
-
-class LangfuseGeneration(BaseModel):
-    span_id: str
-    model: Optional[str] = None
-    usage: Optional[LangfuseUsage] = None
-    input: Optional[Any] = None
-    output: Optional[Any] = None
+    input: Optional[int] = None
+    output: Optional[int] = None
+    total: Optional[int] = None
 
 
 class LangfuseSpan(BaseModel):
@@ -227,7 +219,6 @@ class LangfuseTrace(BaseModel):
     timestamp: datetime
     metadata: Dict[str, Any] = Field(default_factory=dict)
     spans: List[LangfuseSpan] = Field(default_factory=list)
-    generations: List[LangfuseGeneration] = Field(default_factory=list)
 ```
 
 ## Data Parsing & Resilience
@@ -287,7 +278,7 @@ Notes:
 
 If matched:
 * Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
-* `_extract_usage` passes through `promptTokens`, `completionTokens`, `totalTokens` exactly if present; it does NOT synthesize `totalTokens`.
+* `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
 * OTLP exporter emits `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
 ### Multimodality Mapping (Future)
@@ -299,9 +290,12 @@ If matched:
  **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
      - `langfuse.observation.type`
      - `model` & `langfuse.observation.model.name` (when `model` present)
-     - `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` (when present)
+     - `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` (from normalized `input`/`output`/`total`)
+     - `langfuse.observation.usage_details` (JSON string containing only present keys among `input`/`output`/`total`)
      - `langfuse.observation.status` (normalized status) when available
      - `langfuse.observation.metadata.*` (flattened span metadata)
+     - Root span only: `langfuse.as_root=true`
+     - Root span trace identity (when provided on `LangfuseTrace`): `langfuse.trace.user_id`, `langfuse.trace.session_id`, `langfuse.trace.tags` (JSON array), `langfuse.trace.input`, `langfuse.trace.output` (JSON serialized best-effort)
   (Removed: references to unused `langfuse.observation.level` / `status_message`).
 * `binary` objects: replace `data` with `"binary omitted"` and attach `_omitted_len`; retain other metadata fields (filename, mimeType, etc.).
 * Standalone base64 strings: replace with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <length> }`.
@@ -468,7 +462,7 @@ Reordering requires updating tests and this table.
 5. Infer inputs (unless overridden).
 6. Strip binary → (optional) truncate.
 7. Determine observation type & generation usage.
-8. Build spans & generation records.
+8. Build spans (generation classification lives on spans with `observation_type=="generation"`).
 9. Export (or dry-run) via OTLP.
 10. Update checkpoint (non dry-run). Root-only fallback still exported on parse failure.
 <!-- PIPELINE SUMMARY END -->

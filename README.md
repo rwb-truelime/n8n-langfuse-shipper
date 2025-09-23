@@ -60,8 +60,8 @@ Need more? Expand the detailed sections below.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
 - Input propagation: child span input inferred from parent’s last output when `inputOverride` absent.
-- Generation detection + token usage extraction (`tokenUsage` → `gen_ai.usage.*` and Langfuse generation listing).
-- OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`).
+- Generation detection + token usage extraction (`tokenUsage` variants normalized to input/output/total → `gen_ai.usage.*`).
+- OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.as_root`, optional trace identity fields `langfuse.trace.user_id|session_id|tags|input|output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
 - Auto-construction of `PG_DSN` from n8n style `.env` variables if not explicitly set.
@@ -292,9 +292,9 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Execution row | One trace (root span represents whole execution; trace name = workflow name, fallback `execution`) |
 | Node run | Child span (deterministic ID) |
 | Agent/Tool/LLM/Memory relationship | Child span parented to Agent span via `ai_*` connection types |
-| LLM / embedding node with token usage | Span + generation (usage + model attributes) |
+| LLM / embedding node with token usage | Single span classified as generation (usage + model attributes) |
 | Node type/category | Observation type (`agent`, `tool`, `chain`, `retriever`, etc.) via mapper |
-| Token usage (`tokenUsage`) | GenAI semantic attributes (`gen_ai.usage.*`) + Langfuse generation entry |
+| Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total) | Normalized to input/output/total then emitted as `gen_ai.usage.prompt_tokens|completion_tokens|total_tokens` |
 
 Parenting precedence order:
 1. Agent hierarchy (if node has an `ai_tool` / `ai_languageModel` / `ai_memory` edge to an agent, parent = agent span).
