@@ -158,7 +158,9 @@ def test_graph_fallback_parent_inference():
 
 
 def _agent_hierarchy_execution():
-    now = datetime.utcnow()
+    # Use timezone-aware UTC datetime (explicit timezone to avoid naive patterns).
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     # Connections: Tool1 -> HAL9000 (ai_tool), LLM1 -> HAL9000 (ai_languageModel), Memory1 -> HAL9000 (ai_memory)
     connections = {
         "Tool1": {"ai_tool": [[{"node": "HAL9000"}]]},
@@ -229,9 +231,12 @@ def test_agent_hierarchy_parenting():
     root = next(s for s in trace.spans if s.parent_id is None)
     agent = spans_by_name["HAL9000"]
     assert agent.parent_id == root.id
-    for child in ["Tool1", "LLM1", "Memory1"]:
-        assert spans_by_name[child].parent_id == agent.id, f"{child} not parented to agent"
-        assert spans_by_name[child].metadata.get("n8n.agent.parent") == "HAL9000"
+    expected_link_types = {"Tool1": "ai_tool", "LLM1": "ai_languageModel", "Memory1": "ai_memory"}
+    for child, link_type in expected_link_types.items():
+        child_span = spans_by_name[child]
+        assert child_span.parent_id == agent.id, f"{child} not parented to agent"
+        assert child_span.metadata.get("n8n.agent.parent") == "HAL9000"
+        assert child_span.metadata.get("n8n.agent.link_type") == link_type
     llm_span = spans_by_name["LLM1"]
     gen_ids = {g.span_id for g in trace.generations}
     assert llm_span.id in gen_ids

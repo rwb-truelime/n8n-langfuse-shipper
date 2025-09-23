@@ -3,38 +3,57 @@
 ## Purpose
 This project is a Python-based microservice to perform a high-throughput backfill of historical n8n execution data from a PostgreSQL database to Langfuse. The service will map n8n's execution model to the Langfuse data model and transmit the data via the OpenTelemetry (OTLP) endpoint. The focus is on correctness, performance, and robustness for large-scale data migration.
 
+## Document Sync & Version Policy
+This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift. Last major sync: 2025-09-23.
+
 ## Big Picture Architecture
 The service operates as a standalone ETL (Extract, Transform, Load) process, designed for containerized, cron-based execution.
 
 ```mermaid
 graph TD
-    A[PostgreSQL Database] -->|1. Read Executions| B{n8n-langfuse-shipper}
+<!-- KEY INVARIANTS START -->
+## Key Invariants (Do Not Break)
     B -->|2. Map to OTel Traces| C[Langfuse OTLP Endpoint]
 
     subgraph "Python Service (Docker)"
         B
+<!-- KEY INVARIANTS END -->
     end
 
 ```
-
+Canonical definitions live in `src/models/n8n.py`. Do NOT inline-edit model shapes here—change the code + tests + then update this narrative only if semantics (fields / meaning) shift. The models cover execution entity metadata, workflow graph (`WorkflowData`), and runtime node runs (`NodeRun`).
 1.  **Extract:** The service connects to the n8n PostgreSQL database and streams execution records (`n8n_execution_entity` joined with `n8n_execution_data`).
 2.  **Transform:** Each execution record is transformed into a single Langfuse trace. The nodes within the execution are mapped to nested OpenTelemetry spans. This includes mapping specific AI node runs to Langfuse `Generation` objects via semantic attributes and handling multimodal (binary) data.
 3.  **Load:** The transformed trace and its spans are exported to the Langfuse OTLP endpoint using the OpenTelemetry SDK.
-
+Canonical definitions live in `src/models/langfuse.py`. These are the internal logical structures prior to OTLP span creation (trace, span, generation, usage). Extend with extreme caution: new fields demand tests & README alignment.
 ## Key Invariants (Do Not Break)
 1. One n8n execution row (entity+data) → exactly one Langfuse trace.
-2. Deterministic identifiers:
-    - Trace id: `<executionId>` (stringified raw n8n execution primary key). Simplicity takes priority for human search in Langfuse. This project supports EXACTLY ONE n8n instance per Langfuse project; if you have multiple n8n instances, create separate Langfuse projects (distinct public/secret keys) to avoid id collisions.
-    - Root span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:root"`).
-    - Node span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:{node_name}:{run_index}"`).
-3. Execution id appears once only as root span metadata key: `n8n.execution.id` (not duplicated at trace metadata level).
-4. Spans are emitted in chronological order (by NodeRun `startTime`) so parents (agents) exist before their children.
-5. Mapper is pure (no network / DB writes) → safe for dry-run and replay (idempotent).
-6. **No random UUIDs**; always deterministic UUIDv5 or derived values.
-7. Truncation disabled by default (`TRUNCATE_FIELD_LEN=0`). Binary/base64 stripping ALWAYS applies.
-8. If parsing of execution data fails, still emit a root span (never abort entire batch silently).
-9. All internal structures use Pydantic (validation / type safety).
-10. Database access must remain read-only (SELECTs only).
+<!-- MEDIA ROADMAP START -->
+## Media & Multimodality Roadmap
+Current (implemented): detection + placeholder redaction of large/binary payloads (see Binary Handling). Mapping layer remains PURE—no network calls for media.
+
+Planned (not yet implemented; MUST undergo human review before coding):
+1. Collect original binary prior to stripping (buffer or streaming source handle) in a staging structure outside the mapper.
+2. Post-mapping media upload phase (separate module) calls Langfuse REST `POST /api/public/media`.
+3. Replace placeholder objects with media tokens of form `@@@langfuseMedia:<token>`.
+4. On upload failure: retain original placeholder; never fail entire trace.
+5. Circuit breaker: consecutive failures short-circuit uploads temporarily.
+
+Guardrails:
+* DO NOT add upload logic to `mapper.py` (purity invariant).
+* Any new env vars enabling upload require README + tests + here update in same PR.
+* A feature flag (future: `ENABLE_MEDIA_UPLOAD`) must default to disabled.
+<!-- MEDIA ROADMAP END -->
+   - Node span id: UUIDv5(namespace=SPAN_NAMESPACE, name=`f"{trace_id}:{node_name}:{run_index}"`).
+3. execution id appears only once: root span metadata key `n8n.execution.id` (never duplicated elsewhere).
+4. All timestamps are timezone-aware UTC. Any naive datetime encountered is normalized to UTC (tests enforce no naive patterns). Never use `datetime.utcnow()`.
+5. Spans are emitted strictly in chronological order (NodeRun `startTime`) so parents precede children.
+* Export order mirrors creation order; parents precede children.
+7. Binary/base64 stripping ALWAYS applies. Truncation is opt-in (`TRUNCATE_FIELD_LEN=0` disables truncation but not binary stripping).
+8. Parsing failures still yield a root span; never drop an execution silently.
+9. All internal data structures defined with Pydantic models (validation + type safety mandatory).
+10. Database access is read-only (SELECTs only) and respects dynamic table prefix logic.
+11. Determinism: identical input rows yield identical span/trace ids & structures (aside from inherently varying runtime like sequence ordering which is stable by design).
 
 ## Core Data Models (Pydantic)
 All internal data structures must be defined using Pydantic models for type safety and validation.
@@ -51,12 +70,15 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-class NodeRunSource(BaseModel):
-    previousNode: Optional[str] = None
-    previousNodeRun: Optional[int] = None
-
-
-class NodeRun(BaseModel):
+- No new dependencies without `pyproject.toml` update + rationale.
+- Preserve deterministic UUIDv5 namespace + seed formats (ID immutability). Changing trace id embedding format requires test + doc updates.
+- Mapper stays pure (no network / DB writes). Media upload must reside in a separate phase/module.
+- Do NOT move execution id outside root span or duplicate it (breaks single-source invariant).
+- Never introduce `datetime.utcnow()` (timezone invariant). All timestamps must be UTC-aware.
+- Backwards compatibility: never rename/remove public model fields without migration notes.
+- Update README + this file for new env vars / CLI flags / behavior changes in the same PR.
+- NOTICE & LICENSE untouched aside from annual year updates.
+- New metadata keys: add tests asserting presence & absence where appropriate.
     startTime: int
     executionTime: int
     executionStatus: str
@@ -71,7 +93,8 @@ class ResultData(BaseModel):
 
 
 class ExecutionDataDetails(BaseModel):
-    resultData: ResultData
+<!-- PIPELINE SUMMARY START -->
+## Quick Pipeline Summary
 
 
 class ExecutionData(BaseModel):
@@ -82,13 +105,16 @@ class WorkflowNode(BaseModel):
     name: str
     type: str
     category: Optional[str] = None
+<!-- PIPELINE SUMMARY END -->
 
 
 class WorkflowData(BaseModel):
-    id: str
-    name: str
-    nodes: List[WorkflowNode] = Field(default_factory=list)
-    connections: Dict[str, Any] = Field(default_factory=dict)
+## Failure & Resilience Philosophy
+* Parsing issues (`_build_execution_data` / pointer decoding) result in a root-only trace (never dropped execution). Error context captured in root span metadata or error field if available.
+* Database transient errors retried (exponential backoff) without duplicating already-exported spans (checkpoint only advances after successful export).
+* Exporter backpressure uses soft-limit sleep to avoid memory growth.
+* Mapping phase must not raise uncaught exceptions that terminate the stream except for irrecoverable configuration errors (e.g., missing credentials).
+* Future: dead-letter queue for repeated mapping failures; until then, log with clear structured fields.
 
 
 class N8nExecutionRecord(BaseModel):
@@ -185,7 +211,7 @@ A key pattern in n8n, especially with LangChain nodes, is an "Agent" node that u
     2.  **Sequential (Runtime):** If not part of a hierarchy, use `run.source[0].previousNode` to find the immediate predecessor. Link to the exact run index (`previousNodeRun`) if available, otherwise link to the last seen span for that predecessor node.
     3.  **Sequential (Static Fallback):** If runtime `source` is missing, use a reverse-edge map built from `workflowData.connections` to infer the most likely parent from the static graph.
     4.  **Root Fallback:** If no parent can be determined, link to the root execution span.
-- **I/O Propagation:** If a `NodeRun` lacks `inputOverride`, its logical input is inferred from the cached raw output of the resolved parent node: `{ "inferredFrom": <parent>, "data": <parent_raw_output> }`.
+- **I/O Propagation:** If a `NodeRun` lacks `inputOverride`, its logical input is inferred from the cached raw output of the resolved parent node: `{ "inferredFrom": <parent>, "data": <parent_raw_output> }`. Propagation always occurs; size guard limiting cached output applies only when truncation is enabled (`TRUNCATE_FIELD_LEN > 0`).
 
 Additional implemented behavior:
 * Reverse graph fallback marks metadata `n8n.graph.inferred_parent=true`.
@@ -194,15 +220,21 @@ Additional implemented behavior:
 
 ### Observation Type Mapping
 - Use the `observation_mapper.py` module to classify each node based on its type and category. This determines the `LangfuseSpan.observation_type`.
+ - Fallback chain (`map_node_to_observation_type`): (1) exact node type mapping → (2) category-based heuristic → (3) default "span". Additions require tests.
 
 ### Generation Mapping
-- The mapper identifies LLM node runs via heuristics (`_detect_generation`) and extracts token usage (`_extract_usage`).
-- The `LangfuseSpan` is populated with `model` and `token_usage` data. The shipper will use these to set OTel attributes (`gen_ai.usage.*`, `model`), allowing Langfuse to classify the span as a `generation`.
+The mapper identifies LLM/generation spans via conservative heuristics (`_detect_generation`) then extracts token usage (`_extract_usage`).
 
-Heuristics (keep conservative):
-1. Presence of `tokenUsage` inside `run.data`.
-2. Fallback: node type contains provider substrings (OpenAi, Anthropic, Gemini, Mistral, Groq, etc.).
-`_extract_usage` maps token fields to `LangfuseUsage` and later OTLP attributes.
+Heuristics (ordered):
+1. Presence of a `tokenUsage` object inside `run.data` (primary explicit signal).
+2. Fallback: node type contains provider substring (case-insensitive): `openai`, `anthropic`, `gemini`, `vertex`, `mistral`, `groq`, `gpt`, `cohere`.
+
+If matched:
+* Populate `LangfuseSpan.model` (provider-specific extraction when available else best-effort from node type/name).
+* Populate `LangfuseSpan.token_usage` mapping fields to `promptTokens`, `completionTokens`, `totalTokens` (derive total when both components present).
+* Shipper emits OTLP attributes: `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens`, `model`, `langfuse.observation.model.name`.
+
+Never infer a generation purely from content length or presence of text. Add new provider heuristics only with matching tests.
 
 ### Multimodality Mapping
 - This is a future requirement. The logic will be:
@@ -212,14 +244,14 @@ Heuristics (keep conservative):
 
 ### Current Binary / Large Payload Handling (Implemented Now)
 Detection heuristics:
-* Standard n8n `binary` object (nested item with `mimeType` and a large `data` field).
-* Any long (≥200 chars) base64-looking string (regex) or base64 starting with `/9j/` (JPEG magic) anywhere in the structure.
+* Standard n8n `binary` object (has `mimeType` + large `data`).
+* Base64-like strings ≥200 chars that match regex AND are not uniform repetition (reduces false positives) OR begin with known magic like `/9j/` (JPEG).
 
 Replacement strategy:
-* In `binary` objects: replace `data` string with `"binary omitted"` + `_omitted_len` while preserving mime/file metadata.
-* Standalone base64 strings replaced with: `{ "_binary": true, "note": "binary omitted", "_omitted_len": <length> }`.
+* `binary` objects: replace `data` with `"binary omitted"` and attach `_omitted_len`; retain other metadata fields (filename, mimeType, etc.).
+* Standalone base64 strings: replace with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <length> }`.
 
-Always occurs regardless of truncation settings (prevents enormous payloads). Planned future hook: optional media upload converting placeholders to Langfuse media tokens.
+Binary stripping is unconditional (independent of truncation). Helpers: `_likely_binary_b64`, `_contains_binary_marker`, `_strip_binary_payload`. Future media upload will swap placeholders for `@@@langfuseMedia:<token>`.
 
 ## OpenTelemetry Shipper
 The `shipper.py` module converts the internal `LangfuseTrace` model into OTel spans and exports them.
@@ -253,6 +285,7 @@ Additional notes:
 - `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`.
 - `LOG_LEVEL`, `FETCH_BATCH_SIZE`, `TRUNCATE_FIELD_LEN` (0 disables truncation; >0 enables).
 - `REQUIRE_EXECUTION_METADATA` (bool): only include executions having at least one row in `<prefix>execution_metadata` with `executionId = e.id`.
+ - Reliability / backpressure tuning (optional): `FLUSH_EVERY_N_TRACES`, `OTEL_MAX_QUEUE_SIZE`, `OTEL_MAX_EXPORT_BATCH_SIZE`, `OTEL_SCHEDULED_DELAY_MILLIS`, `EXPORT_QUEUE_SOFT_LIMIT`, `EXPORT_SLEEP_MS`.
 
 ### Environment Precedence Rules
 1. `PG_DSN` (if non-empty) overrides component variables.
@@ -261,11 +294,16 @@ Additional notes:
 4. CLI flags override env values for that invocation.
 
 ## Development Plan (Next Iterations)
-1.  **Agent Hierarchy Mapping:** Implement the hierarchical parent-child linking logic using the `connections` object. This is the highest priority.
-2.  **Media Handling:** Implement the full multimodality mapping workflow (detect, upload, replace).
-3.  **Error Handling:** Add robust retry mechanisms for media uploads and a dead-letter queue for executions that fail to map.
-4.  **Performance Tuning:** Investigate parallel processing of batches and asynchronous span exporting.
-5.  **Advanced Filtering:** Add CLI flags to filter executions by status, time window, or workflow ID.
+1. Media upload workflow (binary placeholder → upload → media token substitution).
+2. Advanced filtering flags (status, workflow, time window, id bounds).
+3. Parallel / async export pipeline (maintain deterministic ordering).
+4. PII/sensitive field redaction (configurable; test enforced).
+5. Dead-letter queue for persistent mapping failures.
+6. Provider-specific model normalization improvements.
+7. Metrics / Prometheus endpoint (optional instrumentation).
+8. Adaptive backpressure metrics (dynamic sleep based on exporter latency).
+9. Selective path-based truncation overrides.
+10. Circuit breaker for media upload failures.
 
 ## Key Files & Project Structure
 ```
@@ -295,6 +333,7 @@ n8n-langfuse-shipper/
 - **Binary Stripping:** Always on; do not remove without tests + docs.
 - **Parent Resolution Order:** Agent hierarchy → runtime sequential exact run → runtime sequential last span → static graph reverse-edge → root.
 - **Input Propagation:** Uses cached parent output unless explicit `inputOverride` present.
+ - Parent resolution precedence is fixed (agent hierarchy → runtime exact run → runtime last span → static reverse edge → root). Do not reorder without updating tests.
 - **Generation Detection:** Keep conservative; update tests when heuristics change.
 - **Metadata Keys:** Additions require justification + test coverage.
 
@@ -308,6 +347,8 @@ All spans (optional context):
 - `n8n.agent.parent`, `n8n.agent.link_type`
 - `n8n.truncated.input`, `n8n.truncated.output`
 
+Span status normalization: `LangfuseSpan.status` (if set) is derived from the logical success/error outcome and is distinct from the raw `n8n.node.execution_status` metadata value.
+
 ## Testing Guidance
 Add / update tests when:
 1. Changing parent resolution logic (each precedence path covered).
@@ -315,16 +356,54 @@ Add / update tests when:
 3. Modifying generation detection or usage extraction.
 4. Updating pointer-compressed decoding.
 5. Changing truncation / propagation coupling.
-Each new metadata key must appear in at least one assertion.
+Each new metadata key must appear in at least one assertion; forbidden duplications (e.g., execution id outside root span) should also be asserted negative.
+
+### Pointer-Compressed Decoding (Detailed)
+1. Detect top-level list form; if not list → return None.
+2. Treat indices referenced as strings as pointers to other list entries.
+3. Recursively expand with memoization; cycle detection aborts and returns None.
+4. Search reconstructed structure for candidate `executionData.resultData.runData` paths.
+5. Validate `runData` shape (dict[str, list[NodeRun-like]]). On success build model; else fallback to normal path probing.
+
+### Timezone Policy
+* All datetimes exported to OTLP are timezone-aware UTC.
+* Naive datetimes from DB/JSON are localized to UTC (without offset shifting beyond assuming naive == UTC).
+* `datetime.utcnow()` forbidden; enforcement test scans `src/` and `tests/`.
+
+### Testing Contract Overview
+| Area | Guarantee | Representative Tests (examples) |
+|------|-----------|----------------------------------|
+| Deterministic IDs | Same input → identical trace & span ids | `test_deterministic_ids.py` |
+| Parent Resolution | Precedence order enforced (agent → runtime exact → runtime last → static reverse → root) | `test_parent_resolution_*` |
+| Binary Stripping | All large/base64 & binary objects redacted, placeholders stable | `test_binary_stripping.py` |
+| Truncation & Propagation | Truncation size guard only active when >0; propagation always otherwise | `test_truncation_propagation.py` |
+| Generation Detection | Only spans meeting heuristics classified; token usage mapped | `test_generation_detection.py` |
+| Pointer Decoding | Pointer-compressed arrays reconstructed or cleanly fallback | `test_pointer_decoding.py` |
+| Timezone Enforcement | No naive datetimes; normalization to UTC | `test_timezone_awareness.py` |
+| Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
+
+If adding a new behavior category, extend this table and create/modify tests accordingly.
+
+### Parent Resolution Precedence (Authoritative Table)
+| Priority | Strategy | Description | Metadata Signals |
+|----------|----------|-------------|------------------|
+| 1 | Agent Hierarchy | Non-`main` connection (`ai_tool`, `ai_languageModel`, `ai_memory`) makes agent parent | `n8n.agent.parent`, `n8n.agent.link_type` |
+| 2 | Runtime Sequential (Exact Run) | previousNode + previousNodeRun points to exact span | `n8n.node.previous_node_run` |
+| 3 | Runtime Sequential (Last Seen) | previousNode without run index → last emitted span for node | `n8n.node.previous_node` |
+| 4 | Static Reverse Graph Fallback | Reverse edge from workflow connections | `n8n.graph.inferred_parent=true` |
+| 5 | Root Fallback | No parent resolved → root span | (none) |
+
+Reordering requires updating tests and this table.
 
 ## Contribution Guardrails (AI & Humans)
 - No new dependencies without `pyproject.toml` update + rationale.
-- Preserve deterministic UUIDv5 namespace string and format of name seeds.
-- Mapper stays pure (no network / DB writes). Future media upload lives in separate module.
-- Backwards compatibility: never rename/remove public model fields without migration notes.
-- Update README + this file for new env vars / CLI flags.
-- NOTICE & LICENSE untouched aside from annual year updates.
+* Preserve deterministic UUIDv5 namespace + seed formats (ID immutability).
+* Mapper stays pure (no network / DB writes). Media upload logic must remain outside mapper.
+* Backwards compatibility: never rename/remove public model fields without migration notes.
+* Update README + this file for new env vars / CLI flags / behavior changes in same PR.
+* NOTICE & LICENSE untouched aside from annual year updates.
 
+<!-- PIPELINE SUMMARY START -->
 ## Quick Pipeline Summary
 1. Fetch execution rows (optional metadata existence filter).
 2. Parse (standard / alternative paths / pointer-compressed).
@@ -335,25 +414,37 @@ Each new metadata key must appear in at least one assertion.
 7. Determine observation type & generation usage.
 8. Build spans & generation records.
 9. Export (or dry-run) via OTLP.
-10. Update checkpoint (non dry-run).
+10. Update checkpoint (non dry-run). Root-only fallback still exported on parse failure.
+<!-- PIPELINE SUMMARY END -->
 
 ## Performance Notes
 - Streaming limits memory usage; only a batch of rows in memory.
 - Caching only last outputs reduces accumulation risk.
 - Potential optimization: batch OTLP export or async spans while preserving parent ordering.
 
-## Planned Media Upload Hook (Future)
-Hook after binary stripping, before OTLP export:
-1. Identify placeholder binary markers.
-2. Upload original content (if still accessible) → receive media token.
-3. Replace placeholder with `@@@langfuseMedia:<token>`.
-4. On failure: log & retain placeholder (never break entire execution).
+## Media Upload (Future)
+See consolidated Media & Multimodality Roadmap above. No upload logic implemented yet; placeholders remain.
 
 ## Failure & Resilience Philosophy
-- Non-critical parsing errors downgrade to root-only traces.
-- Database transient errors retried (exponential backoff).
-- Mapping should never raise fatal exceptions that stop the stream unless configuration is invalid (e.g., DSN missing).
-- (Future) Dead-letter queue for repeated mapper failures.
+* Root-only fallback: malformed / missing runData still produces a trace with execution root span.
+* DB transient errors: retried with exponential backoff; checkpoint only advances after successful export (prevents duplication).
+* Backpressure: soft-limit queue metrics induce flush + sleep preventing memory growth while preserving ordering.
+* Purity: mapper must not introduce network I/O or writes (idempotent replay guarantee).
+* Fatal stop conditions limited to configuration errors (missing credentials, invalid DSN format).
+* Planned: dead-letter queue for repeated mapping failures (retain error context without blocking pipeline).
+* Logging: structured logging required for parse failures (`error`, `execution_id`, `phase`).
+
+### Regression Checklist
+1. Deterministic IDs unchanged.
+2. execution id only on root span.
+3. UTC timezone invariants respected (`test_timezone_awareness` green).
+4. Parent precedence unchanged or tests updated.
+5. Binary placeholders unchanged (size / marker keys stable) unless tests updated.
+6. Generation heuristics stable (token usage mapping preserved).
+7. Pointer decoding passes existing scenarios.
+8. New env vars documented & tested.
+9. No mapper network calls added.
+10. Metadata key additions/removals reflected in tests + README.
 
 ---
 This document is the authoritative contract. Any significant code change altering behavior here must include an update to this file in the same PR.

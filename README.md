@@ -14,6 +14,41 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 
 ---
 
+## Quick Start
+
+Get running in under a minute.
+
+1. Install (Python 3.12+):
+	```bash
+	pip install -e .[dev]
+	```
+2. Set the essential environment (fish shell shown – replace values):
+	```fish
+	set -x PG_DSN postgresql://n8n:n8n@localhost:5432/n8n  # or use component vars
+	set -x LANGFUSE_HOST https://cloud.langfuse.com        # optional if using default cloud host
+	set -x LANGFUSE_PUBLIC_KEY lf_pk_xxx
+	set -x LANGFUSE_SECRET_KEY lf_sk_xxx
+	```
+	(Alternatively set `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD` instead of `PG_DSN`.)
+3. Dry run (map only, nothing sent):
+	```bash
+	python -m src backfill --limit 25 --dry-run
+	```
+4. Real export (removes `--dry-run`):
+	```bash
+	python -m src backfill --limit 100 --no-dry-run
+	```
+5. Resume later (automatic checkpoint file `.backfill_checkpoint`): just re-run the command; or start after a known id:
+	```bash
+	python -m src backfill --start-after-id 12345 --limit 200 --no-dry-run
+	```
+
+Need more? Expand the detailed sections below.
+
+---
+<details>
+<summary><strong>Features Implemented (Iteration 4)</strong></summary>
+
 ## Features Implemented (Iteration 4)
 
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
@@ -35,7 +70,21 @@ Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑c
 - File-based checkpointing for resumability.
 - Explicit schema/prefix override passed from settings to extractor (blank `DB_TABLE_PREFIX` respected, no silent fallback) plus startup diagnostic log of resolved tables.
 
+Additional documentation-aligned capabilities (Iteration 4 additions & clarifications):
+- Timezone normalization: all timestamps coerced to timezone-aware UTC early; naive datetimes are forbidden (see Timezone Policy section + tests).
+- Human-readable OTLP trace id embedding: exporter derives a 32-hex trace id embedding execution id digits (see `test_trace_id_embedding.py`).
+- Parent precedence table (agent hierarchy → runtime exact run → runtime last run → static reverse graph → root) formally documented; changes require test + instructions update.
+- Backpressure & flush strategy: forced `force_flush()` after `FLUSH_EVERY_N_TRACES` and soft backlog sleep when `EXPORT_QUEUE_SOFT_LIMIT` exceeded.
+- Input propagation semantics: child input inferred from resolved parent output unless `inputOverride` present (documented + tested).
+- Pointer-compressed (`list` + index pointer) execution decoding detailed and resilient; failure falls back gracefully to path probing.
+- Regression checklist enumerated in `.github/copilot-instructions.md` to prevent silent drift (IDs, execution id placement, timezone, binary stripping, generation heuristics, pointer decoding, env vars, purity).
+- Binary handling invariants: unconditional stripping independent of truncation (clarified in docs & tests).
+
+Guardrail: Any new environment variable (e.g. future media upload flags) MUST be added to this Feature list, the Configuration Overview tables, `.github/copilot-instructions.md`, and have corresponding tests in the same PR.
+
 ---
+
+</details>
 
 ## Architecture
 
@@ -55,6 +104,7 @@ Key points:
 - Pure transform layer builds internal Pydantic models before any OTLP emission (testable & dry-run friendly).
 - Deterministic IDs ensure idempotent re-processing (safe restarts & checkpoint replay).
 - Generation detection augments spans with GenAI semantic attributes so Langfuse auto-classifies them.
+- All timestamps are normalized to timezone-aware UTC early (naive inputs get `tzinfo=UTC`) ensuring consistent ordering & avoiding deprecated naive datetime usage.
 
 ---
 
@@ -73,6 +123,9 @@ pytest -q
 ```
 
 ---
+
+<details>
+<summary><strong>Configuration Overview</strong></summary>
 
 ## Configuration Overview
 
@@ -201,6 +254,8 @@ If both component vars and `PG_DSN` are set, `PG_DSN` takes precedence.
 Prefix semantics: If `DB_TABLE_PREFIX` is unset, it defaults to `n8n_`. If it is present but blank (`DB_TABLE_PREFIX=`), no prefix is applied (tables expected as `execution_entity`, `execution_data`).
 
 ---
+
+</details>
 
 ## CLI Usage
 
@@ -360,6 +415,101 @@ Run focused test:
 pytest tests/test_db_stream.py::test_stream_reads_rows_without_modification -q
 ```
 
+---
+
+## Testing
+
+This project treats the mapping & export invariants as a contract. Each invariant has one or more tests. When you change mapper / shipper behavior, update or add tests in the same PR (and update `.github/copilot-instructions.md`).
+
+### Test Suites Overview
+
+| File | Focus | Key Invariants Covered |
+|------|-------|------------------------|
+| `tests/test_mapper.py` | Core mapping (determinism, truncation flag, runtime & graph parenting, agent hierarchy link types, generation w/ tokenUsage) | Deterministic span IDs; parent precedence; generation detection; truncation flags; agent `n8n.agent.link_type` |
+| `tests/test_binary_and_truncation.py` | Binary/base64 stripping + truncation interplay | Binary stripping always on (even when truncation disabled); truncation flags coexist with placeholders |
+| `tests/test_input_propagation.py` | Inferred input propagation & size guard | Parent output inference; size guard blocking when truncation active |
+| `tests/test_pointer_decoding.py` | Pointer‑compressed array decoding | Resilient decoding of compact execution format |
+| `tests/test_trace_and_metadata.py` | Root metadata + deterministic IDs across truncation settings | Root-only `n8n.execution.id`; span ID stability irrespective of truncation |
+| `tests/test_generation_heuristic.py` | Provider substring heuristic | Generation detection without explicit `tokenUsage` |
+| `tests/test_error_status_and_observation.py` | Error normalization | Span status becomes `error` when `NodeRun.error` set |
+| `tests/test_trace_id_embedding.py` | Human-readable trace id embedding | 32-hex trace id suffix matches execution id digits; non-digit fallback |
+| `tests/test_observation_mapping.py` | Observation type classification breadth | Exact sets, regex fallbacks, category fallback semantics |
+| `tests/test_negative_inferred_parent.py` | Negative inferred-parent case | `n8n.graph.inferred_parent` absent when runtime source present |
+| `tests/test_config_settings.py` | Settings precedence & prefix semantics | DSN construction; prefix unset/empty/custom behavior |
+| `tests/test_db_stream.py` (integration) | DB streaming (requires real DB) | Read-only access; start_after ordering |
+
+### Running All Tests
+
+```fish
+pytest -q
+```
+
+### Fast Feedback (Core Logic Only)
+Skip integration DB test (marks it skipped automatically if `PG_DSN` missing):
+```fish
+pytest -q -k 'not stream_reads_rows_without_modification and not stream_respects_start_after_id'
+```
+
+### Run A Single File
+```fish
+pytest tests/test_input_propagation.py -q
+```
+
+### Run A Single Test
+```fish
+pytest tests/test_trace_id_embedding.py::test_trace_id_embedding_simple -q
+```
+
+### Integration Database Test
+Provide a real n8n Postgres with data and set `PG_DSN`:
+```fish
+set -x PG_DSN postgresql://user:pass@localhost:5432/n8n
+pytest tests/test_db_stream.py -q
+```
+If no rows exist, the test will skip gracefully.
+
+### Adding New Tests (Checklist)
+When you add or alter behavior:
+1. New metadata key? -> Add assertions locating at least one span with that key.
+2. New parent resolution rule? -> Add a scenario that exercises the new precedence plus a negative control.
+3. Change to binary stripping? -> Add case containing old vs new structure to prevent regressions.
+4. New observation type / mapping rule? -> Extend `test_observation_mapping.py` with representative node type.
+5. New environment setting? -> Add coverage in `test_config_settings.py` and document in README + instructions.
+
+### Determinism Guidance
+Run the same mapper input twice and compare ordered span IDs and generation list lengths. Any difference demands investigation. See `test_trace_and_metadata.py` for the pattern used.
+
+### Timezone & Temporal Data Policy
+All datetimes must be timezone-aware (UTC). Rationale:
+1. Prevent silent drift / ambiguity when comparing timestamps across systems.
+2. Avoid deprecated `datetime.utcnow()` usage (Python deprecation trajectory).
+3. Ensure OTLP exporters receive consistent RFC3339/ISO8601 semantics.
+
+Enforcement:
+- `map_execution_to_langfuse` normalizes any naive `startedAt` / `stoppedAt` to `timezone.utc`.
+- Test `tests/test_timezone_awareness.py::test_no_naive_datetime_patterns` scans both `src/` and `tests/` directories for forbidden patterns.
+- Forbidden patterns: `datetime.utcnow(`, bare `datetime.now()` with no timezone argument, or `datetime.now(<args>)` missing `timezone.utc` or `tz=`.
+- Allowed patterns: `datetime.now(timezone.utc)`, `datetime.now(tz=timezone.utc)`, or any timezone-aware object sourced from DB drivers.
+- Intentional naive usage inside a test fixture can be whitelisted by adding an inline comment marker `# allow-naive-datetime` on the same line.
+
+If you introduce code manipulating timestamps:
+- Always preserve existing timezone info; only attach `timezone.utc` if `tzinfo is None`.
+- If you ingest external (user) timestamps, parse them with a library that preserves/attaches timezone offsets (future enhancement may add strict parsing utilities).
+
+### Debug Tips
+| Symptom | Likely Cause | How to Isolate |
+|---------|-------------|----------------|
+| Missing child span | Parent resolution precedence mismatch | Add a minimal two-node fixture replicating timing & sources |
+| Input not inferred | Parent output not cacheable (not dict) OR size guard | Re-run with `truncate_limit=None` in test and assert difference |
+| Trace id not readable | Old exporter logic still cached | Ensure you restarted the process; `_build_human_trace_id` tests should pass |
+| Binary leaked in span output | New payload shape not covered by stripping | Create failing test with exact shape then patch `_strip_binary_payload` |
+
+### Coverage Philosophy
+We prioritize behavior regression detection over line coverage metrics. Each invariant has at least one direct assertion. Avoid asserting on incidental formatting (e.g., not the entire JSON string), prefer presence/absence of semantic markers and flags.
+
+---
+
+
 ### Pre-commit Hooks
 
 Install git hooks (includes NOTICE guard):
@@ -404,6 +554,35 @@ This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future en
 6. Extended observation classification & multimodal span enrichment.
 7. Optional tagging of agent root spans (`n8n.agent.root=true`) and richer lineage metadata.
 
+### Documentation Sync Summary (Iteration 4)
+The following sections were added or substantively updated in `.github/copilot-instructions.md` during Iteration 4 and are reflected here:
+
+Added:
+- Timezone Normalization / Policy
+- Human Trace ID Embedding
+- Parent Precedence Table
+- Input Propagation Semantics
+- Backpressure & Flush Strategy
+- Detailed Pointer Decoding Algorithm
+- Regression Checklist
+
+Updated:
+- Generation Detection Heuristics
+- Observation Mapping Clarifications
+- Binary Handling (unconditional stripping statement)
+- Media / Multimodal roadmap consolidation
+- Development Plan (future iterations reordered / clarified)
+
+Hardened:
+- Guardrails around purity (mapper has no network I/O)
+- Environment variable completeness & precedence semantics
+- Testing obligations (each invariant requires at least one assertion)
+
+Consolidated:
+- Media + multimodality roadmap (single authoritative location)
+
+If any future change affects these documented areas, update both this README and `.github/copilot-instructions.md` plus add/adjust tests in the same pull request.
+
 ---
 
 ## Contributing
@@ -413,6 +592,10 @@ This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future en
 3. Run formatting/lint: `ruff check --fix .`.
 4. Ensure tests pass.
 5. Open PR with context (data volume considerations welcome).
+
+### Development: Timezone Policy Recap
+Do not introduce naive datetimes. Use `datetime.now(timezone.utc)` instead of `datetime.utcnow()`. If you receive a naive datetime from an external library, explicitly attach `timezone.utc` before further processing. The CI test `test_timezone_awareness.py` will fail your PR if forbidden patterns are detected. For rare cases where a naive datetime is intentionally required for a test scenario, append `# allow-naive-datetime` to that specific line.
+
 
 ---
 
