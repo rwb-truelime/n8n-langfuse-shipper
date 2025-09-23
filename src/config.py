@@ -65,6 +65,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Phase 1 export reliability controls
+    FLUSH_EVERY_N_TRACES: int = Field(
+        default=1, description="Force flush the exporter after every N traces (1 = after each trace)"
+    )
+    OTEL_MAX_QUEUE_SIZE: int = Field(
+        default=10000, description="BatchSpanProcessor max queue size for spans"
+    )
+    OTEL_MAX_EXPORT_BATCH_SIZE: int = Field(
+        default=512, description="Maximum number of spans per export batch"
+    )
+    OTEL_SCHEDULED_DELAY_MILLIS: int = Field(
+        default=200, description="BatchSpanProcessor scheduled delay in milliseconds before a flush"
+    )
+    EXPORT_QUEUE_SOFT_LIMIT: int = Field(
+        default=5000,
+        description="Approximate soft limit of spans queued (created - last_flushed_estimate) before introducing a short sleep",
+    )
+    EXPORT_SLEEP_MS: int = Field(
+        default=75,
+        description="Sleep duration in milliseconds when soft queue limit exceeded (backpressure throttle)",
+    )
+
     @model_validator(mode="after")
     def build_dsn_if_needed(self):  # type: ignore[override]
         if not self.PG_DSN and self.DB_POSTGRESDB_HOST and self.DB_POSTGRESDB_DATABASE:

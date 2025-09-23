@@ -11,7 +11,7 @@ from .config import get_settings
 from .db import ExecutionSource
 from .models.n8n import N8nExecutionRecord, WorkflowData, ExecutionData, ExecutionDataDetails, ResultData
 from .mapper import map_execution_to_langfuse
-from .shipper import export_trace
+from .shipper import export_trace, shutdown_exporter
 from .checkpoint import load_checkpoint, store_checkpoint
 
 app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
@@ -323,12 +323,25 @@ def backfill(
         None,
         help="If set, only process executions that have a metadata row (execution_metadata) with key='executionId' and value matching the execution id.",
     ),
+    export_queue_soft_limit: Optional[int] = typer.Option(
+        None,
+        help="Override EXPORT_QUEUE_SOFT_LIMIT (approx backlog spans before applying sleep)",
+    ),
+    export_sleep_ms: Optional[int] = typer.Option(
+        None,
+        help="Override EXPORT_SLEEP_MS (sleep duration in ms when backlog exceeds soft limit)",
+    ),
 ):
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
         typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
     typer.echo("Starting backfill with mapping...")
+    # Apply optional runtime overrides for export backpressure tuning
+    if export_queue_soft_limit is not None:
+        settings.EXPORT_QUEUE_SOFT_LIMIT = export_queue_soft_limit  # type: ignore[attr-defined]
+    if export_sleep_ms is not None:
+        settings.EXPORT_SLEEP_MS = export_sleep_ms  # type: ignore[attr-defined]
     # Determine metadata filter flag: CLI overrides env/settings
     require_meta_flag = (
         require_execution_metadata
@@ -409,6 +422,8 @@ def backfill(
         )
 
     asyncio.run(_run())
+    # Ensure exporter flush & shutdown for short-lived process reliability
+    shutdown_exporter()
 
 
 if __name__ == "__main__":  # pragma: no cover
