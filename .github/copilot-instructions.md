@@ -223,8 +223,8 @@ Additional implemented behavior:
  - Fallback chain (`map_node_to_observation_type`): (1) exact node type mapping → (2) category-based heuristic → (3) default "span". Additions require tests.
 
 ### Generation Mapping
-The mapper identifies LLM/generation spans via conservative heuristics (`_detect_generation`) then extracts token usage (`_extract_usage`).
-
+ Use the `observation_mapper.py` module to classify each node based on its type and category. This determines the `LangfuseSpan.observation_type`.
+ Fallback chain (`map_node_to_observation_type`): (1) exact node type mapping → (2) regex rule match (`REGEX_RULES`) → (3) category-based heuristic → (4) default "span". Additions or reorderings require updated tests & README.
 Heuristics (ordered):
 1. Presence of a `tokenUsage` object inside `run.data` (primary explicit signal).
 2. Fallback: node type contains provider substring (case-insensitive): `openai`, `anthropic`, `gemini`, `vertex`, `mistral`, `groq`, `gpt`, `cohere`.
@@ -239,17 +239,32 @@ Never infer a generation purely from content length or presence of text. Add new
 ### Multimodality Mapping
 - This is a future requirement. The logic will be:
     1.  **Detect:** Identify binary data fields (e.g., base64 strings in I/O).
+ Heuristics (ordered, current implementation):
+ 1. Presence of a `tokenUsage` object inside `run.data` (explicit signal).
+ 2. Fallback: node type contains (case-insensitive) any of: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`.
+
+ Notes:
+ * Older generic markers like `vertex`, `gpt`, `cohere` are NOT presently used—adding them requires tests + README + instructions update.
+ * Never infer a generation purely from output length or presence of text.
+ * Extending the heuristic list requires updating `tests/test_generation_heuristic.py`.
+
+ If matched:
+ * Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
+ * `_extract_usage` passes through `promptTokens`, `completionTokens`, `totalTokens` exactly if present; it does NOT synthesize `totalTokens`.
+ * OTLP exporter emits `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
     2.  **Upload:** Use the Langfuse REST API (`POST /api/public/media`) to upload the binary content.
     3.  **Replace:** In the span's I/O field, replace the binary data with the Langfuse Media Token string (`@@@langfuseMedia:...`).
 
-### Current Binary / Large Payload Handling (Implemented Now)
-Detection heuristics:
-* Standard n8n `binary` object (has `mimeType` + large `data`).
-* Base64-like strings ≥200 chars that match regex AND are not uniform repetition (reduces false positives) OR begin with known magic like `/9j/` (JPEG).
-
-Replacement strategy:
+ **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
+     - `langfuse.observation.type`
+     - `model` & `langfuse.observation.model.name` (when `model` present)
+     - `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.total_tokens` (when present)
+     - `langfuse.observation.status` (normalized status) when available
+     - `langfuse.observation.metadata.*` (flattened span metadata)
+  (Removed: references to unused `langfuse.observation.level` / `status_message`).
 * `binary` objects: replace `data` with `"binary omitted"` and attach `_omitted_len`; retain other metadata fields (filename, mimeType, etc.).
 * Standalone base64 strings: replace with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <length> }`.
+ 12. Human-readable OTLP trace id embedding: exporter derives a deterministic 32-hex trace id ending with zero-padded execution id digits (function `_build_human_trace_id`). The logical `LangfuseTrace.id` stays the raw execution id string. Changing this requires updating tests (`test_trace_id_embedding.py`), README, and this file simultaneously.
 
 Binary stripping is unconditional (independent of truncation). Helpers: `_likely_binary_b64`, `_contains_binary_marker`, `_strip_binary_payload`. Future media upload will swap placeholders for `@@@langfuseMedia:<token>`.
 
