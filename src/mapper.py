@@ -36,6 +36,29 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
 _BASE64_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")  # long pure base64 chunk
 
 
+def _likely_binary_b64(s: str, *, context_key: str | None = None, in_binary_block: bool = False) -> bool:
+    """Heuristic to decide if a long string is really base64 (binary) vs just long text.
+
+    Prior implementation flagged *any* long base64-like string (including 'x'*500) which caused
+    benign large textual fields to be stripped as binary, preventing truncation flags from firing
+    (test expectation). We now require a minimum diversity of characters to reduce false positives.
+    """
+    if len(s) < 200:
+        return False
+    if not _BASE64_RE.match(s) and not s.startswith("/9j/"):  # jpeg magic check retained
+        return False
+    # Uniform strings (e.g. 'AAAAA...') are still valid base64 but often indicate padding or test data.
+    # We previously filtered them out; restore stripping when:
+    #  - they appear under a key hinting at base64/binary (data, rawBase64, file, binary)
+    #  - or they are inside an explicit binary block
+    diversity = len(set(s[:120]))
+    if diversity < 4 and not in_binary_block:
+        lowered = (context_key or "").lower()
+        if not any(h in lowered for h in ("data", "base64", "file", "binary")):
+            return False
+    return True
+
+
 def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
     """Detect probable binary base64 blobs.
     Signals true when:
@@ -64,7 +87,7 @@ def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
                 if _contains_binary_marker(item, depth + 1):
                     return True
         elif isinstance(d, str):
-            if (len(d) > 200 and (_BASE64_RE.match(d) or d.startswith("/9j/"))):
+            if _likely_binary_b64(d):
                 return True
     except Exception:
         return False
@@ -103,7 +126,7 @@ def _strip_binary_payload(obj: Any) -> Any:
                         else:
                             new_bin[bk] = bv
                     new_d[k] = new_bin
-                elif isinstance(v, str) and (len(v) > 200 and (_BASE64_RE.match(v) or v.startswith("/9j/"))):
+                elif isinstance(v, str) and _likely_binary_b64(v, context_key=k):
                     new_d[k] = {"_binary": True, "note": placeholder_text, "_omitted_len": len(v)}
                 else:
                     new_d[k] = _strip_binary_payload(v)
@@ -111,7 +134,7 @@ def _strip_binary_payload(obj: Any) -> Any:
         if isinstance(obj, list):
             out_list = []
             for x in obj:
-                if isinstance(x, str) and (len(x) > 200 and (_BASE64_RE.match(x) or x.startswith("/9j/"))):
+                if isinstance(x, str) and _likely_binary_b64(x):
                     out_list.append({"_binary": True, "note": placeholder_text, "_omitted_len": len(x)})
                 else:
                     out_list.append(_strip_binary_payload(x))
@@ -171,12 +194,17 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
     # NOTE: This shipper supports ONE n8n instance per Langfuse project. If you aggregate multiple instances
     # into a single Langfuse project, raw numeric execution ids may collide. Use separate Langfuse projects per instance.
     trace_id = str(record.id)
+    # Normalize potentially naive datetimes to UTC (defensive: DB drivers / external inputs may yield naive objects)
+    started_at = record.startedAt if record.startedAt.tzinfo is not None else record.startedAt.replace(tzinfo=timezone.utc)
+    stopped_raw = record.stoppedAt
+    if stopped_raw is not None and stopped_raw.tzinfo is None:
+        stopped_raw = stopped_raw.replace(tzinfo=timezone.utc)
     # New naming convention: trace name is just the workflow name (fallback 'execution').
     base_name = record.workflowData.name or "execution"
     trace = LangfuseTrace(
         id=trace_id,
         name=base_name,
-        timestamp=record.startedAt,
+        timestamp=started_at,
         metadata={
             "workflowId": record.workflowId,
             "status": record.status,
@@ -195,8 +223,8 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
         id=root_span_id,
         trace_id=trace_id,
         name=base_name,
-        start_time=record.startedAt,
-        end_time=record.stoppedAt or (record.startedAt + timedelta(milliseconds=1)),
+        start_time=started_at,
+        end_time=stopped_raw or (started_at + timedelta(milliseconds=1)),
         observation_type="span",
         metadata={"n8n.execution.id": record.id},
     )
