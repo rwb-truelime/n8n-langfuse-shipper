@@ -47,8 +47,8 @@ def test_dsn_construction_and_prefix_semantics(monkeypatch):
         "PG_DSN": "postgresql://u@h:5432/db2",
         # purposely omit DB_TABLE_PREFIX
     })
-    # Accept either internal None (unset) or empty string injected by a .env providing explicit blank.
-    assert s.DB_TABLE_PREFIX in (None, "")
+    # Expect documented default prefix value 'n8n_' when unset.
+    assert s.DB_TABLE_PREFIX == "n8n_"
 
     # Case 4: Empty prefix -> no prefix
     s = _reload_with_env({

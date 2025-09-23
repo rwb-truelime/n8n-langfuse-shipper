@@ -17,7 +17,6 @@ from .models.n8n import N8nExecutionRecord, NodeRun
 from .models.langfuse import (
     LangfuseTrace,
     LangfuseSpan,
-    LangfuseGeneration,
     LangfuseUsage,
 )
 from .observation_mapper import map_node_to_observation_type
@@ -179,14 +178,56 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
 
 
 def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
+    """Normalize various tokenUsage shapes to canonical input/output/total.
+
+    Accepted legacy keys inside run.data.tokenUsage:
+      - promptTokens / completionTokens / totalTokens
+      - prompt / completion / total
+      - input / output / total (already normalized)
+    Synthesis:
+      - If total missing but input & output present -> total = input + output
+      - If only legacy prompt/completion present -> map directly.
+    No negative or contradictory reconciliation; if conflicting representations differ,
+    preference order: input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
+    """
     tu = node_run.data.get("tokenUsage") if node_run.data else None
     if not isinstance(tu, dict):
         return None
-    return LangfuseUsage(
-        promptTokens=tu.get("promptTokens"),
-        completionTokens=tu.get("completionTokens"),
-        totalTokens=tu.get("totalTokens"),
-    )
+    # Gather candidates
+    input_val = tu.get("input")
+    output_val = tu.get("output")
+    total_val = tu.get("total")
+    # Legacy verbose keys
+    p_tokens = tu.get("promptTokens")
+    c_tokens = tu.get("completionTokens")
+    t_tokens = tu.get("totalTokens")
+    # Alternate short legacy keys
+    p_short = tu.get("prompt")
+    c_short = tu.get("completion")
+    t_short = tu.get("total")  # already captured
+
+    # Reconcile precedence (normalized first)
+    if input_val is None:
+        if p_tokens is not None:
+            input_val = p_tokens
+        elif p_short is not None:
+            input_val = p_short
+    if output_val is None:
+        if c_tokens is not None:
+            output_val = c_tokens
+        elif c_short is not None:
+            output_val = c_short
+    if total_val is None:
+        if t_tokens is not None:
+            total_val = t_tokens
+        elif input_val is not None and output_val is not None:
+            try:
+                total_val = int(input_val) + int(output_val)  # type: ignore[arg-type]
+            except Exception:
+                pass
+    if input_val is None and output_val is None and total_val is None:
+        return None
+    return LangfuseUsage(input=input_val, output=output_val, total=total_val)
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
@@ -383,7 +424,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             metadata=metadata,
             error=run.error,
             model=run.data.get("model") if isinstance(run.data, dict) else None,
-            token_usage=usage,
+            usage=usage,
             status=status_norm,
         )
         trace.spans.append(span)
@@ -397,16 +438,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
                 last_output_data[node_name] = raw_output_data = raw_output_obj
         except Exception:
             pass
-        if is_generation:
-            trace.generations.append(
-                LangfuseGeneration(
-                    span_id=span_id,
-                    model=span.model,
-                    usage=usage,
-                    input=span.input,
-                    output=span.output,
-                )
-            )
+        # No separate generations list; generation classification lives on the span itself.
     return trace
 
 

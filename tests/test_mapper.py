@@ -55,6 +55,7 @@ def test_deterministic_ids_and_generation_detection():
                 startTime=1_700_000_100,
                 executionTime=120,
                 executionStatus="success",
+                # Provide legacy keys to verify normalization to input/output/total
                 data={"tokenUsage": {"promptTokens": 5, "completionTokens": 7, "totalTokens": 12}},
                 source=[NodeRunSource(previousNode="First", previousNodeRun=0)],
             )
@@ -68,8 +69,11 @@ def test_deterministic_ids_and_generation_detection():
     assert ids1 == ids2, "Deterministic span IDs changed between runs"
     # Generation detection for LLM node
     llm_span = next(s for s in trace1.spans if s.name == "LLM")
-    assert llm_span.token_usage is not None
-    assert any(g.span_id == llm_span.id for g in trace1.generations)
+    assert llm_span.usage is not None
+    assert llm_span.usage.input == 5
+    assert llm_span.usage.output == 7
+    assert llm_span.usage.total == 12
+    assert llm_span.observation_type == "generation"
 
 
 def test_parent_resolution_with_previous_node_run():
@@ -238,5 +242,4 @@ def test_agent_hierarchy_parenting():
         assert child_span.metadata.get("n8n.agent.parent") == "HAL9000"
         assert child_span.metadata.get("n8n.agent.link_type") == link_type
     llm_span = spans_by_name["LLM1"]
-    gen_ids = {g.span_id for g in trace.generations}
-    assert llm_span.id in gen_ids
+    assert llm_span.observation_type == "generation"

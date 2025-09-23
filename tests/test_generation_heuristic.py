@@ -54,8 +54,6 @@ def test_generation_detection_by_type_only():
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "AnthropicModel")
-    # Should classify as generation despite no explicit tokenUsage
-    # The mapper currently sets observation_type to 'generation' only when _detect_generation True and obs_type guess none.
-    # For safety, assert either generation span OR generation entry present.
-    assert any(g.span_id == span.id for g in trace.generations), "Expected generation entry for provider heuristic"
+    # Should classify as generation despite no explicit tokenUsage; generations list removed
+    assert span.observation_type == "generation"
 

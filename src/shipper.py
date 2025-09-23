@@ -86,15 +86,25 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
         span_ot.set_attribute("model", span_model.model)
     if span_model.status:
         span_ot.set_attribute("langfuse.observation.status", span_model.status)
-    if span_model.token_usage:
-        if span_model.token_usage.promptTokens is not None:
-            span_ot.set_attribute("gen_ai.usage.prompt_tokens", span_model.token_usage.promptTokens)
-        if span_model.token_usage.completionTokens is not None:
-            span_ot.set_attribute(
-                "gen_ai.usage.completion_tokens", span_model.token_usage.completionTokens
-            )
-        if span_model.token_usage.totalTokens is not None:
-            span_ot.set_attribute("gen_ai.usage.total_tokens", span_model.token_usage.totalTokens)
+    if span_model.usage:
+        if span_model.usage.input is not None:
+            span_ot.set_attribute("gen_ai.usage.prompt_tokens", span_model.usage.input)
+        if span_model.usage.output is not None:
+            span_ot.set_attribute("gen_ai.usage.completion_tokens", span_model.usage.output)
+        if span_model.usage.total is not None:
+            span_ot.set_attribute("gen_ai.usage.total_tokens", span_model.usage.total)
+        # Emit consolidated JSON usage_details with only present keys (Langfuse parity)
+        usage_details = {}
+        if span_model.usage.input is not None:
+            usage_details["input"] = span_model.usage.input
+        if span_model.usage.output is not None:
+            usage_details["output"] = span_model.usage.output
+        if span_model.usage.total is not None:
+            usage_details["total"] = span_model.usage.total
+        # Only set if at least one key present
+        if usage_details:
+            import json as _json
+            span_ot.set_attribute("langfuse.observation.usage_details", _json.dumps(usage_details, separators=(",", ":")))
     # Basic metadata mapping
     for k, v in (span_model.metadata or {}).items():
         if v is not None:
@@ -167,6 +177,28 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     for k, v in trace_model.metadata.items():
         root_span.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
     root_span.set_attribute("langfuse.trace.name", trace_model.name)
+    # Mark root span explicitly
+    root_span.set_attribute("langfuse.as_root", True)
+    # Trace identity / classification fields (only if provided)
+    if trace_model.user_id is not None:
+        root_span.set_attribute("langfuse.trace.user_id", trace_model.user_id)
+    if trace_model.session_id is not None:
+        root_span.set_attribute("langfuse.trace.session_id", trace_model.session_id)
+    if trace_model.tags:
+        import json as _json
+        root_span.set_attribute("langfuse.trace.tags", _json.dumps(trace_model.tags, separators=(",", ":")))
+    if trace_model.trace_input is not None:
+        import json as _json
+        try:
+            root_span.set_attribute("langfuse.trace.input", _json.dumps(trace_model.trace_input, separators=(",", ":")))
+        except Exception:
+            root_span.set_attribute("langfuse.trace.input", str(trace_model.trace_input))
+    if trace_model.trace_output is not None:
+        import json as _json
+        try:
+            root_span.set_attribute("langfuse.trace.output", _json.dumps(trace_model.trace_output, separators=(",", ":")))
+        except Exception:
+            root_span.set_attribute("langfuse.trace.output", str(trace_model.trace_output))
     wf_id_val = trace_model.metadata.get("workflowId")
     if wf_id_val is not None:
         root_span.set_attribute("langfuse.workflow.id", wf_id_val)

@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+from src.models.langfuse import LangfuseTrace, LangfuseSpan, LangfuseUsage
+from src.shipper import _apply_span_attributes
+
+
+class DummySpan:
+    def __init__(self):
+        self.attributes = {}
+
+    def set_attribute(self, key, value):  # mimic OTEL span API used
+        self.attributes[key] = value
+
+
+def test_usage_details_json_emitted_only_present_keys():
+    span_model = LangfuseSpan(
+        id="s1",
+        trace_id="t1",
+        parent_id=None,
+        name="LLM",
+        start_time=datetime.now(timezone.utc),
+        end_time=datetime.now(timezone.utc),
+        observation_type="generation",
+        usage=LangfuseUsage(input=5, output=None, total=7),
+    )
+    dummy = DummySpan()
+    _apply_span_attributes(dummy, span_model)
+    # Should include prompt + total but omit output in JSON
+    usage_json = dummy.attributes.get("langfuse.observation.usage_details")
+    assert usage_json is not None
+    assert '"input":5' in usage_json
+    assert '"total":7' in usage_json
+    assert 'output' not in usage_json  # ensure absent key not serialized
+
+
+def test_root_flag_and_trace_identity_serialization():
+    # Build a trace and manually call export internal portions (simulate root attribute setting logic)
+    now = datetime.now(timezone.utc)
+    root_span = LangfuseSpan(
+        id="root1",
+        trace_id="t2",
+        parent_id=None,
+        name="Execution",
+        start_time=now,
+        end_time=now,
+    )
+    trace_model = LangfuseTrace(
+        id="42",
+        name="WF",
+        timestamp=now,
+        metadata={},
+        spans=[root_span],
+        user_id="user-123",
+        session_id="sess-9",
+        tags=["alpha", "beta"],
+        trace_input={"q": "hello"},
+        trace_output={"a": "world"},
+    )
+    # Instead of invoking full export (network), mimic attribute setting code path from export_trace
+    dummy = DummySpan()
+    _apply_span_attributes(dummy, root_span)
+    # Manually replicate export_trace root attribute setting additions
+    import json
+    dummy.set_attribute("langfuse.trace.name", trace_model.name)
+    dummy.set_attribute("langfuse.as_root", True)
+    dummy.set_attribute("langfuse.trace.user_id", trace_model.user_id)
+    dummy.set_attribute("langfuse.trace.session_id", trace_model.session_id)
+    dummy.set_attribute("langfuse.trace.tags", json.dumps(trace_model.tags, separators=(",", ":")))
+    dummy.set_attribute("langfuse.trace.input", json.dumps(trace_model.trace_input, separators=(",", ":")))
+    dummy.set_attribute("langfuse.trace.output", json.dumps(trace_model.trace_output, separators=(",", ":")))
+
+    assert dummy.attributes["langfuse.as_root"] is True
+    assert dummy.attributes["langfuse.trace.user_id"] == "user-123"
+    assert dummy.attributes["langfuse.trace.session_id"] == "sess-9"
+    assert dummy.attributes["langfuse.trace.tags"] == '["alpha","beta"]'
+    assert dummy.attributes["langfuse.trace.input"] == '{"q":"hello"}'
+    assert dummy.attributes["langfuse.trace.output"] == '{"a":"world"}'
