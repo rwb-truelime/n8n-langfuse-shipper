@@ -6,6 +6,7 @@ attribute enrichment and media handling comes later.
 from __future__ import annotations
 
 import base64
+import time
 import logging
 from typing import Dict
 from datetime import datetime
@@ -15,7 +16,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
-from opentelemetry.trace import NonRecordingSpan, set_span_in_context
+from opentelemetry.trace import NonRecordingSpan, set_span_in_context, SpanContext, TraceFlags, TraceState
 
 from .models.langfuse import LangfuseTrace, LangfuseSpan
 from .config import Settings
@@ -65,7 +66,14 @@ def _init_otel(settings: Settings) -> None:
         }
     )
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            exporter,
+            max_queue_size=settings.OTEL_MAX_QUEUE_SIZE,
+            max_export_batch_size=settings.OTEL_MAX_EXPORT_BATCH_SIZE,
+            schedule_delay_millis=settings.OTEL_SCHEDULED_DELAY_MILLIS,
+        )
+    )
     trace.set_tracer_provider(provider)
     _initialized = True
     logger.info("Initialized OTLP exporter for Langfuse endpoint %s", endpoint)
@@ -96,6 +104,26 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
         span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
 
 
+_trace_export_count = 0
+_total_spans_created = 0
+_last_flushed_spans_created = 0
+
+
+def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
+    """Return (int_trace_id, hex_string) embedding the decimal execution id digits.
+
+    OTel requires a 16-byte (32 hex char) trace id. We embed the raw decimal digits at the end
+    and left-pad with zeros. This keeps the execution id visually searchable (suffix match)
+    while remaining spec compliant.
+    """
+    digits = ''.join(ch for ch in execution_id_str if ch.isdigit()) or '0'
+    if len(digits) > 32:
+        # Very unlikely (n8n execution ids won't be this long); keep last 32 digits
+        digits = digits[-32:]
+    hex_str = digits.rjust(32, '0')  # still valid hex (digits only)
+    return int(hex_str, 16), hex_str
+
+
 def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool = True) -> None:
     """Export a LangfuseTrace via OTLP.
 
@@ -109,40 +137,96 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     _init_otel(settings)
     tracer = trace.get_tracer(__name__)
 
-    # mapping of span id -> context for parenting
-    ctx_lookup: Dict[str, object] = {}
-    # Ensure root first (simple ordering assumption: root is first element)
-    for span_model in trace_model.spans:
-        parent_ctx = None
-        if span_model.parent_id and span_model.parent_id in ctx_lookup:
-            from opentelemetry.trace import SpanContext  # local import to avoid circular
-            parent_span_context_obj = ctx_lookup[span_model.parent_id]
-            if isinstance(parent_span_context_obj, SpanContext):
-                parent_ctx = set_span_in_context(NonRecordingSpan(parent_span_context_obj))
-        start_ns = int(span_model.start_time.timestamp() * 1e9)
-        end_ns = int(span_model.end_time.timestamp() * 1e9)
+    # Keep root span open until after children finish to reduce risk of dropped root under load
+    if not trace_model.spans:
+        return
+    global _trace_export_count
+    root_model = trace_model.spans[0]
+    # Build deterministic human-searchable trace id: 000...<executionId>
+    try:
+        int_trace_id, hex_trace_id = _build_human_trace_id(trace_model.id)
+        # Derive a deterministic parent span id seed from the hex trace id
+        import hashlib
+        parent_seed = hashlib.sha256((hex_trace_id + ':parent').encode()).hexdigest()[:16]
+        parent_span_id = int(parent_seed, 16)
+        parent_sc = SpanContext(
+            trace_id=int_trace_id,
+            span_id=parent_span_id,
+            is_remote=True,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+            trace_state=TraceState(),
+        )
+        parent_ctx = set_span_in_context(NonRecordingSpan(parent_sc))
+    except Exception:  # pragma: no cover - fallback safety
+        parent_ctx = None  # type: ignore
+    start_ns_root = int(root_model.start_time.timestamp() * 1e9)
+    end_ns_root = int(root_model.end_time.timestamp() * 1e9)
+    root_span = tracer.start_span(name=root_model.name, start_time=start_ns_root, context=parent_ctx)  # type: ignore[arg-type]
+    _apply_span_attributes(root_span, root_model)
+    # trace-level attributes
+    for k, v in trace_model.metadata.items():
+        root_span.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
+    root_span.set_attribute("langfuse.trace.name", trace_model.name)
+    wf_id_val = trace_model.metadata.get("workflowId")
+    if wf_id_val is not None:
+        root_span.set_attribute("langfuse.workflow.id", wf_id_val)
+    if root_model.input is not None:
+        root_span.set_attribute("langfuse.observation.input", str(root_model.input))
+    if root_model.output is not None:
+        root_span.set_attribute("langfuse.observation.output", str(root_model.output))
+    ctx_lookup: Dict[str, SpanContext] = {root_model.id: root_span.get_span_context()}
+
+    # Children
+    for child in trace_model.spans[1:]:
+        # Resolve parent span context (default to root if missing / None)
+        if child.parent_id and child.parent_id in ctx_lookup:
+            parent_span_context = ctx_lookup[child.parent_id]
+        else:
+            parent_span_context = root_span.get_span_context()
+        parent_ctx = set_span_in_context(NonRecordingSpan(parent_span_context))
+        start_ns = int(child.start_time.timestamp() * 1e9)
+        end_ns = int(child.end_time.timestamp() * 1e9)
         span_ot = tracer.start_span(
-            name=span_model.name,
+            name=child.name,
             context=parent_ctx,  # type: ignore[arg-type]
             start_time=start_ns,
         )
-        _apply_span_attributes(span_ot, span_model)
-        # Optionally attach (possibly truncated) input/output as attributes for visibility
-        if span_model.input is not None:
-            span_ot.set_attribute("langfuse.observation.input", str(span_model.input))
-        if span_model.output is not None:
-            span_ot.set_attribute("langfuse.observation.output", str(span_model.output))
-        # Set trace-level attributes on root
-        if span_model.parent_id is None:
-            for k, v in trace_model.metadata.items():
-                span_ot.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
-            # executionId removed from metadata; root span already has n8n.execution.id via original span metadata
-            span_ot.set_attribute("langfuse.trace.name", trace_model.name)
-            wf_id_val = trace_model.metadata.get("workflowId")
-            if wf_id_val is not None:
-                span_ot.set_attribute("langfuse.workflow.id", wf_id_val)
+        _apply_span_attributes(span_ot, child)
+        if child.input is not None:
+            span_ot.set_attribute("langfuse.observation.input", str(child.input))
+        if child.output is not None:
+            span_ot.set_attribute("langfuse.observation.output", str(child.output))
         span_ot.end(end_time=end_ns)
-        ctx_lookup[span_model.id] = span_ot.get_span_context()
+        ctx_lookup[child.id] = span_ot.get_span_context()
+
+    # End root last
+    root_span.end(end_time=end_ns_root)
+
+    global _total_spans_created, _last_flushed_spans_created
+    _trace_export_count += 1
+    _total_spans_created += len(trace_model.spans)
+    flushed_this_cycle = False
+    if _trace_export_count % max(1, settings.FLUSH_EVERY_N_TRACES) == 0:
+        try:
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, "force_flush"):
+                provider.force_flush()  # type: ignore[attr-defined]
+                _last_flushed_spans_created = _total_spans_created
+                flushed_this_cycle = True
+        except Exception:  # pragma: no cover
+            logger.debug("Error forcing flush", exc_info=True)
+    # Backpressure: approximate unflushed backlog
+    backlog = _total_spans_created - _last_flushed_spans_created
+    if backlog > settings.EXPORT_QUEUE_SOFT_LIMIT:
+        sleep_s = max(0, settings.EXPORT_SLEEP_MS) / 1000.0
+        logger.debug(
+            "Backpressure sleep: backlog=%d soft_limit=%d sleep_ms=%d flushed_now=%s",
+            backlog,
+            settings.EXPORT_QUEUE_SOFT_LIMIT,
+            settings.EXPORT_SLEEP_MS,
+            flushed_this_cycle,
+        )
+        time.sleep(sleep_s)
 
 
 def shutdown_exporter():  # pragma: no cover - simple shutdown hook

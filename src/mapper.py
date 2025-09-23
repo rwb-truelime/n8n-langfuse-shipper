@@ -167,8 +167,10 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
-    # Keep deterministic trace id for idempotency; retain existing pattern to avoid breaking historical IDs.
-    trace_id = f"n8n-exec-{record.id}"
+    # Trace id is now exactly the n8n execution id (string). Simplicity & direct searchability in Langfuse UI.
+    # NOTE: This shipper supports ONE n8n instance per Langfuse project. If you aggregate multiple instances
+    # into a single Langfuse project, raw numeric execution ids may collide. Use separate Langfuse projects per instance.
+    trace_id = str(record.id)
     # New naming convention: trace name is just the workflow name (fallback 'execution').
     base_name = record.workflowData.name or "execution"
     trace = LangfuseTrace(
