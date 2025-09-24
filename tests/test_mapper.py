@@ -165,11 +165,15 @@ def _agent_hierarchy_execution():
     # Use timezone-aware UTC datetime (explicit timezone to avoid naive patterns).
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    # Connections: Tool1 -> HAL9000 (ai_tool), LLM1 -> HAL9000 (ai_languageModel), Memory1 -> HAL9000 (ai_memory)
+    # Connections (pattern-based): all ai_* types should parent to agent
+    # Tool1 -> HAL9000 (ai_tool), LLM1 -> HAL9000 (ai_languageModel), Memory1 -> HAL9000 (ai_memory)
+    # Parser1 -> HAL9000 (ai_outputParser), Retriever1 -> HAL9000 (ai_retriever)
     connections = {
         "Tool1": {"ai_tool": [[{"node": "HAL9000"}]]},
         "LLM1": {"ai_languageModel": [[{"node": "HAL9000"}]]},
         "Memory1": {"ai_memory": [[{"node": "HAL9000"}]]},
+        "Parser1": {"ai_outputParser": [[{"node": "HAL9000"}]]},
+        "Retriever1": {"ai_retriever": [[{"node": "HAL9000"}]]},
     }
     runData = {
         "HAL9000": [
@@ -204,6 +208,22 @@ def _agent_hierarchy_execution():
                 data={"memory": "state"},
             )
         ],
+        "Parser1": [
+            NodeRun(
+                startTime=int(now.timestamp() * 1000) + 25,
+                executionTime=8,
+                executionStatus="success",
+                data={"parsed": True},
+            )
+        ],
+        "Retriever1": [
+            NodeRun(
+                startTime=int(now.timestamp() * 1000) + 18,
+                executionTime=12,
+                executionStatus="success",
+                data={"retrieved": [1, 2, 3]},
+            )
+        ],
     }
     record = N8nExecutionRecord(
         id=333,
@@ -219,6 +239,8 @@ def _agent_hierarchy_execution():
                 WorkflowNode(name="Tool1", type="n8n-ai.tool"),
                 WorkflowNode(name="LLM1", type="n8n-ai.languageModel"),
                 WorkflowNode(name="Memory1", type="n8n-ai.memory"),
+                WorkflowNode(name="Parser1", type="n8n-ai.outputParser"),
+                WorkflowNode(name="Retriever1", type="n8n-ai.retriever"),
             ],
             connections=connections,
         ),
@@ -235,7 +257,13 @@ def test_agent_hierarchy_parenting():
     root = next(s for s in trace.spans if s.parent_id is None)
     agent = spans_by_name["HAL9000"]
     assert agent.parent_id == root.id
-    expected_link_types = {"Tool1": "ai_tool", "LLM1": "ai_languageModel", "Memory1": "ai_memory"}
+    expected_link_types = {
+        "Tool1": "ai_tool",
+        "LLM1": "ai_languageModel",
+        "Memory1": "ai_memory",
+        "Parser1": "ai_outputParser",
+        "Retriever1": "ai_retriever",
+    }
     for child, link_type in expected_link_types.items():
         child_span = spans_by_name[child]
         assert child_span.parent_id == agent.id, f"{child} not parented to agent"

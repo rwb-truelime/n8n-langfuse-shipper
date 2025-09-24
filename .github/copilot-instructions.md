@@ -25,7 +25,7 @@ Violation of these guidelines should be treated like breaking an invariant—sub
 ## Glossary (Authoritative Short Definitions)
 Concise definitions of recurring terms (use these exact meanings in code comments, docs, and tests). Adding a new conceptual term? – update here in same PR.
 
-* Agent Hierarchy: Parent-child relationship inferred from non-`main` workflow connections (`ai_tool`, `ai_languageModel`, `ai_memory`) making the agent span the parent.
+* Agent Hierarchy: Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` (e.g. `ai_tool`, `ai_languageModel`, `ai_memory`, `ai_outputParser`, `ai_retriever`, etc.) making the agent span the parent.
 * Backpressure: Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) that triggers exporter flush + sleep (`EXPORT_SLEEP_MS`).
 * Binary Stripping: Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
 * Checkpoint: Persistent last processed execution id stored on successful export; guarantees idempotent resume.
@@ -237,7 +237,7 @@ The core transformation logic resides in the `mapper` module. It must use a hybr
 ### The Agent/Tool Hierarchy
 A key pattern in n8n, especially with LangChain nodes, is an "Agent" node that uses other nodes as "Tools", "LLMs", or "Memory". The `workflowData.connections` object reveals this.
 - A connection with `type: "main"` represents a sequential step.
-- A connection with `type: "ai_tool"`, `type: "ai_languageModel"`, or `type: "ai_memory"` from a component node (e.g., `Calculator`) *to* an agent node (e.g., `HAL9000`) signifies a **hierarchical relationship**.
+- A connection with any `type` beginning with `ai_` (e.g. `ai_tool`, `ai_languageModel`, `ai_memory`, `ai_outputParser`, `ai_retriever`) from a component node (e.g., `Calculator`) *to* an agent node (e.g., `HAL9000`) signifies a **hierarchical relationship**.
 - In this case, the agent's span is the **parent** of the component's span.
 
 ### Trace Mapping
@@ -257,7 +257,7 @@ A key pattern in n8n, especially with LangChain nodes, is an "Agent" node that u
 
 Additional implemented behavior:
 * Reverse graph fallback marks metadata `n8n.graph.inferred_parent=true`.
-* Agent hierarchy adds `n8n.agent.parent` and `n8n.agent.link_type` (`ai_tool|ai_languageModel|ai_memory`).
+* Agent hierarchy adds `n8n.agent.parent` and `n8n.agent.link_type` (value is the concrete `ai_*` connection type).
 * Input propagation caching only size-guards when truncation active (`truncate_limit > 0`). When disabled, propagation always occurs.
 
 ### Observation Type Mapping
@@ -437,7 +437,7 @@ If adding a new behavior category, extend this table and create/modify tests acc
 ### Parent Resolution Precedence (Authoritative Table)
 | Priority | Strategy | Description | Metadata Signals |
 |----------|----------|-------------|------------------|
-| 1 | Agent Hierarchy | Non-`main` connection (`ai_tool`, `ai_languageModel`, `ai_memory`) makes agent parent | `n8n.agent.parent`, `n8n.agent.link_type` |
+| 1 | Agent Hierarchy | Non-`main` connection whose type starts with `ai_` makes agent parent | `n8n.agent.parent`, `n8n.agent.link_type` |
 | 2 | Runtime Sequential (Exact Run) | previousNode + previousNodeRun points to exact span | `n8n.node.previous_node_run` |
 | 3 | Runtime Sequential (Last Seen) | previousNode without run index → last emitted span for node | `n8n.node.previous_node` |
 | 4 | Static Reverse Graph Fallback | Reverse edge from workflow connections | `n8n.graph.inferred_parent=true` |

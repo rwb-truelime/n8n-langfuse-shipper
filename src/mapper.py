@@ -297,16 +297,18 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
 
     run_data = record.data.executionData.resultData.runData
 
-    # Build child->agent mapping for special AI hierarchy connections
+    # Build child->agent mapping for AI hierarchy connections.
+    # Pattern-based: ANY connection type starting with 'ai_' (and not equal to literal 'main')
+    # is treated as hierarchical: from_node (child) -> edge.node (agent/parent).
+    # This future‑proofs against new n8n AI surface additions (ai_outputParser, ai_retriever, etc.).
     child_agent_map: Dict[str, Tuple[str, str]] = {}  # child -> (agent, connection_type)
-    special_conn_types = {"ai_tool", "ai_languageModel", "ai_memory"}
     try:
         connections = getattr(record.workflowData, "connections", {}) or {}
         for from_node, conn_types in connections.items():
             if not isinstance(conn_types, dict):
                 continue
             for conn_type, outputs in conn_types.items():
-                if conn_type not in special_conn_types:
+                if not (isinstance(conn_type, str) and conn_type.startswith("ai_")):
                     continue
                 if not isinstance(outputs, list):
                     continue
@@ -317,7 +319,6 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
                         if isinstance(edge, dict):
                             agent = edge.get("node")
                             if agent:
-                                # from_node is the tool/model/memory, agent is parent
                                 child_agent_map[from_node] = (agent, conn_type)
     except Exception:
         pass

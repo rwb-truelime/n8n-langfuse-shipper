@@ -55,7 +55,7 @@ Need more? Expand the detailed sections below.
 - Internal Langfuse models (`src/models/langfuse.py`).
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
 - Deterministic trace & span IDs (trace id = raw `<executionId>` string, span IDs via UUIDv5). Trace name equals the workflow name (fallback: `execution`). Execution id exposed as span metadata key `n8n.execution.id` only (not duplicated in trace metadata). This shipper assumes exactly ONE n8n instance per Langfuse project—use separate Langfuse projects (keys) for additional instances to avoid execution id collisions.
-- Hierarchical AI Agent/Tool/LanguageModel/Memory parenting using `workflowData.connections` `ai_tool`, `ai_languageModel`, `ai_memory` edge types (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
+- Hierarchical AI Agent parenting using any `ai_*` connection type in `workflowData.connections` (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
 - Chronological span emission to guarantee agent span exists before children.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
@@ -297,7 +297,7 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total) | Normalized to input/output/total then emitted as `gen_ai.usage.input_tokens|output_tokens|total_tokens` (legacy prompt/completion names removed) |
 
 Parenting precedence order:
-1. Agent hierarchy (if node has an `ai_tool` / `ai_languageModel` / `ai_memory` edge to an agent, parent = agent span).
+1. Agent hierarchy (if node has an `ai_*` edge to an agent, parent = agent span).
 2. Runtime sequential (`source.previousNodeRun` → specific run ID).
 3. Runtime sequential (`source.previousNode` → last seen span for that node).
 4. Static graph fallback (reverse edge inference) if runtime links are absent.
@@ -315,9 +315,9 @@ The n8n `data` column can appear in two shapes:
 
 ### AI Agent Hierarchy Mapping
 
-Agent nodes (e.g. `HAL9000`) become parents of LLM, Tool, and Memory nodes connected by `ai_languageModel`, `ai_tool`, or `ai_memory` edges. This produces a nested trace tree that mirrors n8n’s LangChain-style clusters. Child spans carry:
+Agent nodes (e.g. `HAL9000`) become parents of downstream AI component nodes connected by any `ai_*` edge (e.g. `ai_languageModel`, `ai_tool`, `ai_memory`, `ai_outputParser`, `ai_retriever`). This produces a nested trace tree that mirrors n8n’s LangChain-style clusters. Child spans carry:
 - `n8n.agent.parent` = agent node name
-- `n8n.agent.link_type` = one of `ai_languageModel`, `ai_tool`, `ai_memory`
+- `n8n.agent.link_type` = the concrete `ai_*` connection type
 
 This prevents fragmentation into multiple traces and yields a faithful hierarchical representation in Langfuse.
 
