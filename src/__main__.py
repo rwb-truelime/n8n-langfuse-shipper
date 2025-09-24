@@ -1,3 +1,15 @@
+"""Main CLI entry point for the n8n-langfuse-shipper.
+
+This module provides a command-line interface using Typer to run the backfill
+process. It orchestrates the entire ETL pipeline:
+1.  Loading configuration and checkpoints.
+2.  Streaming execution records from the database (`db.py`).
+3.  Parsing and validating the raw data, including handling complex formats like
+    pointer-compressed executions.
+4.  Mapping the records to Langfuse traces (`mapper.py`).
+5.  Exporting the traces via OTLP (`shipper.py`).
+6.  Storing the new checkpoint upon successful processing.
+"""
 from __future__ import annotations
 
 import typer
@@ -25,16 +37,33 @@ def _build_execution_data(
     attempt_decompress: bool = False,
     execution_id: Optional[int] = None,
 ) -> ExecutionData:
-    """Build ExecutionData model from raw DB JSON.
+    """Robustly parse the `data` column from an n8n execution record.
 
-    Defined before app() invocation to avoid NameError when module executed as script.
+    The `data` column in `n8n_execution_data` can have several formats. This
+    function attempts to find and parse the `runData` object, which contains the
+    critical information about each node's execution.
 
-    The n8n execution_data.data column usually contains a structure:
-    {
-      "executionData": {"resultData": {"runData": {...}} , ...}
-      ... other keys ...
-    }
-    We only care (for now) about executionData.resultData.runData.
+    It employs a resilient, multi-step strategy:
+    1.  If the data is a JSON string, it's parsed into a Python object.
+    2.  If the data is a list, it's assumed to be the "pointer-compressed"
+        format and is decoded by `_decode_compact_pointer_execution`.
+    3.  If it's a dictionary, it first attempts a direct Pydantic validation.
+    4.  If that fails, it probes a series of common alternative paths where
+        `runData` might be nested.
+    5.  As a last resort, it checks the raw `workflowData` for `runData`.
+    6.  If all attempts fail, it returns an empty `ExecutionData` object,
+        ensuring that a root trace is still created for the execution.
+
+    Args:
+        raw_data: The raw content of the `data` column.
+        workflow_data_raw: The raw `workflowData` object, used as a fallback.
+        debug: If True, enables verbose logging of parsing attempts.
+        attempt_decompress: Flag to enable future decompression logic.
+        execution_id: The ID of the execution, for logging purposes.
+
+    Returns:
+        A parsed `ExecutionData` model, which may be empty if `runData` could
+        not be found.
     """
     logger = logging.getLogger(__name__)
     empty = ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData={})))
@@ -143,14 +172,24 @@ def _build_execution_data(
 
 
 def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution_id: Optional[int] = None) -> Optional[ExecutionData]:
-    """Decode alternative compact pointer-array execution format into ExecutionData.
+    """Decode the "pointer-compressed" execution format into `ExecutionData`.
 
-    Observed Format (heuristic):
-      - Top-level is a list (pool) of heterogeneous entries (dict/list/str).
-      - Objects reference other entries by stringified integer indices (e.g., "4").
-      - pool[0] contains keys like resultData / executionData referencing other indices.
-      - resultData object contains key runData -> pointer to dict mapping node name -> pointer(s) to run(s).
-      - Each run object includes: startTime, executionTime, executionStatus, data, source, inputOverride.
+    Some n8n versions store execution data in a compact format where the top-level
+    object is a list (the "pool"). Objects within this list reference each other
+    using stringified integer indices (e.g., a key with value "4" points to
+    `pool[4]`).
+
+    This function recursively resolves these pointers to reconstruct the full
+    `runData` structure. It includes memoization and cycle detection to handle
+    complex or malformed data safely.
+
+    Args:
+        pool: The top-level list from the `data` column.
+        debug: If True, enables verbose logging of the decoding process.
+        execution_id: The ID of the execution, for logging purposes.
+
+    Returns:
+        A parsed `ExecutionData` model if decoding is successful, otherwise None.
     """
     logger = logging.getLogger(__name__)
     if not pool or not isinstance(pool, list) or not pool:
@@ -292,7 +331,10 @@ def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution
 
 @app.callback()
 def main():  # pragma: no cover - simple callback
-    """n8n-langfuse-shipper CLI. Use subcommands like 'backfill'."""
+    """n8n-langfuse-shipper CLI.
+
+    Use a subcommand like 'backfill' to run a process.
+    """
     pass
 
 
@@ -332,6 +374,14 @@ def backfill(
         help="Override EXPORT_SLEEP_MS (sleep duration in ms when backlog exceeds soft limit)",
     ),
 ):
+    """Run a backfill cycle to process and export n8n executions.
+
+    This command orchestrates the ETL process:
+    - Determines the starting execution ID from the checkpoint or CLI argument.
+    - Streams execution records from the database.
+    - For each record, maps it to a Langfuse trace and exports it.
+    - Updates the checkpoint with the ID of the last processed record.
+    """
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
