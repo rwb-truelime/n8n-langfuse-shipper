@@ -61,6 +61,7 @@ Need more? Expand the detailed sections below.
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
 - Input propagation: child span input inferred from parent’s last output when `inputOverride` absent.
 - Generation detection + token usage extraction (`tokenUsage` variants normalized to input/output/total → `gen_ai.usage.*`).
+		- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
 - OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.as_root`, optional trace identity fields `langfuse.trace.user_id|session_id|tags|input|output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
@@ -430,7 +431,7 @@ This project treats the mapping & export invariants as a contract. Each invarian
 | `tests/test_input_propagation.py` | Inferred input propagation & size guard | Parent output inference; size guard blocking when truncation active |
 | `tests/test_pointer_decoding.py` | Pointer‑compressed array decoding | Resilient decoding of compact execution format |
 | `tests/test_trace_and_metadata.py` | Root metadata + deterministic IDs across truncation settings | Root-only `n8n.execution.id`; span ID stability irrespective of truncation |
-| `tests/test_generation_heuristic.py` | Provider substring heuristic | Generation detection without explicit `tokenUsage` |
+| `tests/test_generation_heuristic.py` | Provider substring heuristic | Generation detection across provider matrix & exclusion for embeddings |
 | `tests/test_error_status_and_observation.py` | Error normalization | Span status becomes `error` when `NodeRun.error` set |
 | `tests/test_trace_id_embedding.py` | Human-readable trace id embedding | 32-hex trace id suffix matches execution id digits; non-digit fallback |
 | `tests/test_observation_mapping.py` | Observation type classification breadth | Exact sets, regex fallbacks, category fallback semantics |

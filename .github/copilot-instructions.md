@@ -268,13 +268,15 @@ See the later "Generation Mapping" section for the current heuristics (deduplica
 
 ### Generation Mapping (Authoritative)
 Heuristics (ordered, current implementation):
-1. Presence of a `tokenUsage` object inside `run.data` (explicit signal).
-2. Fallback: node type contains (case-insensitive) any of: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`.
+1. Presence of a `tokenUsage` object at any depth inside `run.data` (depth-limited recursive search; explicit signal).
+2. Fallback: node type (case-insensitive) contains any provider marker in the current set:
+    `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`.
+    Exclusions: if the type also contains `embedding`, `embeddings`, or `reranker`, it is NOT classified as a generation (to avoid misclassifying embedding/reranker tasks).
 
 Notes:
-* Older generic markers like `vertex`, `gpt`, `cohere` are NOT presently used—adding them requires tests + README + instructions update.
+* Provider marker expansions MUST update this section, the README, and `tests/test_generation_heuristic.py` in the same PR.
 * Never infer a generation purely from output length or presence of text.
-* Extending the heuristic list requires updating `tests/test_generation_heuristic.py`.
+* Embedding / reranker nodes are intentionally excluded unless they provide explicit `tokenUsage`.
 
 If matched:
 * Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).

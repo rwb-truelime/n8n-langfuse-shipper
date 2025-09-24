@@ -169,12 +169,34 @@ def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[st
     return raw, truncated
 
 
+_GENERATION_PROVIDER_MARKERS = [
+    # Core providers
+    "openai", "anthropic", "gemini", "mistral", "groq",
+    # Chat wrappers / legacy internal labels
+    "lmchat", "lmopenai",
+    # Newly added / upstream supported vendors
+    "cohere", "deepseek", "ollama", "openrouter", "bedrock", "vertex", "huggingface", "xai",
+]
+
+
 def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
+    """Decide whether a node should be classified as a generation.
+
+    Rules (ordered):
+      1. Explicit: presence of tokenUsage object in run.data.
+      2. Heuristic: node_type contains any provider marker in _GENERATION_PROVIDER_MARKERS (case-insensitive)
+         while NOT containing 'embedding' / 'embeddings' / 'reranker' (to avoid misclassifying embeddings/rerankers).
+    """
+    # Fast path: top-level tokenUsage
     if node_run.data and "tokenUsage" in node_run.data:
         return True
-    # Heuristic on type
-    llm_markers = ["OpenAi", "Anthropic", "Gemini", "Mistral", "Groq", "LmChat", "LmOpenAi"]
-    return any(marker.lower() in node_type.lower() for marker in llm_markers)
+    # Nested search (common n8n shape: {"ai_languageModel": [[{"json": {"tokenUsage": {...}}}]]})
+    if _find_nested_key(node_run.data, "tokenUsage") is not None:
+        return True
+    lowered = node_type.lower()
+    if any(excl in lowered for excl in ("embedding", "embeddings", "reranker")):
+        return False
+    return any(marker in lowered for marker in _GENERATION_PROVIDER_MARKERS)
 
 
 def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
@@ -191,6 +213,10 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     preference order: input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
     """
     tu = node_run.data.get("tokenUsage") if node_run.data else None
+    if tu is None and node_run.data:
+        container = _find_nested_key(node_run.data, "tokenUsage")
+        if container and isinstance(container.get("tokenUsage"), dict):  # type: ignore[arg-type]
+            tu = container["tokenUsage"]
     if not isinstance(tu, dict):
         return None
     # Gather candidates
@@ -228,6 +254,32 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     if input_val is None and output_val is None and total_val is None:
         return None
     return LangfuseUsage(input=input_val, output=output_val, total=total_val)
+
+
+def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dict[str, Any]]:
+    """Depth-limited search returning the first dict containing target as a key.
+
+    Supports typical n8n execution output nesting patterns: channel -> list[ list[ { json: {...} } ] ]
+    We purposely stop after encountering the first match to avoid large traversals.
+    """
+    try:
+        if max_depth < 0:
+            return None
+        if isinstance(data, dict):
+            if target in data:
+                return data  # type: ignore[return-value]
+            for v in data.values():
+                found = _find_nested_key(v, target, max_depth - 1)
+                if found is not None:
+                    return found
+        elif isinstance(data, list):
+            for item in data[:25]:  # guard large lists
+                found = _find_nested_key(item, target, max_depth - 1)
+                if found is not None:
+                    return found
+    except Exception:
+        return None
+    return None
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:

@@ -13,47 +13,122 @@ from src.models.n8n import (
     NodeRunSource,
 )
 
-# Tests generation detection when tokenUsage absent but provider substring present
 
-def test_generation_detection_by_type_only():
+def _build_record(node_pairs):
     now = datetime.now(timezone.utc)
-    runData = {
-        "Starter": [
+    starter_run = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=5,
+        executionStatus="success",
+        data={"x": 1},
+    )
+    runData = {"Starter": [starter_run]}
+    nodes = [WorkflowNode(name="Starter", type="ToolWorkflow")]
+    offset = 5
+    for name, type_name in node_pairs:
+        runData[name] = [
             NodeRun(
-                startTime=int(now.timestamp() * 1000),
-                executionTime=5,
-                executionStatus="success",
-                data={"x": 1},
-            )
-        ],
-        "AnthropicModel": [
-            NodeRun(
-                startTime=int(now.timestamp() * 1000) + 5,
+                startTime=int(now.timestamp() * 1000) + offset,
                 executionTime=7,
                 executionStatus="success",
-                data={"model": "claude"},
+                data={"model": type_name.lower()},
                 source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
             )
-        ],
-    }
+        ]
+        offset += 5
+        nodes.append(WorkflowNode(name=name, type=type_name))
     rec = N8nExecutionRecord(
-        id=601,
-        workflowId="wf-gen-type",
+        id=700,
+        workflowId="wf-gen-matrix",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(id="wf-gen-matrix", name="Gen Matrix", nodes=nodes),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    return rec
+
+
+def test_generation_detection_provider_matrix():
+    # Each tuple: (node name, node type) covering provider markers without tokenUsage
+    providers = [
+        ("AnthropicNode", "AnthropicChat"),
+        ("OpenAiNode", "OpenAi"),
+        ("GeminiNode", "GoogleGemini"),
+        ("MistralNode", "MistralCloud"),
+        ("GroqNode", "Groq"),
+        ("CohereNode", "CohereChat"),
+        ("DeepSeekNode", "DeepSeek"),
+        ("OllamaNode", "LmChatOllama"),
+        ("OpenRouterNode", "LmChatOpenRouter"),
+        ("BedrockNode", "LmChatAwsBedrock"),
+        ("VertexNode", "LmChatGoogleVertex"),
+        ("HuggingFaceNode", "LmOpenHuggingFaceInference"),
+        ("XaiNode", "LmChatXAiGrok"),
+    ]
+    rec = _build_record(providers)
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    names = {p[0] for p in providers}
+    for span in trace.spans:
+        if span.name in names:
+            assert span.observation_type == "generation", f"Expected generation for {span.name}/{span.metadata.get('n8n.node.type')}"
+
+
+def test_generation_excludes_embeddings():
+    rec = _build_record([("EmbeddingsNode", "EmbeddingsOpenAI")])
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "EmbeddingsNode")
+    assert span.observation_type != "generation", "Embeddings should not be classified as generation"
+
+
+def test_generation_detection_nested_token_usage():
+    # Simulate n8n nested output channel wrapping tokenUsage
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    nested_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 10,
+        executionTime=9,
+        executionStatus="success",
+        data={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "response": {"generations": [[{"text": "Hello world"}]]},
+                            "tokenUsage": {"promptTokens": 12, "completionTokens": 3, "totalTokens": 15},
+                        }
+                    }
+                ]
+            ]
+        },
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"ok": True}}]]},
+    )
+    runData = {"Starter": [starter], "NestedModel": [nested_run]}
+    rec = N8nExecutionRecord(
+        id=905,
+        workflowId="wf-nested-gen",
         status="success",
         startedAt=now,
         stoppedAt=now,
         workflowData=WorkflowData(
-            id="wf-gen-type",
-            name="Gen Type WF",
+            id="wf-nested-gen",
+            name="Nested Gen",
             nodes=[
                 WorkflowNode(name="Starter", type="ToolWorkflow"),
-                WorkflowNode(name="AnthropicModel", type="AnthropicChat"),
+                WorkflowNode(name="NestedModel", type="GoogleGemini"),
             ],
         ),
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "AnthropicModel")
-    # Should classify as generation despite no explicit tokenUsage; generations list removed
-    assert span.observation_type == "generation"
+    span = next(s for s in trace.spans if s.name == "NestedModel")
+    assert span.observation_type == "generation", "Nested tokenUsage not detected"
+    assert span.usage is not None
+    assert span.usage.input == 12 and span.usage.output == 3 and span.usage.total == 15
 
