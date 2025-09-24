@@ -61,8 +61,8 @@ Need more? Expand the detailed sections below.
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
 - Input propagation: child span input inferred from parent’s last output when `inputOverride` absent.
 - Generation detection + token usage extraction (`tokenUsage` variants normalized to input/output/total → `gen_ai.usage.*`).
-		- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
-- OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.as_root`, optional trace identity fields `langfuse.trace.user_id|session_id|tags|input|output`).
+			- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` & `model` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
+- OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.internal.as_root`, optional trace identity fields `user.id|session.id|langfuse.trace.tags|langfuse.trace.input|langfuse.trace.output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
 - Auto-construction of `PG_DSN` from n8n style `.env` variables if not explicitly set.

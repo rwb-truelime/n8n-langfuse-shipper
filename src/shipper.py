@@ -185,12 +185,14 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         root_span.set_attribute(f"langfuse.trace.metadata.{k}", str(v))
     root_span.set_attribute("langfuse.trace.name", trace_model.name)
     # Mark root span explicitly
-    root_span.set_attribute("langfuse.as_root", True)
+    # Updated per Langfuse constants: internal root marker
+    root_span.set_attribute("langfuse.internal.as_root", True)
     # Trace identity / classification fields (only if provided)
+    # Updated to canonical user/session ids per Langfuse constants (user.id / session.id)
     if trace_model.user_id is not None:
-        root_span.set_attribute("langfuse.trace.user_id", trace_model.user_id)
+        root_span.set_attribute("user.id", trace_model.user_id)
     if trace_model.session_id is not None:
-        root_span.set_attribute("langfuse.trace.session_id", trace_model.session_id)
+        root_span.set_attribute("session.id", trace_model.session_id)
     if trace_model.tags:
         import json as _json
         root_span.set_attribute("langfuse.trace.tags", _json.dumps(trace_model.tags, separators=(",", ":")))

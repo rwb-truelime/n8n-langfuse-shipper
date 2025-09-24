@@ -132,3 +132,155 @@ def test_generation_detection_nested_token_usage():
     assert span.usage is not None
     assert span.usage.input == 12 and span.usage.output == 3 and span.usage.total == 15
 
+
+def test_nested_model_extraction():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    nested_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 5,
+        executionTime=4,
+        executionStatus="success",
+        data={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "model": "gpt-4o-mini",
+                            "tokenUsage": {"promptTokens": 2, "completionTokens": 1, "totalTokens": 3},
+                        }
+                    }
+                ]
+            ]
+        },
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"ok": True}}]]},
+    )
+    runData = {"Starter": [starter], "NestedModel": [nested_run]}
+    rec = N8nExecutionRecord(
+        id=906,
+        workflowId="wf-nested-model",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(
+            id="wf-nested-model",
+            name="Nested Model",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                WorkflowNode(name="NestedModel", type="OpenAi"),
+            ],
+        ),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "NestedModel")
+    assert span.model == "gpt-4o-mini"
+
+
+def test_model_extraction_variant_keys():
+    # Ensure alternative key names are detected
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    variant_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 5,
+        executionTime=4,
+        executionStatus="success",
+        data={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "response": {"generations": [[{"text": "hi"}]]},
+                            "model_name": "cohere-command-r-plus",
+                        }
+                    }
+                ]
+            ]
+        },
+    )
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"ok": True}}]]},
+    )
+    runData = {"Starter": [starter], "VariantNode": [variant_run]}
+    rec = N8nExecutionRecord(
+        id=907,
+        workflowId="wf-model-variant",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(
+            id="wf-model-variant",
+            name="Model Variant",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                WorkflowNode(name="VariantNode", type="CohereChat"),
+            ],
+        ),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "VariantNode")
+    assert span.model == "cohere-command-r-plus"
+
+
+def test_model_extraction_ai_languageModel_options_path():
+    # Mirrors screenshot: ai_languageModel -> [[ { json: { messages:[], estimatedTokens, options:{ base_url, model } } } ]]
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 10,
+        executionTime=20,
+        executionStatus="success",
+        data={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "messages": ["Human: Hello"],
+                            "estimatedTokens": 13,
+                            "options": {
+                                "google_api_key": {"cle": 1},
+                                "base_url": "https://generativelanguage.googleapis.com",
+                                "model": "gemini-2.5-pro",
+                            },
+                        }
+                    }
+                ]
+            ]
+        },
+    )
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"ok": True}}]]},
+    )
+    runData = {"Starter": [starter], "Google Gemini Chat Model": [run]}
+    rec = N8nExecutionRecord(
+        id=908,
+        workflowId="wf-model-gemini-options",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(
+            id="wf-model-gemini-options",
+            name="Gemini Options",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                WorkflowNode(name="Google Gemini Chat Model", type="GoogleGemini"),
+            ],
+        ),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "Google Gemini Chat Model")
+    assert span.model == "gemini-2.5-pro"
+

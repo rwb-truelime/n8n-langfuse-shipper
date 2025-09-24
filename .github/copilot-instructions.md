@@ -279,7 +279,7 @@ Notes:
 * Embedding / reranker nodes are intentionally excluded unless they provide explicit `tokenUsage`.
 
 If matched:
-* Populate `LangfuseSpan.model` best-effort from node type or name (provider substring preserved as-is; no normalization).
+* Populate `LangfuseSpan.model` best-effort from node type or name, or (if absent) by breadth-first nested search for variant keys (`model`, `model_name`, `modelId`, `model_id`) inside run.data output channel wrappers (provider substring preserved as-is; no normalization). When a generation span lacks any model value a debug metadata flag `n8n.model.missing=true` is attached.
 * `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
 * OTLP exporter emits `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
@@ -296,8 +296,8 @@ If matched:
      - `langfuse.observation.usage_details` (JSON string containing only present keys among `input`/`output`/`total`)
      - `langfuse.observation.status` (normalized status) when available
      - `langfuse.observation.metadata.*` (flattened span metadata)
-     - Root span only: `langfuse.as_root=true`
-     - Root span trace identity (when provided on `LangfuseTrace`): `langfuse.trace.user_id`, `langfuse.trace.session_id`, `langfuse.trace.tags` (JSON array), `langfuse.trace.input`, `langfuse.trace.output` (JSON serialized best-effort)
+    - Root span only: `langfuse.internal.as_root=true`
+    - Root span trace identity (when provided on `LangfuseTrace`): `user.id`, `session.id`, `langfuse.trace.tags` (JSON array), `langfuse.trace.input`, `langfuse.trace.output` (JSON serialized best-effort)
   (Removed: references to unused `langfuse.observation.level` / `status_message`).
 * `binary` objects: replace `data` with `"binary omitted"` and attach `_omitted_len`; retain other metadata fields (filename, mimeType, etc.).
 * Standalone base64 strings: replace with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <length> }`.

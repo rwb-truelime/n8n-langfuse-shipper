@@ -9,7 +9,8 @@ Enhancements (Iteration 3):
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Deque
+from collections import deque
 import re
 from uuid import uuid5, UUID, NAMESPACE_DNS
 
@@ -282,6 +283,112 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dic
     return None
 
 
+def _extract_model_value(data: Any) -> Optional[str]:
+    """Attempt to locate a model name inside highly varied / nested n8n node output structures.
+
+    Heuristics (ordered):
+      1. Fast path for ai_* channels (e.g. ai_languageModel) with nested [[{ json: { options: { model }}}]] shapes.
+      2. Direct keys at current level: model / model_name / modelId / model_id.
+      3. If a value is a dict containing a 'json' dict, search that dict (some executions wrap everything under a top-level 'json').
+      4. If a value is a JSON-encoded string that appears to contain the substring 'model', parse & search it (lightweight guard to avoid large parsing cost).
+      5. Breadth‑first fallback scan (bounded by node & depth caps) across dicts / lists for the recognized keys or an 'options' sub-dict containing them.
+
+    Returns first discovered non-empty string value; otherwise None. Intentionally conservative to avoid misclassifying unrelated 'model' occurrences.
+    """
+    if not data:
+        return None
+    keys = ("model", "model_name", "modelId", "model_id")
+
+    # 1. Targeted channel fast-path
+    try:
+        if isinstance(data, dict):
+            for chan_key, chan_val in data.items():
+                if isinstance(chan_key, str) and chan_key.startswith("ai_") and isinstance(chan_val, list):
+                    for outer in chan_val:
+                        if not isinstance(outer, list):
+                            continue
+                        for item in outer:
+                            if not isinstance(item, dict):
+                                continue
+                            j = item.get("json") if isinstance(item.get("json"), dict) else None
+                            if not j:
+                                continue
+                            # Direct model keys
+                            for k in keys:
+                                val = j.get(k)
+                                if isinstance(val, str) and val:
+                                    return val
+                            opts = j.get("options") if isinstance(j.get("options"), dict) else None
+                            if opts:
+                                for k in keys:
+                                    val = opts.get(k)
+                                    if isinstance(val, str) and val:
+                                        return val
+    except Exception:
+        pass
+
+    # Helper: inspect a mapping for immediate model-like keys or inside an 'options' object
+    def _direct_scan(obj: Dict[str, Any]) -> Optional[str]:
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, str) and v:
+                return v
+        opts = obj.get("options") if isinstance(obj.get("options"), dict) else None
+        if opts:
+            for k in keys:
+                v = opts.get(k)
+                if isinstance(v, str) and v:
+                    return v
+        return None
+
+    # 2 & 3. Immediate / json-wrapper level scan
+    if isinstance(data, dict):
+        direct = _direct_scan(data)
+        if direct:
+            return direct
+        j = data.get("json") if isinstance(data.get("json"), dict) else None
+        if j:
+            direct = _direct_scan(j)  # type: ignore[arg-type]
+            if direct:
+                return direct
+
+    # 4. Prepare BFS queue; include parsed JSON string expansions on-demand
+    queue: Deque[Tuple[Any, int]] = deque([(data, 0)])
+    visited = 0
+    max_nodes = 800  # slightly higher to account for json-string expansions
+    max_depth = 8
+    while queue and visited < max_nodes:
+        current, depth = queue.popleft()
+        visited += 1
+        try:
+            if isinstance(current, dict):
+                direct = _direct_scan(current)
+                if direct:
+                    return direct
+                if depth < max_depth:
+                    for v in current.values():
+                        queue.append((v, depth + 1))
+            elif isinstance(current, list):
+                if depth < max_depth:
+                    for item in current[:60]:  # cap list breadth
+                        queue.append((item, depth + 1))
+            elif isinstance(current, str):
+                # Light heuristic: only attempt parse if plausible JSON object containing 'model'
+                s = current.strip()
+                if 10 < len(s) < 50_000 and s.startswith('{') and 'model' in s:
+                    # Avoid expensive parsing repeatedly for huge unrelated strings.
+                    import json
+                    try:
+                        parsed = json.loads(s)
+                        if isinstance(parsed, dict):
+                            queue.append((parsed, depth + 1))
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+    return None
+
+
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
     # Trace id is now exactly the n8n execution id (string). Simplicity & direct searchability in Langfuse UI.
     # NOTE: This shipper supports ONE n8n instance per Langfuse project. If you aggregate multiple instances
@@ -464,6 +571,29 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             metadata["n8n.truncated.input"] = True
         if output_trunc:
             metadata["n8n.truncated.output"] = True
+        # Model extraction: BFS variant key search (model, model_name, modelId, model_id)
+        model_val = None
+        # Build a richer search root: primary run.data plus supplemental contexts that may hold the embedded model.
+        if isinstance(run.data, dict):
+            search_root: Dict[str, Any] = dict(run.data)
+            if isinstance(run.inputOverride, dict):
+                search_root["_inputOverride"] = run.inputOverride
+            # If we inferred parent output as input, include it (raw_input_obj already built above)
+            if raw_input_obj and isinstance(raw_input_obj, dict):
+                search_root["_inferredInput"] = raw_input_obj
+            top_model = run.data.get("model")
+            if isinstance(top_model, str) and top_model:
+                model_val = top_model
+            else:
+                model_val = _extract_model_value(search_root)
+        if model_val is None and is_generation:
+            # Attach diagnostic metadata to help identify why extraction failed (list a few top-level keys only)
+            metadata["n8n.model.missing"] = True
+            try:
+                if isinstance(run.data, dict):
+                    metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
+            except Exception:
+                pass
         span = LangfuseSpan(
             id=span_id,
             trace_id=trace_id,
@@ -476,7 +606,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             output=output_str,
             metadata=metadata,
             error=run.error,
-            model=run.data.get("model") if isinstance(run.data, dict) else None,
+            model=model_val,
             usage=usage,
             status=status_norm,
         )
