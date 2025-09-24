@@ -1,10 +1,22 @@
 """Core mapping logic from n8n execution records to Langfuse internal models.
 
-Enhancements (Iteration 3):
- - Structured JSON serialization for input/output with truncation flags.
- - Normalized status + error propagation.
- - Improved parent resolution using `previousNodeRun` when present.
- - Richer metadata fields to aid downstream analysis.
+This module is the "T" (Transform) in the ETL pipeline. It takes raw n8n
+execution records fetched from PostgreSQL and converts them into a structured
+LangfuseTrace object, which is a serializable representation of a Langfuse trace
+and its nested spans.
+
+Key responsibilities include:
+- Mapping one n8n execution to one Langfuse trace.
+- Mapping each n8n node run to a Langfuse span.
+- Resolving parent-child relationships between spans using a multi-tiered
+  precedence logic (agent hierarchy, runtime pointers, static graph analysis).
+- Detecting and classifying "generation" spans (LLM calls).
+- Extracting and normalizing token usage and model names for generations.
+- Sanitizing and preparing I/O data by stripping binary content and applying
+  optional truncation.
+- Propagating outputs from parent spans as inputs to child spans when no
+  explicit input override is present.
+- Generating deterministic, repeatable IDs for traces and spans.
 """
 from __future__ import annotations
 
@@ -26,6 +38,18 @@ SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 
 
 def _epoch_ms_to_dt(ms: int) -> datetime:
+    """Convert an epoch timestamp (ms or s) to a timezone-aware UTC datetime.
+
+    n8n can produce timestamps in either milliseconds or seconds. This function
+    uses a heuristic to guess the unit: values less than 10^12 are assumed to be
+    seconds.
+
+    Args:
+        ms: The epoch timestamp.
+
+    Returns:
+        A timezone-aware datetime object in UTC.
+    """
     # Some n8n exports may already be seconds; if value looks like seconds (10 digits) treat accordingly
     # Heuristic: if ms < 10^12 assume seconds.
     if ms < 1_000_000_000_000:  # seconds
@@ -37,11 +61,20 @@ _BASE64_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")  # long pure base64 chun
 
 
 def _likely_binary_b64(s: str, *, context_key: str | None = None, in_binary_block: bool = False) -> bool:
-    """Heuristic to decide if a long string is really base64 (binary) vs just long text.
+    """Heuristically detect if a string is likely a base64-encoded binary.
 
-    Prior implementation flagged *any* long base64-like string (including 'x'*500) which caused
-    benign large textual fields to be stripped as binary, preventing truncation flags from firing
-    (test expectation). We now require a minimum diversity of characters to reduce false positives.
+    This function aims to avoid false positives on long text fields that happen
+    to be valid base64. It requires a minimum length, character diversity, and
+    can use contextual hints like the dictionary key it's associated with.
+
+    Args:
+        s: The string to check.
+        context_key: The dictionary key associated with the string, if any.
+        in_binary_block: Flag indicating if we are already inside a known
+            binary data structure.
+
+    Returns:
+        True if the string is likely a base64-encoded binary, False otherwise.
     """
     if len(s) < 200:
         return False
@@ -60,11 +93,18 @@ def _likely_binary_b64(s: str, *, context_key: str | None = None, in_binary_bloc
 
 
 def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
-    """Detect probable binary base64 blobs.
-    Signals true when:
-      - Standard n8n binary structure with mimeType + long data field.
-      - Any string value looks like a large base64 block (>200 chars, matches regex) or starts with /9j/ (jpeg magic in base64).
-    Depth limited to avoid excessive recursion.
+    """Recursively scan an object for markers of n8n binary data structures.
+
+    This function detects the standard n8n binary object format (a dictionary
+    with 'mimeType' and 'data' keys) or any large base64-encoded string values.
+    The search is depth-limited to prevent excessive recursion on complex objects.
+
+    Args:
+        d: The object to scan (dict, list, or primitive).
+        depth: The current recursion depth.
+
+    Returns:
+        True if a binary marker is found, False otherwise.
     """
     if depth > 4:
         return False
@@ -95,8 +135,18 @@ def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
 
 
 def _strip_binary_payload(obj: Any) -> Any:
-    """Replace nested binary sections & large base64 strings with placeholder references.
-    Preserves structure but inserts marker objects: {"_binary": true, "note": "omitted", ...meta}
+    """Recursively replace binary data and large base64 strings with placeholders.
+
+    This function traverses a nested object and replaces any detected binary
+    content with a placeholder dictionary, e.g.,
+    `{"_binary": True, "note": "binary omitted", "_omitted_len": ...}`.
+    This sanitizes the data before serialization, preventing huge payloads.
+
+    Args:
+        obj: The object to sanitize.
+
+    Returns:
+        A new object with binary content replaced by placeholders.
     """
     placeholder_text = "binary omitted"
     try:
@@ -145,10 +195,21 @@ def _strip_binary_payload(obj: Any) -> Any:
 
 
 def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[str], bool]:
-    """Serialize obj to compact JSON (fallback to str) and truncate if needed.
+    """Serialize an object to a compact JSON string and optionally truncate it.
 
-    If limit is None, truncation is disabled (except binary sections replaced by placeholder).
-    Returns (serialized_value_or_None, truncated_flag).
+    This function first strips any binary content from the object, then
+    serializes it to a JSON string. If a `limit` is provided and the string
+    exceeds it, the string is truncated.
+
+    Args:
+        obj: The object to serialize.
+        limit: The maximum length of the output string. If None or <= 0,
+            truncation is disabled (but binary stripping still occurs).
+
+    Returns:
+        A tuple containing:
+        - The serialized (and possibly truncated) string, or None if input is None.
+        - A boolean flag indicating whether truncation occurred.
     """
     if obj is None:
         return None, False
@@ -170,6 +231,91 @@ def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[st
     return raw, truncated
 
 
+def _unwrap_ai_channel(container: Any) -> Any:
+    """Heuristically unwrap the noisy list nesting of n8n AI node outputs.
+
+    n8n AI nodes often wrap their actual output in a deeply nested structure
+    like `{"ai_languageModel": [[{"json": {...}}]]}`. This function attempts
+    to extract the core `json` object(s) to improve readability in Langfuse.
+
+    It looks for a dictionary with a single 'ai_*' key and flattens the
+    nested lists to return the core payload.
+
+    Args:
+        container: The object to unwrap, typically a dictionary from a node's
+            input or output.
+
+    Returns:
+        The unwrapped object if the pattern is matched, otherwise the original
+        container.
+    """
+    try:
+        if not isinstance(container, dict) or len(container) != 1:
+            return container
+        (only_key, value), = container.items()  # type: ignore[misc]
+        if not (isinstance(only_key, str) and only_key.startswith("ai_")):
+            return container
+        # Flatten nested list layers while collecting dict leaves
+        collected: List[Dict[str, Any]] = []
+
+        def _walk(v: Any, depth: int = 0):
+            if depth > 6:
+                return
+            if isinstance(v, list):
+                for item in v[:100]:
+                    _walk(item, depth + 1)
+            elif isinstance(v, dict):
+                # Prefer inner 'json' dict if present
+                j = v.get("json") if isinstance(v.get("json"), dict) else None
+                if j:
+                    collected.append(j)  # type: ignore[arg-type]
+                else:
+                    # If dict itself seems like a payload (has model/usage markers) collect directly
+                    if any(k in v for k in ("model", "model_name", "modelId", "model_id", "tokenUsage")):
+                        collected.append(v)  # type: ignore[arg-type]
+            # Other primitive types ignored
+
+        _walk(value)
+        if not collected:
+            return container
+        if len(collected) == 1:
+            return collected[0]
+        # Deduplicate by json dump signature (lightweight)
+        import json
+        seen = set()
+        uniq: List[Dict[str, Any]] = []
+        for c in collected:
+            try:
+                sig = json.dumps(c, sort_keys=True)[:4000]
+            except Exception:
+                sig = str(id(c))
+            if sig not in seen:
+                seen.add(sig)
+                uniq.append(c)
+        return uniq
+    except Exception:
+        return container
+
+
+def _normalize_node_io(obj: Any) -> Any:
+    """Apply a series of cleaning transformations to a node's I/O object.
+
+    This function serves as a pipeline for normalization passes. Currently, it
+    only applies the AI channel unwrapping, but it can be extended to include
+    other clean-up logic.
+
+    Args:
+        obj: The input or output object from a node run.
+
+    Returns:
+        The cleaned object.
+    """
+    if isinstance(obj, dict):
+        unwrapped = _unwrap_ai_channel(obj)
+        return unwrapped
+    return obj
+
+
 _GENERATION_PROVIDER_MARKERS = [
     # Core providers
     "openai", "anthropic", "gemini", "mistral", "groq",
@@ -181,12 +327,20 @@ _GENERATION_PROVIDER_MARKERS = [
 
 
 def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
-    """Decide whether a node should be classified as a generation.
+    """Determine if a node run should be classified as a 'generation'.
 
-    Rules (ordered):
-      1. Explicit: presence of tokenUsage object in run.data.
-      2. Heuristic: node_type contains any provider marker in _GENERATION_PROVIDER_MARKERS (case-insensitive)
-         while NOT containing 'embedding' / 'embeddings' / 'reranker' (to avoid misclassifying embeddings/rerankers).
+    A node run is considered a generation if it meets one of the following
+    criteria, in order:
+    1.  A `tokenUsage` object is found anywhere in its `run.data`.
+    2.  The `node_type` contains a known LLM provider marker (e.g., 'openai')
+        and does not contain an exclusion marker (e.g., 'embedding').
+
+    Args:
+        node_type: The static type of the n8n node.
+        node_run: The runtime data for the node execution.
+
+    Returns:
+        True if the node run is classified as a generation, False otherwise.
     """
     # Fast path: top-level tokenUsage
     if node_run.data and "tokenUsage" in node_run.data:
@@ -201,17 +355,18 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
 
 
 def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
-    """Normalize various tokenUsage shapes to canonical input/output/total.
+    """Extract and normalize token usage data from a node run.
 
-    Accepted legacy keys inside run.data.tokenUsage:
-      - promptTokens / completionTokens / totalTokens
-      - prompt / completion / total
-      - input / output / total (already normalized)
-    Synthesis:
-      - If total missing but input & output present -> total = input + output
-      - If only legacy prompt/completion present -> map directly.
-    No negative or contradictory reconciliation; if conflicting representations differ,
-    preference order: input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
+    This function searches for a `tokenUsage` object within the `node_run.data`
+    and normalizes various key formats (e.g., `promptTokens`, `completion`)
+    into a canonical `LangfuseUsage` object with `input`, `output`, and `total`
+    fields. It can also synthesize `total` if `input` and `output` are present.
+
+    Args:
+        node_run: The node run data to process.
+
+    Returns:
+        A `LangfuseUsage` object if token usage data is found, otherwise None.
     """
     tu = node_run.data.get("tokenUsage") if node_run.data else None
     if tu is None and node_run.data:
@@ -258,10 +413,19 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 
 def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dict[str, Any]]:
-    """Depth-limited search returning the first dict containing target as a key.
+    """Perform a depth-limited search for a dictionary containing a specific key.
 
-    Supports typical n8n execution output nesting patterns: channel -> list[ list[ { json: {...} } ] ]
-    We purposely stop after encountering the first match to avoid large traversals.
+    This helper traverses a nested structure of dictionaries and lists to find
+    the first dictionary that has `target` as a key. It is used to locate
+    data like `tokenUsage` or `model` which may be deeply nested.
+
+    Args:
+        data: The object to search.
+        target: The dictionary key to find.
+        max_depth: The maximum recursion depth.
+
+    Returns:
+        The first dictionary found containing the target key, or None.
     """
     try:
         if max_depth < 0:
@@ -284,16 +448,18 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dic
 
 
 def _extract_model_value(data: Any) -> Optional[str]:
-    """Attempt to locate a model name inside highly varied / nested n8n node output structures.
+    """Attempt to find a model name within a complex, nested node output object.
 
-    Heuristics (ordered):
-      1. Fast path for ai_* channels (e.g. ai_languageModel) with nested [[{ json: { options: { model }}}]] shapes.
-      2. Direct keys at current level: model / model_name / modelId / model_id.
-      3. If a value is a dict containing a 'json' dict, search that dict (some executions wrap everything under a top-level 'json').
-      4. If a value is a JSON-encoded string that appears to contain the substring 'model', parse & search it (lightweight guard to avoid large parsing cost).
-      5. Breadth‑first fallback scan (bounded by node & depth caps) across dicts / lists for the recognized keys or an 'options' sub-dict containing them.
+    This function uses a series of heuristics to locate a model identifier,
+    searching for common keys like 'model', 'model_name', etc. It performs a
+    breadth-first search and can handle various n8n data structures, including
+    JSON-encoded strings.
 
-    Returns first discovered non-empty string value; otherwise None. Intentionally conservative to avoid misclassifying unrelated 'model' occurrences.
+    Args:
+        data: The object to search for a model name, typically `run.data`.
+
+    Returns:
+        The model name string if found, otherwise None.
     """
     if not data:
         return None
@@ -390,6 +556,28 @@ def _extract_model_value(data: Any) -> Optional[str]:
 
 
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
+    """Map a single n8n execution record to a Langfuse trace object.
+
+    This is the main transformation function. It orchestrates the conversion of
+    an `N8nExecutionRecord` into a `LangfuseTrace` containing a root span and a
+    span for each node run.
+
+    The process involves:
+    1.  Creating a trace and a root span for the entire execution.
+    2.  Flattening all node runs and sorting them chronologically by start time.
+    3.  Iterating through each node run to create a corresponding `LangfuseSpan`.
+    4.  For each span, resolving its parent, processing its I/O, detecting if it's
+        a generation, and extracting relevant metadata.
+    5.  Building the final `LangfuseTrace` object containing all spans.
+
+    Args:
+        record: The n8n execution record from the database.
+        truncate_limit: The character limit for serializing I/O fields.
+            A value of 0 or None disables truncation.
+
+    Returns:
+        A `LangfuseTrace` object ready for export.
+    """
     # Trace id is now exactly the n8n execution id (string). Simplicity & direct searchability in Langfuse UI.
     # NOTE: This shipper supports ONE n8n instance per Langfuse project. If you aggregate multiple instances
     # into a single Langfuse project, raw numeric execution ids may collide. Use separate Langfuse projects per instance.
@@ -545,8 +733,6 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
                 raw_input_obj = {"inferredFrom": prev_node, "data": last_output_data[prev_node]}
 
         raw_output_obj = run.data
-        input_str, input_trunc = _serialize_and_truncate(raw_input_obj, truncate_limit)
-        output_str, output_trunc = _serialize_and_truncate(raw_output_obj, truncate_limit)
         status_norm = (run.executionStatus or "").lower()
         if run.error:
             status_norm = "error"
@@ -557,6 +743,13 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             "n8n.node.execution_time_ms": run.executionTime,
             "n8n.node.execution_status": status_norm,
         }
+        # Normalize / unwrap noisy AI channel nesting for I/O surfaces
+        norm_input_obj = _normalize_node_io(raw_input_obj)
+        norm_output_obj = _normalize_node_io(raw_output_obj)
+        if norm_input_obj is not raw_input_obj or norm_output_obj is not raw_output_obj:
+            metadata["n8n.io.unwrapped_ai_channel"] = True
+        input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
+        output_str, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
         if node_name in child_agent_map:
             agent_name, link_type = child_agent_map[node_name]
             metadata["n8n.agent.parent"] = agent_name
