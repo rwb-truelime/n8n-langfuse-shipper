@@ -297,23 +297,75 @@ def _unwrap_ai_channel(container: Any) -> Any:
         return container
 
 
-def _normalize_node_io(obj: Any) -> Any:
-    """Apply a series of cleaning transformations to a node's I/O object.
+def _unwrap_generic_json(container: Any) -> Any:
+    """Promote nested list/channel wrappers exposing inner {"json": {...}} payloads to root.
 
-    This function serves as a pipeline for normalization passes. Currently, it
-    only applies the AI channel unwrapping, but it can be extended to include
-    other clean-up logic.
-
-    Args:
-        obj: The input or output object from a node run.
-
-    Returns:
-        The cleaned object.
+    Patterns addressed:
+      {"main": [[[{"json": {...}}]]]} -> {...}
+      Mixed multi-json -> list of json dicts (deduped)
+    Conservative traversal limits to avoid pathological shapes.
     """
-    if isinstance(obj, dict):
-        unwrapped = _unwrap_ai_channel(obj)
-        return unwrapped
-    return obj
+    try:
+        if not isinstance(container, dict):
+            return container
+        collected: List[Dict[str, Any]] = []
+
+        def _walk(o: Any, depth: int = 0):
+            if depth > 6 or len(collected) >= 50:
+                return
+            if isinstance(o, dict):
+                if "json" in o and isinstance(o.get("json"), dict):
+                    collected.append(o["json"])  # type: ignore[arg-type]
+                else:
+                    for v in o.values():
+                        _walk(v, depth + 1)
+            elif isinstance(o, list):
+                for item in o[:100]:
+                    _walk(item, depth + 1)
+
+        _walk(container)
+        if not collected:
+            return container
+        if len(collected) == 1:
+            return collected[0]
+        import json
+        seen = set()
+        uniq: List[Dict[str, Any]] = []
+        for c in collected:
+            try:
+                sig = json.dumps(c, sort_keys=True)[:4000]
+            except Exception:
+                sig = str(id(c))
+            if sig not in seen:
+                seen.add(sig)
+                uniq.append(c)
+        return uniq
+    except Exception:
+        return container
+
+
+def _normalize_node_io(obj: Any) -> Tuple[Any, Dict[str, bool]]:
+    """Normalize node input/output returning (cleaned_obj, flags).
+
+    Passes (order matters):
+      1. AI channel unwrapping (single ai_* key).
+      2. Generic json promotion (unwrap list/main wrappers down to json).
+
+    Flags:
+      unwrapped_ai_channel: AI channel wrapper removed.
+      unwrapped_json_root: generic json wrapper removed or promoted.
+    """
+    flags: Dict[str, bool] = {}
+    base = obj
+    if isinstance(base, dict):
+        after_ai = _unwrap_ai_channel(base)
+        if after_ai is not base:
+            flags["unwrapped_ai_channel"] = True
+        after_json = _unwrap_generic_json(after_ai)
+        if after_json is not after_ai:
+            flags["unwrapped_json_root"] = True
+        return after_json, flags
+    return base, flags
 
 
 _GENERATION_PROVIDER_MARKERS = [
@@ -743,11 +795,13 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             "n8n.node.execution_time_ms": run.executionTime,
             "n8n.node.execution_status": status_norm,
         }
-        # Normalize / unwrap noisy AI channel nesting for I/O surfaces
-        norm_input_obj = _normalize_node_io(raw_input_obj)
-        norm_output_obj = _normalize_node_io(raw_output_obj)
-        if norm_input_obj is not raw_input_obj or norm_output_obj is not raw_output_obj:
+        # Normalize / unwrap noisy AI & generic json wrappers
+        norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
+        norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
+        if input_flags.get("unwrapped_ai_channel") or output_flags.get("unwrapped_ai_channel"):
             metadata["n8n.io.unwrapped_ai_channel"] = True
+        if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):
+            metadata["n8n.io.unwrapped_json_root"] = True
         input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
         output_str, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
         if node_name in child_agent_map:
