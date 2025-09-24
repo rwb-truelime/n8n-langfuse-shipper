@@ -1,6 +1,19 @@
 """Map n8n workflow node types to Langfuse observation types.
 
-Port of the provided JavaScript logic (langfuse-type-mapper.js) with minor Pythonic adjustments.
+This module provides a classification mechanism to map an n8n node's type and
+category to a standardized Langfuse observation type (e.g., "generation",
+"tool", "agent"). It uses a multi-tiered fallback strategy to determine the
+most appropriate classification:
+
+1.  **Exact Match:** Checks if the `node_type` is in a predefined set for a
+    given observation type.
+2.  **Regex Match:** If no exact match is found, it tests the `node_type`
+    against a series of regular expressions.
+3.  **Category Fallback:** As a final resort, it uses the node's `category`
+    (e.g., "AI/LangChain Nodes") to infer a general observation type.
+
+This logic is a direct port of the JavaScript implementation provided in the
+project's reference materials, with minor Pythonic adjustments.
 """
 from __future__ import annotations
 
@@ -119,6 +132,21 @@ INTERNAL_LOGIC = {
 
 
 def _category_fallback(node_type: str, category: Optional[str]) -> Optional[str]:
+    """Determine observation type based on the node's category as a last resort.
+
+    This function provides a fallback mapping when exact and regex matches fail.
+    It uses the broad category assigned to a node in the n8n UI (e.g.,
+    "AI/LangChain Nodes", "Transform Nodes") to make a general classification.
+
+    Args:
+        node_type: The specific type of the node (used for disambiguation within
+            "Core Nodes").
+        category: The category of the node, as defined in n8n.
+
+    Returns:
+        A string representing the inferred observation type, or None if no
+        mapping is found.
+    """
     if not category:
         return None
     match category:
@@ -139,6 +167,22 @@ def _category_fallback(node_type: str, category: Optional[str]) -> Optional[str]
 
 
 def map_node_to_observation_type(node_type: Optional[str], category: Optional[str]) -> Optional[str]:
+    """Map an n8n node to a Langfuse observation type using a fallback strategy.
+
+    The function follows a specific precedence order to classify the node:
+    1.  Checks for an exact match of `node_type` in `EXACT_SETS`.
+    2.  If no exact match, searches for a regex match in `REGEX_RULES`.
+    3.  If still no match, falls back to `_category_fallback` to infer from
+        the node's `category`.
+
+    Args:
+        node_type: The type of the n8n node (e.g., "OpenAi", "If").
+        category: The category of the node (e.g., "AI/LangChain Nodes").
+
+    Returns:
+        The corresponding Langfuse observation type as a string (e.g.,
+        "generation", "chain"), or None if no classification could be made.
+    """
     if not node_type:
         return None
     # 1. Exact set
