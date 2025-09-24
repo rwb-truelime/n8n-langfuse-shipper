@@ -1,7 +1,19 @@
 """Shipper: converts internal Langfuse models to real OpenTelemetry spans and exports.
 
-Iteration 2: minimal implementation creating a trace with correct timing. More advanced
-attribute enrichment and media handling comes later.
+This module is the "L" (Load) in the ETL pipeline. It takes the `LangfuseTrace`
+objects produced by the `mapper` module and converts them into OpenTelemetry (OTLP)
+spans. These spans are then exported to a configured Langfuse OTLP endpoint.
+
+Key responsibilities include:
+- One-time initialization of the OTLP exporter with credentials and endpoint config.
+- Mapping a `LangfuseTrace` object to a hierarchy of OTLP spans.
+- Translating fields from internal `LangfuseSpan` models into OTLP attributes
+  according to Langfuse conventions (e.g., `langfuse.observation.type`).
+- Generating a human-readable but spec-compliant OTLP trace ID that embeds the
+  original n8n execution ID for easy cross-referencing.
+- Handling `dry-run` mode for testing and validation.
+- Implementing a simple backpressure mechanism to prevent memory overruns during
+  high-throughput exports.
 """
 from __future__ import annotations
 
@@ -26,6 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 def _init_otel(settings: Settings) -> None:
+    """Initialize the OpenTelemetry tracer provider and OTLP exporter.
+
+    This function sets up the global tracer provider with a batch span processor
+    and an OTLPSpanExporter configured for the Langfuse endpoint. It handles
+    authentication by encoding the public and secret keys into a Basic Auth
+    header.
+
+    The initialization is idempotent and will only run once.
+
+    Args:
+        settings: The application settings containing configuration for the
+            Langfuse host, keys, and OTLP exporter parameters.
+    """
     global _initialized
     if _initialized:
         return
@@ -80,6 +105,16 @@ def _init_otel(settings: Settings) -> None:
 
 
 def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: ignore
+    """Map attributes from a LangfuseSpan model to an OTel span.
+
+    This function translates the fields of the internal `LangfuseSpan` data model
+    into the corresponding OpenTelemetry attributes, following the conventions
+    expected by Langfuse.
+
+    Args:
+        span_ot: The OpenTelemetry Span object to which attributes will be applied.
+        span_model: The internal `LangfuseSpan` model containing the data.
+    """
     span_ot.set_attribute("langfuse.observation.type", span_model.observation_type)
     if span_model.model:
         span_ot.set_attribute("langfuse.observation.model.name", span_model.model)
@@ -142,9 +177,22 @@ def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
 
 
 def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool = True) -> None:
-    """Export a LangfuseTrace via OTLP.
+    """Export a LangfuseTrace object as a collection of OTLP spans.
 
-    dry_run: if True, skip actual OTLP network send.
+    This function orchestrates the conversion of a single `LangfuseTrace` into
+    a root OTLP span and its children. It sets up the parent-child relationships,
+    applies all attributes, and manages the lifecycle of the spans.
+
+    A simple backpressure mechanism is included: if the number of unflushed spans
+    exceeds a soft limit, the function will sleep briefly to allow the exporter
+    to catch up.
+
+    Args:
+        trace_model: The internal trace model to be exported.
+        settings: Application settings, used for OTLP initialization and
+            backpressure configuration.
+        dry_run: If True, logs the intent to export but does not send any data.
+            If False, initializes OTLP (if needed) and exports the trace.
     """
     if dry_run:
         logging.getLogger(__name__).info(
@@ -271,7 +319,11 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
 
 
 def shutdown_exporter():  # pragma: no cover - simple shutdown hook
-    """Flush and shutdown tracer provider (call at end of short-lived process)."""
+    """Flush any buffered spans and shut down the OTLP exporter.
+
+    This function should be called at the end of the application's lifecycle to
+    ensure that all telemetry data is sent before the process exits.
+    """
     provider = trace.get_tracer_provider()
     try:
         if hasattr(provider, "shutdown"):
