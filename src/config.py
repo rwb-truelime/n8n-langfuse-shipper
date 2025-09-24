@@ -1,3 +1,13 @@
+"""Application configuration management using Pydantic Settings.
+
+This module defines the `Settings` class, which loads configuration parameters
+from environment variables and a `.env` file. It centralizes all tunable
+parameters, from database connection details to logging levels and exporter
+behavior.
+
+The `get_settings` function provides a cached, singleton instance of the
+configuration, ensuring consistent settings throughout the application.
+"""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -7,11 +17,12 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
-    """Application configuration loaded from environment variables.
+    """Defines all application configuration parameters.
 
-    All fields are optional to allow flexible composition in different environments; validation
-    for critical fields (like credentials) can happen at runtime when components requiring them
-    are initialized.
+    This class uses `pydantic-settings` to automatically load values from
+    environment variables or a `.env` file. It includes a validator to
+    dynamically construct the PostgreSQL DSN from component parts if it's not
+    provided directly, offering flexible connection configuration.
     """
 
     model_config = _SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -89,6 +100,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def build_dsn_if_needed(self):  # type: ignore[override]
+        """Construct the PostgreSQL DSN from component parts if not provided.
+
+        This validator runs after initial model creation. If `PG_DSN` is not set,
+        it attempts to build it from individual `DB_POSTGRESDB_*` environment
+        variables. This provides compatibility with n8n's typical environment
+        setup.
+
+        Returns:
+            The validated `Settings` instance, with `PG_DSN` potentially populated.
+        """
         if not self.PG_DSN and self.DB_POSTGRESDB_HOST and self.DB_POSTGRESDB_DATABASE:
             user = self.DB_POSTGRESDB_USER or "postgres"
             pwd = self.DB_POSTGRESDB_PASSWORD or ""
@@ -100,4 +121,12 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:  # pragma: no cover - trivial
+    """Return a cached, singleton instance of the application settings.
+
+    Using `lru_cache` ensures that the `Settings` object is created only once,
+    preventing repeated file I/O and environment variable parsing.
+
+    Returns:
+        The application's `Settings` instance.
+    """
     return Settings()
