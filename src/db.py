@@ -1,3 +1,11 @@
+"""Database interaction layer for fetching n8n execution records.
+
+This module contains the "E" (Extract) part of the ETL pipeline. It provides
+a class, `ExecutionSource`, responsible for connecting to the n8n PostgreSQL
+database and streaming execution records in batches. It handles dynamic table
+naming (schema and prefix), connection management, and resilient fetching with
+exponential backoff.
+"""
 from __future__ import annotations
 
 from typing import AsyncGenerator, Optional, List, Dict, Any
@@ -26,7 +34,12 @@ DEFAULT_BATCH_SIZE = 100
 class ExecutionSource:
     """Data source for streaming n8n execution records from PostgreSQL.
 
-    Fetches joined rows from `n8n_execution_entity` and `n8n_execution_data` incrementally by id.
+    This class handles the connection to the database and provides an async
+    generator to stream execution records. It fetches joined rows from the
+    execution entity and data tables incrementally by their primary key.
+
+    It dynamically constructs table names based on schema and prefix settings,
+    allowing it to work with various n8n database configurations.
     """
 
     def __init__(
@@ -38,13 +51,22 @@ class ExecutionSource:
         table_prefix: Optional[str] = None,
         require_execution_metadata: bool = False,
     ):
-        """Create a new execution source.
+        """Initialize the execution source and resolve database configuration.
+
+        The schema and table prefix are resolved with the following precedence:
+        1.  Explicit arguments passed to the constructor.
+        2.  Environment variables (`DB_POSTGRESDB_SCHEMA`, `DB_TABLE_PREFIX`).
+        3.  Default values ('public' for schema, 'n8n_' for prefix).
 
         Args:
-            dsn: Postgres connection string.
-            batch_size: Fetch batch size.
-            schema: Override DB schema (falls back to env then 'public').
-            table_prefix: Explicit table prefix. Use empty string for none. If None, fallback to env semantics.
+            dsn: The full PostgreSQL connection string.
+            batch_size: The number of records to fetch in each database query.
+            schema: The database schema to use.
+            table_prefix: The prefix for n8n's tables (e.g., 'n8n_'). An empty
+                string means no prefix.
+            require_execution_metadata: If True, only executions that have at
+                least one corresponding row in the `execution_metadata` table
+                will be fetched.
         """
         self._dsn = dsn
         self._batch_size = batch_size
@@ -90,6 +112,18 @@ class ExecutionSource:
 
     @asynccontextmanager
     async def _connect(self) -> AsyncGenerator[AsyncConnection, None]:  # type: ignore
+        """Create and manage an asynchronous database connection.
+
+        This is a private context manager that handles the lifecycle of a
+        `psycopg.AsyncConnection`, ensuring it is properly closed.
+
+        Yields:
+            An active `psycopg.AsyncConnection` object.
+
+        Raises:
+            RuntimeError: If the DSN is not configured or `psycopg` is not
+                installed.
+        """
         if not self._dsn:
             raise RuntimeError("PG_DSN is empty; cannot establish database connection")
         if psycopg is None:  # pragma: no cover
@@ -112,6 +146,26 @@ class ExecutionSource:
     async def _fetch_batch(
         self, conn: Any, last_id: int, limit: int
     ) -> List[Dict[str, Any]]:  # conn typed as Any for compatibility
+        """Fetch a single batch of execution records from the database.
+
+        This method executes a SQL query to get the next batch of records after
+        a given ID. It is decorated with `tenacity.retry` to handle transient
+        database errors with exponential backoff.
+
+        The SQL query is constructed dynamically to include the correct schema
+        and table prefix. If `_require_execution_metadata` is True, it adds an
+        `EXISTS` clause to filter for executions with associated metadata.
+
+        Args:
+            conn: The active async database connection.
+            last_id: The ID of the last record from the previous batch, used for
+                pagination.
+            limit: The maximum number of records to fetch.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a fetched
+            execution record.
+        """
         # Table names with prefix
         entity_table = f'"{self._schema}"."{self._entity_table_name}"'
         data_table = f'"{self._schema}"."{self._data_table_name}"'
@@ -169,13 +223,21 @@ class ExecutionSource:
     async def stream(
         self, start_after_id: Optional[int] = None, limit: Optional[int] = None
     ) -> AsyncGenerator[dict, None]:
-        """Stream execution records.
+        """Stream execution records from the database.
+
+        This is the main public method of the class. It acts as an asynchronous
+        generator, continuously fetching and yielding batches of execution
+        records until the specified limit is reached or no more records are
+        available.
 
         Args:
-            start_after_id: resume after this execution id (exclusive).
-            limit: maximum number of executions to yield (None for unlimited).
+            start_after_id: If provided, streaming will start from the record
+                immediately after this execution ID (exclusive).
+            limit: The total maximum number of records to yield. If None, it
+                streams until the end of the table.
+
         Yields:
-            Dict with keys: id, workflowId, status, startedAt, stoppedAt, workflowData, data
+            A dictionary representing a single n8n execution record.
         """
         if not self._dsn:
             logger.warning("PG_DSN not set; no executions will be streamed")
