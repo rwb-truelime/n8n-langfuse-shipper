@@ -1,0 +1,88 @@
+{
+  // VS Code debug configurations for n8n-langfuse-shipper
+  // Uses Python module entrypoint (python -m src backfill ...)
+  // Loads environment variables from .env if present.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backfill (Dry Run)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "src",
+      "args": [
+        "backfill",
+        "--limit",
+        "25",
+        "--dry-run",
+        "--debug"
+      ],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Backfill (Real Export)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "src",
+      "args": [
+        "backfill",
+        "--limit",
+        "100",
+        "--no-dry-run",
+        "--debug"
+      ],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Backfill (Start After ID)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "src",
+      "args": [
+        "backfill",
+        "--start-after-id",
+        "38",
+        "--limit",
+        "1",
+        "--dry-run",
+        "--debug"
+      ],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Run Module (Custom Args Prompt)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "src",
+      "args": [],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "PyTest (All Tests)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q"],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "PyTest (Single File Prompt)",
+  "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    }
+  ]
+}
