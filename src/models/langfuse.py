@@ -1,3 +1,9 @@
+"""Pydantic models for the internal representation of Langfuse objects.
+
+These models define the logical structure of traces, spans, and usage data
+before they are converted into OpenTelemetry (OTLP) objects by the `shipper`.
+They serve as the target data structure for the `mapper` module.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,14 +12,11 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class LangfuseUsage(BaseModel):
-    """Canonical token usage counts.
+    """Represents canonical token usage counts for a generation.
 
-    Mapper normalizes any incoming n8n `tokenUsage` variants (promptTokens/completionTokens/totalTokens
-    OR prompt/completion/total OR already-normalized input/output/total) into this shape.
-    Exporter maps (OTel GenAI spec current names, legacy names removed):
-        input  -> gen_ai.usage.input_tokens
-        output -> gen_ai.usage.output_tokens
-        total  -> gen_ai.usage.total_tokens (still accepted in spec)
+    The mapper normalizes various `tokenUsage` formats from n8n into this
+    standardized structure. The exporter then maps these fields to the
+    corresponding OTel GenAI semantic conventions.
     """
     input: Optional[int] = None
     output: Optional[int] = None
@@ -21,12 +24,12 @@ class LangfuseUsage(BaseModel):
 
 
 class LangfuseSpan(BaseModel):
-    """Logical span / observation prior to OTLP emission.
+    """Represents a single logical observation (span, generation, event, etc.).
 
-    Added optional fields (Priority 1):
-    - usage (preferred) + deprecated token_usage alias for backwards compatibility
-    - level (Langfuse severity mapping)
-    - status_message (error message / diagnostic detail)
+    This model is the internal representation of a span before it is converted
+    to an OTLP span. It includes core timing and hierarchy information, I/O
+    payloads, and Langfuse-specific metadata like observation type, model, and
+    token usage.
     """
 
     id: str
@@ -49,15 +52,16 @@ class LangfuseSpan(BaseModel):
 
     @model_validator(mode="after")
     def _noop(self):  # type: ignore[override]
+        """A no-op validator, can be used for future cross-field validation."""
         return self
 
 
 class LangfuseTrace(BaseModel):
-    """Logical trace container.
+    """Represents a complete logical trace, containing one or more spans.
 
-    Added optional fields (Priority 2) for closer parity with Langfuse OTLP property mapping:
-    - user_id, session_id, release, public, tags, version, environment
-    - trace_input / trace_output (distinct from root span input/output; exporter may map these)
+    This is the root object created by the `mapper` for each n8n execution. It
+    holds all associated spans and trace-level metadata that will be attached
+    to the root span during OTLP export.
     """
 
     id: str
