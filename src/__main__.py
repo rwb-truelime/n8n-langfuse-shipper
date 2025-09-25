@@ -419,6 +419,8 @@ def backfill(
     async def _run():
         count = 0
         last_id = effective_start_after
+        earliest_started: Optional[Any] = None  # track earliest startedAt among processed
+        latest_started: Optional[Any] = None
         async for raw in source.stream(start_after_id=effective_start_after, limit=limit):
             record = N8nExecutionRecord(
                 id=raw["id"],
@@ -460,6 +462,19 @@ def backfill(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
             export_trace(trace, settings, dry_run=dry_run)
+            # Track earliest / latest window for user reconciliation with Langfuse UI filters.
+            if earliest_started is None or record.startedAt < earliest_started:
+                earliest_started = record.startedAt
+            if latest_started is None or record.startedAt > latest_started:
+                latest_started = record.startedAt
+            if debug:
+                logging.getLogger(__name__).info(
+                    "Exported execution %s -> trace %s spans=%d startedAt=%s",
+                    record.id,
+                    trace.id,
+                    len(trace.spans),
+                    record.startedAt.isoformat(),
+                )
             count += 1
             last_id = record.id
         if not dry_run and last_id is not None:
@@ -470,6 +485,12 @@ def backfill(
         typer.echo(
             f"Processed {count} execution(s). dry_run={dry_run} start_after={effective_start_after}"
         )
+        if count:
+            logging.getLogger(__name__).info(
+                "Execution time window processed: earliest_started=%s latest_started=%s (UTC). If Langfuse UI date filter excludes part of this range, displayed trace count may be lower.",
+                getattr(earliest_started, 'isoformat', lambda: earliest_started)(),
+                getattr(latest_started, 'isoformat', lambda: latest_started)(),
+            )
 
     asyncio.run(_run())
     # Ensure exporter flush & shutdown for short-lived process reliability

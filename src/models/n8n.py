@@ -55,6 +55,8 @@ class WorkflowNode(BaseModel):
     name: str
     type: str
     category: Optional[str] = None
+    # Raw parameters dict as stored in workflow definition; used for model fallback extraction
+    parameters: Optional[Dict[str, Any]] = None
 
 
 class WorkflowData(BaseModel):

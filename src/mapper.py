@@ -26,7 +26,7 @@ from collections import deque
 import re
 from uuid import uuid5, UUID, NAMESPACE_DNS
 
-from .models.n8n import N8nExecutionRecord, NodeRun
+from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
 from .models.langfuse import (
     LangfuseTrace,
     LangfuseSpan,
@@ -271,7 +271,7 @@ def _unwrap_ai_channel(container: Any) -> Any:
                     collected.append(j)  # type: ignore[arg-type]
                 else:
                     # If dict itself seems like a payload (has model/usage markers) collect directly
-                    if any(k in v for k in ("model", "model_name", "modelId", "model_id", "tokenUsage")):
+                    if any(k in v for k in ("model", "model_name", "modelId", "model_id", "tokenUsage", "tokenUsageEstimate")):
                         collected.append(v)  # type: ignore[arg-type]
             # Other primitive types ignored
 
@@ -395,10 +395,10 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
         True if the node run is classified as a generation, False otherwise.
     """
     # Fast path: top-level tokenUsage
-    if node_run.data and "tokenUsage" in node_run.data:
+    if node_run.data and any(k in node_run.data for k in ("tokenUsage", "tokenUsageEstimate")):
         return True
     # Nested search (common n8n shape: {"ai_languageModel": [[{"json": {"tokenUsage": {...}}}]]})
-    if _find_nested_key(node_run.data, "tokenUsage") is not None:
+    if any(_find_nested_key(node_run.data, k) is not None for k in ("tokenUsage", "tokenUsageEstimate")):
         return True
     lowered = node_type.lower()
     if any(excl in lowered for excl in ("embedding", "embeddings", "reranker")):
@@ -409,38 +409,46 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
 def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     """Extract and normalize token usage data from a node run.
 
-    This function searches for a `tokenUsage` object within the `node_run.data`
-    and normalizes various key formats (e.g., `promptTokens`, `completion`)
-    into a canonical `LangfuseUsage` object with `input`, `output`, and `total`
-    fields. It can also synthesize `total` if `input` and `output` are present.
-
-    Args:
-        node_run: The node run data to process.
-
-    Returns:
-        A `LangfuseUsage` object if token usage data is found, otherwise None.
+    Supports both 'tokenUsage' and 'tokenUsageEstimate' (precedence: tokenUsage).
+    Normalizes various key formats (promptTokens, completion, etc.) into
+    LangfuseUsage(input, output, total). Synthesizes total when possible.
     """
-    tu = node_run.data.get("tokenUsage") if node_run.data else None
-    if tu is None and node_run.data:
-        container = _find_nested_key(node_run.data, "tokenUsage")
-        if container and isinstance(container.get("tokenUsage"), dict):  # type: ignore[arg-type]
-            tu = container["tokenUsage"]
+    data = node_run.data or {}
+    tu: Any = None
+
+    # 1. Top-level fast path (precedence order)
+    for key in ("tokenUsage", "tokenUsageEstimate"):
+        if isinstance(data, dict) and isinstance(data.get(key), dict):
+            tu = data.get(key)
+            break
+
+    # 2. Nested search if not found top-level
+    if tu is None:
+        for key in ("tokenUsage", "tokenUsageEstimate"):
+            container = _find_nested_key(data, key)
+            if container and isinstance(container.get(key), dict):  # type: ignore[arg-type]
+                tu = container[key]
+                break
+
     if not isinstance(tu, dict):
         return None
+
     # Gather candidates
     input_val = tu.get("input")
     output_val = tu.get("output")
     total_val = tu.get("total")
+
     # Legacy verbose keys
     p_tokens = tu.get("promptTokens")
     c_tokens = tu.get("completionTokens")
     t_tokens = tu.get("totalTokens")
+
     # Alternate short legacy keys
     p_short = tu.get("prompt")
     c_short = tu.get("completion")
-    t_short = tu.get("total")  # already captured
+    # total already in total_val (or t_tokens)
 
-    # Reconcile precedence (normalized first)
+    # Reconcile precedence
     if input_val is None:
         if p_tokens is not None:
             input_val = p_tokens
@@ -459,8 +467,10 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
                 total_val = int(input_val) + int(output_val)  # type: ignore[arg-type]
             except Exception:
                 pass
+
     if input_val is None and output_val is None and total_val is None:
         return None
+
     return LangfuseUsage(input=input_val, output=output_val, total=total_val)
 
 
@@ -469,7 +479,7 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dic
 
     This helper traverses a nested structure of dictionaries and lists to find
     the first dictionary that has `target` as a key. It is used to locate
-    data like `tokenUsage` or `model` which may be deeply nested.
+    data like `tokenUsage`, `tokenUsageEstimate`, or `model` which may be deeply nested.
 
     Args:
         data: The object to search.
@@ -607,6 +617,46 @@ def _extract_model_value(data: Any) -> Optional[str]:
     return None
 
 
+def _looks_like_model_param_key(key: str) -> bool:
+    lk = key.lower()
+    if lk == "mode":  # exclude common false positive
+        return False
+    return ("model" in lk) or ("deployment" in lk)
+
+
+def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    """Attempt to extract a model/deployment name from a static workflow node's parameters.
+
+    Returns (model_value, key_path, extra_meta) or None.
+    extra_meta may include deployment hint flags.
+    """
+    params = getattr(node, "parameters", None)
+    if not isinstance(params, dict):
+        return None
+    from collections import deque as _dq
+    queue = _dq([(params, "parameters", 0)])
+    seen = 0
+    max_nodes = 120
+    while queue and seen < max_nodes:
+        current, path, depth = queue.popleft()
+        seen += 1
+        if not isinstance(current, dict):
+            continue
+        # Direct keys first
+        for k, v in current.items():
+            if isinstance(v, str) and v and not v.startswith("={{") and _looks_like_model_param_key(k):
+                meta: Dict[str, Any] = {}
+                if "azure" in node.type.lower():
+                    meta["n8n.model.is_deployment"] = True
+                return v, f"{path}.{k}", meta
+        # Recurse breadth-first
+        if depth < 4:
+            for k, v in current.items():
+                if isinstance(v, dict):
+                    queue.append((v, f"{path}.{k}", depth + 1))
+    return None
+
+
 def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
     """Map a single n8n execution record to a Langfuse trace object.
 
@@ -656,6 +706,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
     wf_node_lookup: Dict[str, Dict[str, Optional[str]]] = {
         n.name: {"type": n.type, "category": n.category} for n in record.workflowData.nodes
     }
+    wf_node_obj: Dict[str, WorkflowNode] = {n.name: n for n in record.workflowData.nodes}
 
     # Root span representing the execution as a whole
     root_span_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:root"))
@@ -833,14 +884,44 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
                 model_val = top_model
             else:
                 model_val = _extract_model_value(search_root)
-        if model_val is None and is_generation:
-            # Attach diagnostic metadata to help identify why extraction failed (list a few top-level keys only)
-            metadata["n8n.model.missing"] = True
-            try:
-                if isinstance(run.data, dict):
-                    metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
-            except Exception:
-                pass
+        if model_val is None:
+            # Decide whether to attempt parameter fallback:
+            #  - Always for generation spans
+            #  - Also when parameters contain any model/deployment key even if not generation (tool-like nodes producing model context)
+            attempt_param_fallback = is_generation
+            node_static = wf_node_obj.get(node_name)
+            if not attempt_param_fallback and node_static and isinstance(getattr(node_static, "parameters", None), dict):
+                params_dict = getattr(node_static, "parameters") or {}
+                # Check top-level keys
+                for pk in params_dict.keys():
+                    if _looks_like_model_param_key(pk):
+                        attempt_param_fallback = True
+                        break
+                # Shallow dive into 'options' or similar dicts for early signal (e.g., deploymentName only nested)
+                if not attempt_param_fallback:
+                    for sk, sv in params_dict.items():
+                        if isinstance(sv, dict):
+                            for pk in sv.keys():
+                                if _looks_like_model_param_key(pk):
+                                    attempt_param_fallback = True
+                                    break
+                        if attempt_param_fallback:
+                            break
+            if attempt_param_fallback and node_static is not None:
+                fallback = _extract_model_from_parameters(node_static)
+                if fallback:
+                    model_val, key_path, extra_meta = fallback
+                    metadata["n8n.model.from_parameters"] = True
+                    metadata["n8n.model.parameter_key"] = key_path
+                    for k, v in extra_meta.items():
+                        metadata[k] = v
+            if model_val is None and is_generation:
+                metadata["n8n.model.missing"] = True
+                try:
+                    if isinstance(run.data, dict):
+                        metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
+                except Exception:
+                    pass
         span = LangfuseSpan(
             id=span_id,
             trace_id=trace_id,
