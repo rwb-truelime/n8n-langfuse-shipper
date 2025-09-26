@@ -336,7 +336,7 @@ Additional notes:
 - `PG_DSN`: Full PostgreSQL connection string (takes precedence).
 - `DB_POSTGRESDB_HOST`, `DB_POSTGRESDB_PORT`, `DB_POSTGRESDB_DATABASE`, `DB_POSTGRESDB_USER`, `DB_POSTGRESDB_PASSWORD`: Component-based DB connection variables.
 - `DB_POSTGRESDB_SCHEMA`: Database schema (default: `public`).
-- `DB_TABLE_PREFIX`: Optional table prefix (default if UNSET: `n8n_`; if set to empty string `""` no prefix is applied; any other explicit value is used verbatim). All table names are constructed dynamically at runtime—never hard-code `n8n_` in code paths.
+- `DB_TABLE_PREFIX`: Required table prefix (no default). Set `n8n_` explicitly or blank for none.
 - `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`.
 - `LOG_LEVEL`, `FETCH_BATCH_SIZE`, `TRUNCATE_FIELD_LEN` (0 disables truncation; >0 enables).
 - `REQUIRE_EXECUTION_METADATA` (bool): only include executions having at least one row in `<prefix>execution_metadata` with `executionId = e.id`.
@@ -344,7 +344,7 @@ Additional notes:
 
 ### Environment Precedence Rules
 1. `PG_DSN` (if non-empty) overrides component variables.
-2. `DB_TABLE_PREFIX` unset → default `n8n_`; set to empty string → no prefix.
+2. `DB_TABLE_PREFIX` must be explicitly set (blank allowed = no prefix).
 3. `TRUNCATE_FIELD_LEN=0` means disabled (still strip binary); positive value triggers truncation & size guard for propagation caching.
 4. CLI flags override env values for that invocation.
 
@@ -379,6 +379,28 @@ n8n-langfuse-shipper/
 ├── pyproject.toml
 └── README.md
 ```
+
+## Shell & Command Execution Policy (Fish)
+The development and CI environments use the Fish shell. To avoid portability issues and quoting bugs, follow these strict rules when generating or documenting commands:
+
+1. Always assume Fish syntax (NOT Bash). Do not use heredocs (<<EOF), `$()` command substitution inside single quotes, or Bash-specific arrays.
+2. Environment variable assignment uses Fish semantics: `set -x VAR value` (export) instead of `VAR=value command` prefix style.
+3. Path modification example: `set -x PATH /custom/bin $PATH`.
+4. For quick Python one‑liners during testing (package presence, version introspection, etc.) you MUST use the following pattern (double quotes wrapping the -c string, single quotes inside Python where needed):
+
+    ```fish
+    python -c "import sys, pkgutil; print('ruff installed?', 'ruff' in {m.name for m in pkgutil.iter_modules()})"
+    ```
+
+    Rationale: This quoting pattern is Fish-safe, avoids unintended interpolation, and keeps inner single quotes available for Python string literals.
+5. If a Python snippet grows beyond ~120 characters or needs multiline logic, write a temporary script file instead of chaining with semicolons in a `python -c` call.
+6. Never rely on `source .venv/bin/activate`; prefer explicit interpreter paths or tools (e.g., `python -m pip install ...`). Activation scripts differ under Fish (`source .venv/bin/activate.fish`).
+7. When showing multiple sequential test commands, put each on its own line in a fenced block with `fish` language tag.
+8. Avoid trailing backslashes for line continuation; prefer separate lines.
+9. When checking for a module, only use the standardized command above (do not introduce alternative detection snippets) to maintain consistency in caching and logs.
+10. Do not emit Bash-specific variable substitution like `${VAR}` unless inside a Python string; in Fish use `$VAR`.
+
+Any deviation from these rules in generated instructions or tooling commands should be treated as a correctness issue and corrected in the same PR.
 
 ## Conventions & Best Practices
 - **Idempotency:** Use deterministic UUIDs for spans and traces.

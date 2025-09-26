@@ -148,7 +148,7 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | `DB_POSTGRESDB_USER` | `postgres` | (none) | DB user (if DSN built). |
 | `DB_POSTGRESDB_PASSWORD` | "" | (none) | DB password (optional). |
 | `DB_POSTGRESDB_SCHEMA` | `public` | (none) | DB schema for tables. |
-| `DB_TABLE_PREFIX` | `n8n_` (unset) / none (blank) | (none) | Table name prefix. Unset ⇒ `n8n_`; set to empty string ⇒ no prefix; any other explicit value used verbatim. |
+| `DB_TABLE_PREFIX` | (required) | (none) | Mandatory table name prefix. Set `DB_TABLE_PREFIX=n8n_` explicitly or blank (`DB_TABLE_PREFIX=`) for none. |
 | `FETCH_BATCH_SIZE` | `100` | (none) | Max executions fetched per DB batch. |
 | `CHECKPOINT_FILE` | `.backfill_checkpoint` | `--checkpoint-file` | Path for last processed execution id. |
 | `TRUNCATE_FIELD_LEN` | `0` | `--truncate-len` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
@@ -252,7 +252,7 @@ set -x LANGFUSE_SECRET_KEY lf_sk_...
 
 If both component vars and `PG_DSN` are set, `PG_DSN` takes precedence.
 
-Prefix semantics: If `DB_TABLE_PREFIX` is unset, it defaults to `n8n_`. If it is present but blank (`DB_TABLE_PREFIX=`), no prefix is applied (tables expected as `execution_entity`, `execution_data`).
+Prefix semantics: `DB_TABLE_PREFIX` is required. Provide `DB_TABLE_PREFIX=n8n_` for standard prefixed tables or `DB_TABLE_PREFIX=` (blank) for unprefixed tables. No implicit default.
 
 ---
 
