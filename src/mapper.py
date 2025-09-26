@@ -375,6 +375,8 @@ _GENERATION_PROVIDER_MARKERS = [
     "lmchat", "lmopenai",
     # Newly added / upstream supported vendors
     "cohere", "deepseek", "ollama", "openrouter", "bedrock", "vertex", "huggingface", "xai",
+    # Custom provider marker for Limescape Docs node
+    "limescape",
 ]
 
 
@@ -431,7 +433,29 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
                 break
 
     if not isinstance(tu, dict):
-        return None
+        # Limescape Docs custom usage keys may live directly in flattened data structure.
+        # Look for totalInputTokens / totalOutputTokens / totalTokens at any nesting level.
+        # We'll search top-level first, then one nested level to keep cost low.
+        def _scan_custom(obj: Any, depth: int = 2):
+            if depth < 0:
+                return None
+            if isinstance(obj, dict):
+                keys = obj.keys()
+                if any(k in keys for k in ("totalInputTokens", "totalOutputTokens", "totalTokens")):
+                    return obj
+                for v in list(obj.values())[:25]:  # shallow guard
+                    found = _scan_custom(v, depth - 1)
+                    if found:
+                        return found
+            elif isinstance(obj, list):
+                for item in obj[:25]:
+                    found = _scan_custom(item, depth - 1)
+                    if found:
+                        return found
+            return None
+        tu = _scan_custom(data)
+        if not isinstance(tu, dict):
+            return None
 
     # Gather candidates
     input_val = tu.get("input")
@@ -441,7 +465,12 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     # Legacy verbose keys
     p_tokens = tu.get("promptTokens")
     c_tokens = tu.get("completionTokens")
-    t_tokens = tu.get("totalTokens")
+    t_tokens = tu.get("totalTokens") or tu.get("totalInputTokens") or tu.get("totalOutputTokens")
+    # Limescape custom flattened keys (treat totalInputTokens / totalOutputTokens as input/output if canonical missing)
+    if input_val is None:
+        input_val = tu.get("totalInputTokens", input_val)
+    if output_val is None:
+        output_val = tu.get("totalOutputTokens", output_val)
 
     # Alternate short legacy keys
     p_short = tu.get("prompt")
@@ -621,6 +650,9 @@ def _looks_like_model_param_key(key: str) -> bool:
     lk = key.lower()
     if lk == "mode":  # exclude common false positive
         return False
+    # Exclude known non-model keys containing 'model'
+    if lk in {"modelprovider", "model_type", "modeltype", "modelprovidername"}:
+        return False
     return ("model" in lk) or ("deployment" in lk)
 
 
@@ -637,12 +669,30 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
     queue = _dq([(params, "parameters", 0)])
     seen = 0
     max_nodes = 120
+    priority_keys = [
+        "model",
+        "customModel",
+        "deploymentName",
+        "deployment",
+        "modelName",
+        "model_id",
+        "modelId",
+    ]
     while queue and seen < max_nodes:
         current, path, depth = queue.popleft()
         seen += 1
         if not isinstance(current, dict):
             continue
-        # Direct keys first
+        # 1. Priority exact key pass
+        for pk in priority_keys:
+            if pk in current:
+                v = current.get(pk)
+                if isinstance(v, str) and v and not v.startswith("={{"):
+                    meta: Dict[str, Any] = {}
+                    if "azure" in node.type.lower():
+                        meta["n8n.model.is_deployment"] = True
+                    return v, f"{path}.{pk}", meta
+        # 2. Generic fallback (excluding modelProvider handled in helper)
         for k, v in current.items():
             if isinstance(v, str) and v and not v.startswith("={{") and _looks_like_model_param_key(k):
                 meta: Dict[str, Any] = {}

@@ -61,7 +61,7 @@ Need more? Expand the detailed sections below.
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
 - Input propagation: child span input inferred from parent’s last output when `inputOverride` absent.
 - Generation detection + token usage extraction (`tokenUsage` variants normalized to input/output/total → `gen_ai.usage.*`).
-			- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` & `model` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
+			- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`, `limescape` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` & `model` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
 - OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.internal.as_root`, optional trace identity fields `user.id|session.id|langfuse.trace.tags|langfuse.trace.input|langfuse.trace.output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
@@ -295,7 +295,7 @@ python -m src backfill --start-after-id 12345 --limit 500 --dry-run
 | Agent/Tool/LLM/Memory relationship | Child span parented to Agent span via `ai_*` connection types |
 | LLM / embedding node with token usage | Single span classified as generation (usage + model attributes) |
 | Node type/category | Observation type (`agent`, `tool`, `chain`, `retriever`, etc.) via mapper |
-| Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total) | Normalized to input/output/total then emitted as `gen_ai.usage.input_tokens|output_tokens|total_tokens` (legacy prompt/completion names removed) |
+| Token usage (`tokenUsage` legacy promptTokens/completionTokens/totalTokens OR input/output/total; plus flattened `totalInputTokens` / `totalOutputTokens` / `totalTokens`) | Normalized to input/output/total then emitted as `gen_ai.usage.input_tokens|output_tokens|total_tokens` (legacy prompt/completion names removed) |
 
 Parenting precedence order:
 1. Agent hierarchy (if node has an `ai_*` edge to an agent, parent = agent span).

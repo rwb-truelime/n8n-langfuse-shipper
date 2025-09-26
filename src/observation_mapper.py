@@ -48,6 +48,8 @@ EXACT_SETS: Dict[str, Set[str]] = {
         "LmChatOpenRouter",
         "LmChatXAiGrok",
         "OpenAiAssistant",
+        # Custom extension: treat Limescape Docs node as generation regardless of heuristics.
+        "limescapeDocs",
     },
     "embedding": {
         "EmbeddingsAwsBedrock",
@@ -109,7 +111,7 @@ REGEX_RULES = [
     ("retriever", r"(retriev|vectorstore)"),
     ("generation", r"(lmchat|^lm[a-z]|chat|openai|anthropic|gemini|mistral|groq|cohere)"),
     ("tool", r"tool"),
-    ("chain", r"(chain|textsplitter|parser|memory|workflow)"),
+    ("chain", r"(chain|textsplitter|parser|memory)"),
     ("evaluator", r"(rerank|classif|sentiment|extract)"),
     ("guardrail", r"(perspective|rekognition|moderation|guardrail)"),
 ]

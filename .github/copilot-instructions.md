@@ -270,7 +270,7 @@ See the later "Generation Mapping" section for the current heuristics (deduplica
 Heuristics (ordered, current implementation):
 1. Presence of a `tokenUsage` object at any depth inside `run.data` (depth-limited recursive search; explicit signal).
 2. Fallback: node type (case-insensitive) contains any provider marker in the current set:
-    `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`.
+    `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`, `limescape`.
     Exclusions: if the type also contains `embedding`, `embeddings`, or `reranker`, it is NOT classified as a generation (to avoid misclassifying embedding/reranker tasks).
 
 Notes:
@@ -280,7 +280,7 @@ Notes:
 
 If matched:
 * Populate `LangfuseSpan.model` best-effort from node type or name, or (if absent) by breadth-first nested search for variant keys (`model`, `model_name`, `modelId`, `model_id`) inside run.data output channel wrappers (provider substring preserved as-is; no normalization). When a generation span lacks any model value a debug metadata flag `n8n.model.missing=true` is attached.
-* `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total.
+* `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total. Custom flattened Limescape Docs counters (`totalInputTokens`, `totalOutputTokens`, `totalTokens`) are also detected and mapped.
 * OTLP exporter emits `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
 ### Multimodality Mapping (Future)
@@ -304,6 +304,9 @@ If matched:
  12. Human-readable OTLP trace id embedding: exporter derives a deterministic 32-hex trace id ending with zero-padded execution id digits (function `_build_human_trace_id`). The logical `LangfuseTrace.id` stays the raw execution id string. Changing this requires updating tests (`test_trace_id_embedding.py`), README, and this file simultaneously.
 
 Binary stripping is unconditional (independent of truncation). Helpers: `_likely_binary_b64`, `_contains_binary_marker`, `_strip_binary_payload`. Future media upload will swap placeholders for `@@@langfuseMedia:<token>`.
+
+### Custom Node Classification (Limescape Docs)
+Custom node type `n8n-nodes-limescape-docs.limescapeDocs` is force-classified as a `generation` observation even when `tokenUsage` is absent. Provider marker `limescape` added to generation heuristic list. Flattened usage keys (`totalInputTokens`, `totalOutputTokens`, `totalTokens`) are recognized and mapped to `gen_ai.usage.*` attributes.
 
 ## OpenTelemetry Shipper
 The `shipper.py` module converts the internal `LangfuseTrace` model into OTel spans and exports them.
