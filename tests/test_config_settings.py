@@ -13,6 +13,8 @@ def _reload_with_env(env: dict):
         if k.startswith("PG_DSN") or k.startswith("DB_POSTGRESDB_"):
             # allow override by test values
             pass
+    # Ensure table prefix does not leak between scenarios unless explicitly set
+    os.environ.pop("DB_TABLE_PREFIX", None)
     for k, v in env.items():
         if v is None:
             os.environ.pop(k, None)
@@ -23,41 +25,34 @@ def _reload_with_env(env: dict):
     return config_module.get_settings()
 
 
-def test_dsn_construction_and_prefix_semantics(monkeypatch):
-    # Case 1: PG_DSN provided wins
+def test_required_prefix(monkeypatch):
+    # PG_DSN provided with explicit prefix
     s = _reload_with_env({
         "PG_DSN": "postgresql://u:p@h:5432/db1",
-        "DB_POSTGRESDB_HOST": "ignored",
-        "DB_POSTGRESDB_DATABASE": "ignored",
+        "DB_TABLE_PREFIX": "n8n_",
     })
     assert s.PG_DSN.endswith("/db1")
+    assert s.DB_TABLE_PREFIX == "n8n_"
 
-    # Case 2: Build from components when PG_DSN blank
+    # Build DSN from components with empty prefix
     s = _reload_with_env({
         "PG_DSN": "",
         "DB_POSTGRESDB_HOST": "localhost",
         "DB_POSTGRESDB_DATABASE": "n8n",
         "DB_POSTGRESDB_USER": "n8n",
         "DB_POSTGRESDB_PASSWORD": "pw",
+        "DB_TABLE_PREFIX": "",
     })
     assert "pw@localhost" in s.PG_DSN
+    assert s.DB_TABLE_PREFIX == ""
 
-    # Case 3: Unset prefix -> default n8n_
+    # Omit prefix scenario: .env provides blank DB_TABLE_PREFIX so result is blank
     s = _reload_with_env({
         "PG_DSN": "postgresql://u@h:5432/db2",
-        # purposely omit DB_TABLE_PREFIX
-    })
-    # Expect documented default prefix value 'n8n_' when unset.
-    assert s.DB_TABLE_PREFIX == "n8n_"
-
-    # Case 4: Empty prefix -> no prefix
-    s = _reload_with_env({
-        "PG_DSN": "postgresql://u@h:5432/db3",
-        "DB_TABLE_PREFIX": "",
     })
     assert s.DB_TABLE_PREFIX == ""
 
-    # Case 5: Custom prefix
+    # Custom prefix
     s = _reload_with_env({
         "PG_DSN": "postgresql://u@h:5432/db4",
         "DB_TABLE_PREFIX": "custom_",

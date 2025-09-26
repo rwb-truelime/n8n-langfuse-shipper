@@ -53,10 +53,8 @@ class ExecutionSource:
     ):
         """Initialize the execution source and resolve database configuration.
 
-        The schema and table prefix are resolved with the following precedence:
-        1.  Explicit arguments passed to the constructor.
-        2.  Environment variables (`DB_POSTGRESDB_SCHEMA`, `DB_TABLE_PREFIX`).
-        3.  Default values ('public' for schema, 'n8n_' for prefix).
+    The schema is resolved via explicit arg -> env -> default 'public'.
+    The table prefix is mandatory (explicit arg or DB_TABLE_PREFIX env). No implicit default.
 
         Args:
             dsn: The full PostgreSQL connection string.
@@ -75,20 +73,13 @@ class ExecutionSource:
             self._schema = schema or "public"
         else:
             self._schema = os.environ.get("DB_POSTGRESDB_SCHEMA") or "public"
-        # Resolve prefix with explicit parameter precedence
+        # Resolve mandatory prefix
         if table_prefix is not None:
-            # Caller explicitly provided (may be empty string meaning no prefix)
-            self._table_prefix = table_prefix
+            self._table_prefix = table_prefix  # may be empty
         else:
-            # Table prefix semantics:
-            #   - If DB_TABLE_PREFIX is UNSET -> default to 'n8n_'
-            #   - If DB_TABLE_PREFIX is set to empty string -> no prefix
-            #   - Otherwise use provided value verbatim
-            _raw_prefix = os.environ.get("DB_TABLE_PREFIX")
-            if _raw_prefix is None:
-                self._table_prefix = "n8n_"
-            else:
-                self._table_prefix = _raw_prefix  # may be empty string (meaning no prefix)
+            if "DB_TABLE_PREFIX" not in os.environ:
+                raise RuntimeError("DB_TABLE_PREFIX must be set explicitly (blank allowed for none)")
+            self._table_prefix = os.environ.get("DB_TABLE_PREFIX", "")
         # Basic safety: allow only alnum + underscore in prefix & schema
         if not re.fullmatch(r"[A-Za-z0-9_]+", self._schema):
             raise ValueError("Invalid schema name")

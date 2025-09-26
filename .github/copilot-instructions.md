@@ -413,6 +413,26 @@ Any deviation from these rules in generated instructions or tooling commands sho
  - Parent resolution precedence is fixed (agent hierarchy → runtime exact run → runtime last span → static reverse edge → root). Do not reorder without updating tests.
 - **Generation Detection:** Keep conservative; update tests when heuristics change.
 - **Metadata Keys:** Additions require justification + test coverage.
+- **Hard Line Length Cap (E501 ≤100 chars):** All new & modified lines MUST be ≤100 characters. Wrap proactively; do not rely on lint autofix. Only allow an overage when absolutely unavoidable (e.g., long URL or cryptographic hash constant) and then append `# noqa: E501  # reason`.
+
+### Line Length Wrapping Guidance
+1. Use parentheses for multi-line expressions; never backslashes.
+2. Break boolean conditions one clause per line inside parentheses.
+3. For long format/log strings, split using implicit concatenation:
+   ```python
+   logger.warning(
+       (
+           "gemini_empty_output_anomaly span=%s "
+           "prompt_tokens=%s total_tokens=%s completion_tokens=%s"
+       ),
+       node_name, pt, tt, ct,
+   )
+   ```
+4. Function definitions: one parameter per line when near limit.
+5. Dict / list literals: trailing commas + one key/value per line when wrapping.
+6. Avoid nested f-strings; compute intermediate variables.
+7. Refactor instead of `# noqa` whenever possible.
+8. Before committing, visually scan or run `ruff check` locally to ensure no >100 lines added.
 
 ## Reserved Metadata Keys
 Root span:
@@ -423,6 +443,21 @@ All spans (optional context):
 - `n8n.graph.inferred_parent`
 - `n8n.agent.parent`, `n8n.agent.link_type`
 - `n8n.truncated.input`, `n8n.truncated.output`
+
+Gemini empty-output anomaly (Gemini / Vertex chat generation bug) adds span-level keys when triggered:
+- `n8n.gen.empty_output_bug` (bool)
+- `n8n.gen.empty_generation_info` (bool, only if `generationInfo` object present but empty)
+- `n8n.gen.prompt_tokens`, `n8n.gen.total_tokens`, `n8n.gen.completion_tokens`
+Condition (all true unless noted):
+1. `generations[0][0].text == ""`
+2. `promptTokens > 0`
+3. `totalTokens >= promptTokens`
+4. `completionTokens == 0` OR field absent
+5. (Optional reinforcing) `generationInfo == {}` ⇒ sets `n8n.gen.empty_generation_info`
+Effect:
+* Span `status` forced to `error`.
+* Synthetic `error.message = "Gemini empty output anomaly detected"` inserted when original `run.error` missing.
+* Structured log line emitted: `gemini_empty_output_anomaly span=<node> prompt_tokens=<int> total_tokens=<int> completion_tokens=<int>`.
 
 Span status normalization: `LangfuseSpan.status` (if set) is derived from the logical success/error outcome and is distinct from the raw `n8n.node.execution_status` metadata value.
 

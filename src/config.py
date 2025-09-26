@@ -11,9 +11,11 @@ configuration, ensuring consistent settings throughout the application.
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic_settings import BaseSettings, SettingsConfigDict as _SettingsConfigDict
-from pydantic import Field, model_validator
 from typing import Optional
+
+from pydantic import Field, ValidationError, model_validator
+from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict as _SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -38,7 +40,10 @@ class Settings(BaseSettings):
     DB_POSTGRESDB_USER: Optional[str] = None
     DB_POSTGRESDB_PASSWORD: Optional[str] = None
     DB_POSTGRESDB_SCHEMA: Optional[str] = None
-    DB_TABLE_PREFIX: Optional[str] = None
+    # Mandatory prefix (empty string means none). Must be provided explicitly.
+    DB_TABLE_PREFIX: str = Field(
+        description="Mandatory table prefix. Set 'n8n_' explicitly or blank for none."
+    )
 
     # Langfuse / OTLP
     LANGFUSE_HOST: str = Field(default="", description="Base URL for Langfuse host")
@@ -48,10 +53,14 @@ class Settings(BaseSettings):
     # Logging & runtime behavior
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
     FETCH_BATCH_SIZE: int = Field(default=100, description="Batch size for fetching executions")
-    # NOTE: Default truncation disabled per design choice: keep full textual JSON except binary/base64
+    # NOTE: Default truncation disabled per design choice: keep full textual
+    # JSON except binary/base64
     TRUNCATE_FIELD_LEN: int = Field(
         default=0,
-        description="Max length for large text fields (input/output) before truncation (0 = disabled)",
+        description=(
+            "Max length for large text fields (input/output) before truncation "
+            "(0 = disabled)"
+        ),
     )
 
     # Future: additional tuning parameters
@@ -68,17 +77,20 @@ class Settings(BaseSettings):
         description="Path to file storing last processed execution id",
     )
 
-    # Filtering: only process executions that have at least one metadata row whose key='executionId' and whose value equals the execution id.
+    # Filtering: only process executions that have at least one metadata row
+    # whose key='executionId' and whose value equals the execution id.
     REQUIRE_EXECUTION_METADATA: bool = Field(
         default=False,
         description=(
-            "If true, only executions having a row in <prefix>execution_metadata where key='executionId' and value matches the execution id are fetched."
+            "If true, only executions having a row in <prefix>execution_metadata "
+            "where key='executionId' and value matches the execution id are fetched."
         ),
     )
 
     # Phase 1 export reliability controls
     FLUSH_EVERY_N_TRACES: int = Field(
-        default=1, description="Force flush the exporter after every N traces (1 = after each trace)"
+        default=1,
+        description="Force flush the exporter after every N traces (1 = after each trace)",
     )
     OTEL_MAX_QUEUE_SIZE: int = Field(
         default=10000, description="BatchSpanProcessor max queue size for spans"
@@ -91,11 +103,17 @@ class Settings(BaseSettings):
     )
     EXPORT_QUEUE_SOFT_LIMIT: int = Field(
         default=5000,
-        description="Approximate soft limit of spans queued (created - last_flushed_estimate) before introducing a short sleep",
+        description=(
+            "Approximate soft limit of spans queued (created - "
+            "last_flushed_estimate) before introducing a short sleep"
+        ),
     )
     EXPORT_SLEEP_MS: int = Field(
         default=75,
-        description="Sleep duration in milliseconds when soft queue limit exceeded (backpressure throttle)",
+        description=(
+            "Sleep duration in milliseconds when soft queue limit exceeded "
+            "(backpressure throttle)"
+        ),
     )
 
     @model_validator(mode="after")
@@ -116,6 +134,7 @@ class Settings(BaseSettings):
             auth = f"{user}:{pwd}@" if pwd else f"{user}@"
             port = self.DB_POSTGRESDB_PORT or 5432
             self.PG_DSN = f"postgresql://{auth}{self.DB_POSTGRESDB_HOST}:{port}/{self.DB_POSTGRESDB_DATABASE}"
+        # DB_TABLE_PREFIX is required (pydantic enforces presence). Allow empty string.
         return self
 
 
@@ -123,10 +142,23 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:  # pragma: no cover - trivial
     """Return a cached, singleton instance of the application settings.
 
-    Using `lru_cache` ensures that the `Settings` object is created only once,
-    preventing repeated file I/O and environment variable parsing.
-
-    Returns:
-        The application's `Settings` instance.
+    Provides a clearer error if mandatory env vars are missing.
     """
-    return Settings()
+    try:
+        # Pylance complains that required parameter "DB_TABLE_PREFIX" is missing
+        # because this field is intentionally required (must be provided via env).
+        # Pydantic BaseSettings injects it from the environment at runtime, so this
+        # call is correct. We suppress the static type checker warning.
+        return Settings()  # type: ignore[call-arg]
+    except ValidationError as e:  # pragma: no cover - defensive
+        # Provide a targeted helpful message for missing DB_TABLE_PREFIX
+        missing_prefix = any(
+            err.get("loc") in [("DB_TABLE_PREFIX",)] and err.get("type") == "missing"
+            for err in e.errors()
+        )
+        if missing_prefix:
+            raise RuntimeError(
+                "DB_TABLE_PREFIX is required. Set DB_TABLE_PREFIX=n8n_ for standard installs "
+                "or DB_TABLE_PREFIX= (blank) for no prefix."
+            ) from e
+        raise

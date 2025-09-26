@@ -20,21 +20,19 @@ Key responsibilities include:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Union, Deque
-from collections import deque
+import logging
 import re
-from uuid import uuid5, UUID, NAMESPACE_DNS
+from collections import deque
+from datetime import datetime, timedelta, timezone
+from typing import Any, Deque, Dict, List, Optional, Tuple
+from uuid import NAMESPACE_DNS, uuid5
 
+from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
-from .models.langfuse import (
-    LangfuseTrace,
-    LangfuseSpan,
-    LangfuseUsage,
-)
 from .observation_mapper import map_node_to_observation_type
 
 SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
+logger = logging.getLogger(__name__)
 
 
 def _epoch_ms_to_dt(ms: int) -> datetime:
@@ -50,7 +48,8 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
     Returns:
         A timezone-aware datetime object in UTC.
     """
-    # Some n8n exports may already be seconds; if value looks like seconds (10 digits) treat accordingly
+    # Some n8n exports may already be seconds; if value looks like seconds
+    # (10 digits) treat accordingly.
     # Heuristic: if ms < 10^12 assume seconds.
     if ms < 1_000_000_000_000:  # seconds
         return datetime.fromtimestamp(ms, tz=timezone.utc)
@@ -60,7 +59,12 @@ def _epoch_ms_to_dt(ms: int) -> datetime:
 _BASE64_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")  # long pure base64 chunk
 
 
-def _likely_binary_b64(s: str, *, context_key: str | None = None, in_binary_block: bool = False) -> bool:
+def _likely_binary_b64(
+    s: str,
+    *,
+    context_key: str | None = None,
+    in_binary_block: bool = False,
+) -> bool:
     """Heuristically detect if a string is likely a base64-encoded binary.
 
     This function aims to avoid false positives on long text fields that happen
@@ -80,9 +84,11 @@ def _likely_binary_b64(s: str, *, context_key: str | None = None, in_binary_bloc
         return False
     if not _BASE64_RE.match(s) and not s.startswith("/9j/"):  # jpeg magic check retained
         return False
-    # Uniform strings (e.g. 'AAAAA...') are still valid base64 but often indicate padding or test data.
-    # We previously filtered them out; restore stripping when:
-    #  - they appear under a key hinting at base64/binary (data, rawBase64, file, binary)
+    # Uniform strings (e.g. 'AAAAA...') are still valid base64 but often
+    # indicate padding or test data. We previously filtered them out; restore
+    # stripping when:
+    #  - they appear under a key hinting at base64/binary (data, rawBase64,
+    #    file, binary)
     #  - or they are inside an explicit binary block
     diversity = len(set(s[:120]))
     if diversity < 4 and not in_binary_block:
@@ -117,7 +123,17 @@ def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
                         if isinstance(data_section, dict):
                             mime = data_section.get("mimeType") or data_section.get("mime_type")
                             b64 = data_section.get("data")
-                            if mime and isinstance(b64, str) and (len(b64) > 200 and (_BASE64_RE.match(b64) or b64.startswith("/9j/"))):
+                            if (
+                                mime
+                                and isinstance(b64, str)
+                                and (
+                                    len(b64) > 200
+                                    and (
+                                        _BASE64_RE.match(b64)
+                                        or b64.startswith("/9j/")
+                                    )
+                                )
+                            ):
                                 return True
             for val in d.values():
                 if _contains_binary_marker(val, depth + 1):
@@ -160,16 +176,31 @@ def _strip_binary_payload(obj: Any) -> Any:
                         if isinstance(bv, dict):
                             bv2 = dict(bv)
                             data_section = bv2.get("data")
-                            # Case 1: legacy assumption where data_section is a dict containing its own 'data'
-                            if isinstance(data_section, dict) and isinstance(data_section.get("data"), str):
+                            # Case 1: legacy assumption where data_section is a
+                            # dict containing its own 'data'
+                            if (
+                                isinstance(data_section, dict)
+                                and isinstance(data_section.get("data"), str)
+                            ):
                                 ds = data_section.copy()
                                 raw_b64 = ds.get("data", "")
                                 if len(raw_b64) > 64:
                                     ds["data"] = placeholder_text
                                     ds["_omitted_len"] = len(raw_b64)
                                     bv2["data"] = ds
-                            # Case 2: common n8n shape where bv2['data'] is directly the base64 string alongside mimeType/fileType
-                            elif isinstance(data_section, str) and (len(data_section) > 64 and (_BASE64_RE.match(data_section) or data_section.startswith("/9j/"))):
+                            # Case 2: common n8n shape where bv2['data'] is
+                            # directly the base64 string alongside
+                            # mimeType/fileType
+                            elif (
+                                isinstance(data_section, str)
+                                and (
+                                    len(data_section) > 64
+                                    and (
+                                        _BASE64_RE.match(data_section)
+                                        or data_section.startswith("/9j/")
+                                    )
+                                )
+                            ):
                                 bv2["_omitted_len"] = len(data_section)
                                 bv2["data"] = placeholder_text
                             new_bin[bk] = bv2
@@ -177,7 +208,11 @@ def _strip_binary_payload(obj: Any) -> Any:
                             new_bin[bk] = bv
                     new_d[k] = new_bin
                 elif isinstance(v, str) and _likely_binary_b64(v, context_key=k):
-                    new_d[k] = {"_binary": True, "note": placeholder_text, "_omitted_len": len(v)}
+                    new_d[k] = {
+                        "_binary": True,
+                        "note": placeholder_text,
+                        "_omitted_len": len(v),
+                    }
                 else:
                     new_d[k] = _strip_binary_payload(v)
             return new_d
@@ -185,7 +220,13 @@ def _strip_binary_payload(obj: Any) -> Any:
             out_list = []
             for x in obj:
                 if isinstance(x, str) and _likely_binary_b64(x):
-                    out_list.append({"_binary": True, "note": placeholder_text, "_omitted_len": len(x)})
+                    out_list.append(
+                        {
+                            "_binary": True,
+                            "note": placeholder_text,
+                            "_omitted_len": len(x),
+                        }
+                    )
                 else:
                     out_list.append(_strip_binary_payload(x))
             return out_list
@@ -270,8 +311,19 @@ def _unwrap_ai_channel(container: Any) -> Any:
                 if j:
                     collected.append(j)  # type: ignore[arg-type]
                 else:
-                    # If dict itself seems like a payload (has model/usage markers) collect directly
-                    if any(k in v for k in ("model", "model_name", "modelId", "model_id", "tokenUsage", "tokenUsageEstimate")):
+                    # If dict itself seems like a payload (has model/usage
+                    # markers) collect directly
+                    if any(
+                        k in v
+                        for k in (
+                            "model",
+                            "model_name",
+                            "modelId",
+                            "model_id",
+                            "tokenUsage",
+                            "tokenUsageEstimate",
+                        )
+                    ):
                         collected.append(v)  # type: ignore[arg-type]
             # Other primitive types ignored
 
@@ -400,7 +452,10 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
     if node_run.data and any(k in node_run.data for k in ("tokenUsage", "tokenUsageEstimate")):
         return True
     # Nested search (common n8n shape: {"ai_languageModel": [[{"json": {"tokenUsage": {...}}}]]})
-    if any(_find_nested_key(node_run.data, k) is not None for k in ("tokenUsage", "tokenUsageEstimate")):
+    if any(
+        _find_nested_key(node_run.data, k) is not None
+        for k in ("tokenUsage", "tokenUsageEstimate")
+    ):
         return True
     lowered = node_type.lower()
     if any(excl in lowered for excl in ("embedding", "embeddings", "reranker")):
@@ -465,8 +520,13 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     # Legacy verbose keys
     p_tokens = tu.get("promptTokens")
     c_tokens = tu.get("completionTokens")
-    t_tokens = tu.get("totalTokens") or tu.get("totalInputTokens") or tu.get("totalOutputTokens")
-    # Limescape custom flattened keys (treat totalInputTokens / totalOutputTokens as input/output if canonical missing)
+    t_tokens = (
+        tu.get("totalTokens")
+        or tu.get("totalInputTokens")
+        or tu.get("totalOutputTokens")
+    )
+    # Limescape custom flattened keys (treat totalInputTokens /
+    # totalOutputTokens as input/output if canonical missing)
     if input_val is None:
         input_val = tu.get("totalInputTokens", input_val)
     if output_val is None:
@@ -560,7 +620,11 @@ def _extract_model_value(data: Any) -> Optional[str]:
     try:
         if isinstance(data, dict):
             for chan_key, chan_val in data.items():
-                if isinstance(chan_key, str) and chan_key.startswith("ai_") and isinstance(chan_val, list):
+                if (
+                    isinstance(chan_key, str)
+                    and chan_key.startswith("ai_")
+                    and isinstance(chan_val, list)
+                ):
                     for outer in chan_val:
                         if not isinstance(outer, list):
                             continue
@@ -694,7 +758,12 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
                     return v, f"{path}.{pk}", meta
         # 2. Generic fallback (excluding modelProvider handled in helper)
         for k, v in current.items():
-            if isinstance(v, str) and v and not v.startswith("={{") and _looks_like_model_param_key(k):
+            if (
+                isinstance(v, str)
+                and v
+                and not v.startswith("={{")
+                and _looks_like_model_param_key(k)
+            ):
                 meta: Dict[str, Any] = {}
                 if "azure" in node.type.lower():
                     meta["n8n.model.is_deployment"] = True
@@ -707,7 +776,10 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
     return None
 
 
-def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Optional[int] = 4000) -> LangfuseTrace:
+def map_execution_to_langfuse(
+    record: N8nExecutionRecord,
+    truncate_limit: Optional[int] = 4000,
+) -> LangfuseTrace:
     """Map a single n8n execution record to a Langfuse trace object.
 
     This is the main transformation function. It orchestrates the conversion of
@@ -730,12 +802,20 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
     Returns:
         A `LangfuseTrace` object ready for export.
     """
-    # Trace id is now exactly the n8n execution id (string). Simplicity & direct searchability in Langfuse UI.
-    # NOTE: This shipper supports ONE n8n instance per Langfuse project. If you aggregate multiple instances
-    # into a single Langfuse project, raw numeric execution ids may collide. Use separate Langfuse projects per instance.
+    # Trace id is now exactly the n8n execution id (string). Simplicity &
+    # direct searchability in Langfuse UI.
+    # NOTE: This shipper supports ONE n8n instance per Langfuse project. If
+    # you aggregate multiple instances into a single Langfuse project, raw
+    # numeric execution ids may collide. Use separate Langfuse projects per
+    # instance.
     trace_id = str(record.id)
-    # Normalize potentially naive datetimes to UTC (defensive: DB drivers / external inputs may yield naive objects)
-    started_at = record.startedAt if record.startedAt.tzinfo is not None else record.startedAt.replace(tzinfo=timezone.utc)
+    # Normalize potentially naive datetimes to UTC (defensive: DB drivers /
+    # external inputs may yield naive objects)
+    started_at = (
+        record.startedAt
+        if record.startedAt.tzinfo is not None
+        else record.startedAt.replace(tzinfo=timezone.utc)
+    )
     stopped_raw = record.stoppedAt
     if stopped_raw is not None and stopped_raw.tzinfo is None:
         stopped_raw = stopped_raw.replace(tzinfo=timezone.utc)
@@ -748,7 +828,8 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
         metadata={
             "workflowId": record.workflowId,
             "status": record.status,
-            # executionId removed to avoid duplication; use root span metadata key n8n.execution.id instead
+            # executionId removed to avoid duplication; use root span metadata
+            # key n8n.execution.id instead
         },
     )
 
@@ -774,7 +855,8 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
     # Track last span id per node for fallback parent resolution (runtime execution order)
     last_span_for_node: Dict[str, str] = {}
 
-    # Build a reverse graph from workflow connections to infer predecessors when runtime source info is absent.
+    # Build a reverse graph from workflow connections to infer predecessors
+    # when runtime source info is absent.
     reverse_edges: Dict[str, List[str]] = {}
     try:
         connections = getattr(record.workflowData, "connections", {}) or {}
@@ -823,7 +905,8 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
     except Exception:
         pass
 
-    # Flatten all runs to process in chronological order, giving agent spans chance to be created before children
+    # Flatten all runs to process in chronological order, giving agent spans
+    # chance to be created before children
     flattened: List[Tuple[int, str, int, NodeRun]] = []
     for node_name, runs in run_data.items():
         for idx, run in enumerate(runs):
@@ -832,7 +915,7 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
 
     # Maintain last output object (raw dict) per node for input propagation.
     last_output_data: Dict[str, Any] = {}
-    for start_ts_raw, node_name, idx, run in flattened:
+    for _start_ts_raw, node_name, idx, run in flattened:
         wf_meta = wf_node_lookup.get(node_name, {})
         node_type = wf_meta.get("type") or node_name
         category = wf_meta.get("category")
@@ -919,9 +1002,11 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
             metadata["n8n.truncated.input"] = True
         if output_trunc:
             metadata["n8n.truncated.output"] = True
-        # Model extraction: BFS variant key search (model, model_name, modelId, model_id)
+    # Model extraction: BFS variant key search (model, model_name,
+    # modelId, model_id)
         model_val = None
-        # Build a richer search root: primary run.data plus supplemental contexts that may hold the embedded model.
+    # Build a richer search root: primary run.data plus supplemental
+    # contexts that may hold the embedded model.
         if isinstance(run.data, dict):
             search_root: Dict[str, Any] = dict(run.data)
             if isinstance(run.inputOverride, dict):
@@ -937,19 +1022,25 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
         if model_val is None:
             # Decide whether to attempt parameter fallback:
             #  - Always for generation spans
-            #  - Also when parameters contain any model/deployment key even if not generation (tool-like nodes producing model context)
+            #  - Also when parameters contain any model/deployment key even if
+            #    not generation (tool-like nodes producing model context)
             attempt_param_fallback = is_generation
             node_static = wf_node_obj.get(node_name)
-            if not attempt_param_fallback and node_static and isinstance(getattr(node_static, "parameters", None), dict):
-                params_dict = getattr(node_static, "parameters") or {}
+            if (
+                not attempt_param_fallback
+                and node_static
+                and isinstance(getattr(node_static, "parameters", None), dict)
+            ):
+                # access attribute directly (safe):
+                params_dict = node_static.parameters or {}
                 # Check top-level keys
                 for pk in params_dict.keys():
                     if _looks_like_model_param_key(pk):
                         attempt_param_fallback = True
                         break
-                # Shallow dive into 'options' or similar dicts for early signal (e.g., deploymentName only nested)
+                # Shallow dive into nested dicts for early signal (e.g., deploymentName only nested)
                 if not attempt_param_fallback:
-                    for sk, sv in params_dict.items():
+                    for _sk, sv in params_dict.items():
                         if isinstance(sv, dict):
                             for pk in sv.keys():
                                 if _looks_like_model_param_key(pk):
@@ -972,6 +1063,113 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
                         metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
                 except Exception:
                     pass
+        # Gemini empty-output anomaly detection:
+        # Edge case: Some Gemini (Vertex) responses yield empty string output while
+        # reporting non-zero promptTokens/totalTokens and zero completionTokens.
+        # We classify such generation spans as an error state with metadata flags.
+        if is_generation:
+            try:
+                # Prefer normalized (unwrapped) output object for anomaly detection.
+                search_struct: Any = norm_output_obj if norm_output_obj is not None else run.data
+                tu_source = search_struct if isinstance(search_struct, dict) else run.data
+                tu = (
+                    (
+                        tu_source.get("tokenUsage")
+                        if isinstance(tu_source, dict)
+                        else None
+                    )
+                    or (
+                        tu_source.get("tokenUsageEstimate")
+                        if isinstance(tu_source, dict)
+                        else None
+                    )
+                    or {}
+                )
+                prompt_tokens = None
+                completion_tokens = None
+                total_tokens = None
+                if isinstance(tu, dict):
+                    prompt_tokens = (
+                        tu.get("promptTokens")
+                        or tu.get("inputTokens")
+                        or tu.get("input_token_count")
+                    )
+                    completion_tokens = (
+                        tu.get("completionTokens")
+                        or tu.get("outputTokens")
+                        or tu.get("output_token_count")
+                    )
+                    total_tokens = tu.get("totalTokens") or tu.get("tokenCount")
+                # Attempt to detect empty textual generation payloads.
+                # Heuristic: output_str exists (already serialized) but when
+                # deserialized / original data contains
+                # generations[0][0].text == "" or similar nested structure.
+                empty_text = False
+                # The Gemini output may still be nested like {"response": {...}} OR already
+                # flattened after unwrap. Provide layered fallbacks.
+                gen_block = search_struct
+                if (
+                    isinstance(search_struct, dict)
+                    and "response" in search_struct
+                    and isinstance(search_struct["response"], dict)
+                ):
+                    gen_block = search_struct["response"]
+                # Common nesting: response -> generations -> [ [ { text:"" } ] ]
+                try:
+                    gens = gen_block.get("generations") if isinstance(gen_block, dict) else None
+                    if isinstance(gens, list) and gens:
+                        first_layer = gens[0]
+                        if isinstance(first_layer, list) and first_layer:
+                            inner = first_layer[0]
+                            if isinstance(inner, dict):
+                                txt = inner.get("text")
+                                gen_info = inner.get("generationInfo")
+                                if isinstance(txt, str) and txt == "":
+                                    empty_text = True
+                                # Treat an explicitly empty generationInfo object
+                                # as part of anomaly signal
+                                if isinstance(gen_info, dict) and len(gen_info) == 0:
+                                    metadata["n8n.gen.empty_generation_info"] = True
+                except Exception:
+                    pass
+                anomaly = (
+                    empty_text
+                    and isinstance(prompt_tokens, int)
+                    and prompt_tokens > 0
+                    and (isinstance(total_tokens, int) and total_tokens >= prompt_tokens)
+                    and (completion_tokens in (0, None))
+                )
+                if anomaly:
+                    metadata["n8n.gen.empty_output_bug"] = True
+                    metadata["n8n.gen.prompt_tokens"] = prompt_tokens
+                    if total_tokens is not None:
+                        metadata["n8n.gen.total_tokens"] = total_tokens
+                    metadata["n8n.gen.completion_tokens"] = completion_tokens or 0
+                    # Promote span status to error if not already error to highlight anomaly.
+                    status_norm = "error"
+                    if not run.error:
+                        # Attach synthetic error object for downstream systems
+                        # expecting error presence.
+                        run.error = {
+                            "message": "Gemini empty output anomaly detected"
+                        }
+                    # Structured debug log for observability (only once per span build)
+                    try:
+                        logger.warning(
+                            (
+                                "gemini_empty_output_anomaly span=%s "
+                                "prompt_tokens=%s total_tokens=%s completion_tokens=%s"
+                            ),
+                            node_name,
+                            prompt_tokens,
+                            total_tokens,
+                            completion_tokens,
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                # Suppress to avoid breaking mapping; anomaly detection is best-effort.
+                pass
         span = LangfuseSpan(
             id=span_id,
             trace_id=trace_id,
@@ -992,11 +1190,15 @@ def map_execution_to_langfuse(record: N8nExecutionRecord, truncate_limit: Option
         last_span_for_node[node_name] = span_id
         try:
             size_guard_ok = True
-            # Only enforce size guard when truncation is active (>0). When disabled (<=0 or None), always cache.
-            if truncate_limit is not None and isinstance(truncate_limit, int) and truncate_limit > 0:
+            # Enforce size guard only when truncation active (>0); always cache otherwise.
+            if (
+                truncate_limit is not None
+                and isinstance(truncate_limit, int)
+                and truncate_limit > 0
+            ):
                 size_guard_ok = len(str(raw_output_obj)) < truncate_limit * 2
             if isinstance(raw_output_obj, dict) and size_guard_ok:
-                last_output_data[node_name] = raw_output_data = raw_output_obj
+                last_output_data[node_name] = raw_output_obj
         except Exception:
             pass
         # No separate generations list; generation classification lives on the span itself.
