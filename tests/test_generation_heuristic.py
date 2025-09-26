@@ -231,6 +231,100 @@ def test_model_extraction_variant_keys():
     assert span.model == "cohere-command-r-plus"
 
 
+def test_limescape_docs_custom_generation_and_flat_usage():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    # Simulate a Limescape Docs node run with flattened usage counters but no tokenUsage object
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"start": True}}]]},
+    )
+    limescape_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 5,
+        executionTime=42,
+        executionStatus="success",
+        data={
+            # Flattened counters appear directly (or within a simple json wrapper in real executions)
+            "totalInputTokens": 5683,
+            "totalOutputTokens": 4160,
+            "totalTokens": 9843,
+            "pages": 3,
+            "extraction": {"status": "ok"},
+        },
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+    runData = {"Starter": [starter], "Limescape Docs": [limescape_run]}
+    rec = N8nExecutionRecord(
+        id=910,
+        workflowId="wf-limescape-docs",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(
+            id="wf-limescape-docs",
+            name="Limescape Docs Flow",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                WorkflowNode(name="Limescape Docs", type="n8n-nodes-limescape-docs.limescapeDocs"),
+            ],
+        ),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    ls_span = next(s for s in trace.spans if s.name == "Limescape Docs")
+    assert ls_span.observation_type == "generation", "Limescape Docs node not classified as generation"
+    assert ls_span.usage is not None, "Flattened usage counters not extracted"
+    assert ls_span.usage.input == 5683 and ls_span.usage.output == 4160 and ls_span.usage.total == 9843
+
+
+def test_model_priority_over_model_provider():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    starter = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=1,
+        executionStatus="success",
+        data={"main": [[{"json": {"start": True}}]]},
+    )
+    # Parameters include modelProvider (Azure) and model (gpt-4.1)
+    from src.models.n8n import WorkflowNode
+    node = WorkflowNode(
+        name="Limescape Docs",
+        type="n8n-nodes-limescape-docs.limescapeDocs",
+        category=None,
+        parameters={
+            "modelProvider": "AZURE",
+            "model": "gpt-4.1",
+            "llmParameters": {"temperature": 0.2},
+        },
+    )
+    run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 5,
+        executionTime=10,
+        executionStatus="success",
+        data={"totalInputTokens": 10, "totalOutputTokens": 5, "totalTokens": 15},
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+    runData = {"Starter": [starter], "Limescape Docs": [run]}
+    rec = N8nExecutionRecord(
+        id=911,
+        workflowId="wf-model-priority",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(id="wf-model-priority", name="Model Priority", nodes=[
+            WorkflowNode(name="Starter", type="ToolWorkflow"),
+            node,
+        ]),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+    )
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "Limescape Docs")
+    assert span.model == "gpt-4.1", f"Unexpected model chosen: {span.model}"
+
+
 def test_model_extraction_ai_languageModel_options_path():
     # Mirrors screenshot: ai_languageModel -> [[ { json: { messages:[], estimatedTokens, options:{ base_url, model } } } ]]
     from datetime import datetime, timezone
