@@ -987,7 +987,51 @@ def map_execution_to_langfuse(
         if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):
             metadata["n8n.io.unwrapped_json_root"] = True
         input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
-        output_str, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
+        # For generation spans we want a concise textual output (LLM content) rather than
+        # the entire JSON structure. We attempt provider-specific extraction heuristics.
+        extracted_text: Optional[str] = None
+        if is_generation:
+            try:
+                # Use normalized output (already unwrapped) to reduce nesting noise.
+                candidate = norm_output_obj
+                # Gemini / Vertex pattern: { response: { generations: [ [ { text: "..." } ] ] } }
+                if isinstance(candidate, dict):
+                    resp = (
+                        candidate.get("response")
+                        if isinstance(candidate.get("response"), dict)
+                        else candidate
+                    )
+                    gens = resp.get("generations") if isinstance(resp, dict) else None
+                    if isinstance(gens, list) and gens:
+                        first_layer = gens[0]
+                        if isinstance(first_layer, list) and first_layer:
+                            inner = first_layer[0]
+                            if isinstance(inner, dict):
+                                txt = inner.get("text")
+                                if isinstance(txt, str) and txt.strip():
+                                    extracted_text = txt
+                # Fallback: if we still have nested ai_languageModel wrapper with list(s)
+                if extracted_text is None and isinstance(candidate, dict):
+                    for k, v in candidate.items():
+                        if k.startswith("ai_") and isinstance(v, list) and v:
+                            # Dive into first few items searching for dict with 'text'
+                            for layer in v[:3]:
+                                if isinstance(layer, list) and layer:
+                                    first = layer[0]
+                                    if isinstance(first, dict):
+                                        txt = first.get("text")
+                                        if isinstance(txt, str) and txt.strip():
+                                            extracted_text = txt
+                                            break
+                            if extracted_text:
+                                break
+            except Exception:
+                extracted_text = None
+        if extracted_text is not None:
+            output_str = extracted_text
+            output_trunc = False
+        else:
+            output_str, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
         if node_name in child_agent_map:
             agent_name, link_type = child_agent_map[node_name]
             metadata["n8n.agent.parent"] = agent_name

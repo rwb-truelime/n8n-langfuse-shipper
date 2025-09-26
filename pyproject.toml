@@ -39,7 +39,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "I", "B", "UP", "N", "ASYNC" ]
+
+# New lint configuration section (migrated from deprecated top-level keys).
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "N", "ASYNC"]  # intentionally excluding "UP" for now (minimal style changes)
 
 [tool.mypy]
 python_version = "3.11"
