@@ -26,6 +26,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from uuid import NAMESPACE_DNS, uuid5
+from dataclasses import dataclass, field
 
 from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
@@ -1183,6 +1184,25 @@ def _detect_gemini_empty_output_anomaly(
     return None, meta
 
 
+# --------------------------- Stage 4 Refactor: MappingContext ---------------------------
+
+@dataclass
+class MappingContext:
+    """Aggregate shared mapping state (static + mutable) for clarity.
+
+    Pure organizational refactor; behavior must remain unchanged.
+    """
+    trace_id: str
+    root_span_id: str
+    wf_node_lookup: Dict[str, Dict[str, Optional[str]]]
+    wf_node_obj: Dict[str, WorkflowNode]
+    reverse_edges: Dict[str, List[str]]
+    child_agent_map: Dict[str, Tuple[str, str]]
+    truncate_limit: Optional[int]
+    last_span_for_node: Dict[str, str] = field(default_factory=dict)
+    last_output_data: Dict[str, Any] = field(default_factory=dict)
+
+
 def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
@@ -1259,49 +1279,42 @@ def map_execution_to_langfuse(
     )
     trace.spans.append(root_span)
 
-    # Track last span id per node for fallback parent resolution (runtime execution order)
-    last_span_for_node: Dict[str, str] = {}
-
-    # Build static reverse edges (best-effort) and child->agent hierarchy map.
-    reverse_edges = _build_reverse_edges(record.workflowData)
-
+    ctx = MappingContext(
+        trace_id=trace_id,
+        root_span_id=root_span_id,
+        wf_node_lookup=wf_node_lookup,
+        wf_node_obj=wf_node_obj,
+        reverse_edges=_build_reverse_edges(record.workflowData),
+        child_agent_map=_build_child_agent_map(record.workflowData),
+        truncate_limit=truncate_limit,
+    )
     run_data = record.data.executionData.resultData.runData
-
-    child_agent_map = _build_child_agent_map(record.workflowData)
-
-    # Chronologically sorted runs (agents first if earlier start times)
     flattened = _flatten_runs(run_data)
-
-    # Maintain last output object (raw dict) per node for input propagation.
-    last_output_data: Dict[str, Any] = {}
     for _start_ts_raw, node_name, idx, run in flattened:
-        wf_meta = wf_node_lookup.get(node_name, {})
+        wf_meta = ctx.wf_node_lookup.get(node_name, {})
         node_type = wf_meta.get("type") or node_name
         category = wf_meta.get("category")
         obs_type_guess = map_node_to_observation_type(node_type, category)
-        span_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{node_name}:{idx}"))
+        span_id = str(uuid5(SPAN_NAMESPACE, f"{ctx.trace_id}:{node_name}:{idx}"))
         start_time = _epoch_ms_to_dt(run.startTime)
         end_time = start_time + timedelta(milliseconds=run.executionTime or 0)
         parent_id, prev_node, prev_node_run = _resolve_parent(
             node_name=node_name,
             run=run,
-            trace_id=trace_id,
-            child_agent_map=child_agent_map,
-            last_span_for_node=last_span_for_node,
-            reverse_edges=reverse_edges,
-            root_span_id=root_span_id,
+            trace_id=ctx.trace_id,
+            child_agent_map=ctx.child_agent_map,
+            last_span_for_node=ctx.last_span_for_node,
+            reverse_edges=ctx.reverse_edges,
+            root_span_id=ctx.root_span_id,
         )
-
         usage = _extract_usage(run)
         is_generation = _detect_generation(node_type, run)
         observation_type = obs_type_guess or ("generation" if is_generation else "span")
         raw_input_obj: Any = None
         if run.inputOverride is not None:
             raw_input_obj = run.inputOverride
-        else:
-            if prev_node and prev_node in last_output_data:
-                raw_input_obj = {"inferredFrom": prev_node, "data": last_output_data[prev_node]}
-
+        elif prev_node and prev_node in ctx.last_output_data:
+            raw_input_obj = {"inferredFrom": prev_node, "data": ctx.last_output_data[prev_node]}
         raw_output_obj = run.data
         status_norm = (run.executionStatus or "").lower()
         if run.error:
@@ -1327,38 +1340,36 @@ def map_execution_to_langfuse(
             raw_output_obj=raw_output_obj,
             is_generation=is_generation,
             node_type=node_type,
-            truncate_limit=truncate_limit,
+            truncate_limit=ctx.truncate_limit,
         )
         if input_flags.get("unwrapped_ai_channel") or output_flags.get("unwrapped_ai_channel"):
             metadata["n8n.io.unwrapped_ai_channel"] = True
         if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):
             metadata["n8n.io.unwrapped_json_root"] = True
-        if node_name in child_agent_map:
-            agent_name, link_type = child_agent_map[node_name]
+        if node_name in ctx.child_agent_map:
+            agent_name, link_type = ctx.child_agent_map[node_name]
             metadata["n8n.agent.parent"] = agent_name
             metadata["n8n.agent.link_type"] = link_type
         if prev_node:
             metadata["n8n.node.previous_node"] = prev_node
         if prev_node_run is not None:
             metadata["n8n.node.previous_node_run"] = prev_node_run
-        elif prev_node and node_name in reverse_edges and node_name not in child_agent_map:
+        elif prev_node and node_name in ctx.reverse_edges and node_name not in ctx.child_agent_map:
             metadata["n8n.graph.inferred_parent"] = True
         if input_trunc:
             metadata["n8n.truncated.input"] = True
         if output_trunc:
             metadata["n8n.truncated.output"] = True
-        # Model extraction & metadata
         model_val, model_meta = _extract_model_and_metadata(
             run=run,
             node_name=node_name,
             node_type=node_type,
             is_generation=is_generation,
-            wf_node_obj=wf_node_obj,
+            wf_node_obj=ctx.wf_node_obj,
             raw_input_obj=raw_input_obj,
         )
         if model_meta:
             metadata.update(model_meta)
-        # Gemini anomaly detection
         status_override, anomaly_meta = _detect_gemini_empty_output_anomaly(
             is_generation=is_generation,
             norm_output_obj=norm_output_obj,
@@ -1371,7 +1382,7 @@ def map_execution_to_langfuse(
             status_norm = status_override
         span = LangfuseSpan(
             id=span_id,
-            trace_id=trace_id,
+            trace_id=ctx.trace_id,
             parent_id=parent_id,
             name=node_name,
             start_time=start_time,
@@ -1386,21 +1397,20 @@ def map_execution_to_langfuse(
             status=status_norm,
         )
         trace.spans.append(span)
-        last_span_for_node[node_name] = span_id
+        ctx.last_span_for_node[node_name] = span_id
         try:
             size_guard_ok = True
-            # Enforce size guard only when truncation active (>0); always cache otherwise.
             if (
-                truncate_limit is not None
-                and isinstance(truncate_limit, int)
-                and truncate_limit > 0
+                ctx.truncate_limit is not None
+                and isinstance(ctx.truncate_limit, int)
+                and ctx.truncate_limit > 0
             ):
-                size_guard_ok = len(str(raw_output_obj)) < truncate_limit * 2
+                size_guard_ok = len(str(raw_output_obj)) < ctx.truncate_limit * 2
             if isinstance(raw_output_obj, dict) and size_guard_ok:
-                last_output_data[node_name] = raw_output_obj
+                ctx.last_output_data[node_name] = raw_output_obj
         except Exception:
             pass
-        # No separate generations list; generation classification lives on the span itself.
+        # generation classification lives on span; no separate collection
     return trace
 
 
