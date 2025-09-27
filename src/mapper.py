@@ -1204,31 +1204,18 @@ class MappingContext:
     last_output_data: Dict[str, Any] = field(default_factory=dict)
 
 
-def map_execution_to_langfuse(
+def _map_execution(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
-) -> LangfuseTrace:
-    """Map a single n8n execution record to a Langfuse trace object.
+    *,
+    collect_binaries: bool = False,
+) -> tuple[LangfuseTrace, list[BinaryAsset]]:
+    """Internal mapping core returning (trace, assets).
 
-    This is the main transformation function. It orchestrates the conversion of
-    an `N8nExecutionRecord` into a `LangfuseTrace` containing a root span and a
-    span for each node run.
-
-    The process involves:
-    1.  Creating a trace and a root span for the entire execution.
-    2.  Flattening all node runs and sorting them chronologically by start time.
-    3.  Iterating through each node run to create a corresponding `LangfuseSpan`.
-    4.  For each span, resolving its parent, processing its I/O, detecting if it's
-        a generation, and extracting relevant metadata.
-    5.  Building the final `LangfuseTrace` object containing all spans.
-
-    Args:
-        record: The n8n execution record from the database.
-        truncate_limit: The character limit for serializing I/O fields.
-            A value of 0 or None disables truncation.
-
-    Returns:
-        A `LangfuseTrace` object ready for export.
+    When collect_binaries=True, binary assets are extracted during the primary
+    node loop (no second traversal). The original raw run.data remains
+    unchanged; a cloned version with provisional placeholders feeds span I/O
+    serialization.
     """
     # Trace id is now exactly the n8n execution id (string). Simplicity &
     # direct searchability in Langfuse UI.
@@ -1291,6 +1278,7 @@ def map_execution_to_langfuse(
     )
     run_data = record.data.executionData.resultData.runData
     flattened = _flatten_runs(run_data)
+    collected_assets: list[BinaryAsset] = []
     for _start_ts_raw, node_name, idx, run in flattened:
         wf_meta = ctx.wf_node_lookup.get(node_name, {})
         node_type = wf_meta.get("type") or node_name
@@ -1316,7 +1304,20 @@ def map_execution_to_langfuse(
             raw_input_obj = run.inputOverride
         elif prev_node and prev_node in ctx.last_output_data:
             raw_input_obj = {"inferredFrom": prev_node, "data": ctx.last_output_data[prev_node]}
-        raw_output_obj = run.data
+        # Binary collection (if enabled) operates on a clone to avoid mutating
+        # original run.data object used for input propagation caching.
+        if collect_binaries:
+            mutated_output, assets = _collect_binary_assets(
+                run.data,
+                execution_id=record.id,
+                node_name=node_name,
+                run_index=idx,
+            )
+            if assets:
+                collected_assets.extend(assets)
+            raw_output_obj = mutated_output
+        else:
+            raw_output_obj = run.data
         status_norm = (run.executionStatus or "").lower()
         if run.error:
             status_norm = "error"
@@ -1412,6 +1413,14 @@ def map_execution_to_langfuse(
         except Exception:
             pass
         # generation classification lives on span; no separate collection
+    return trace, collected_assets
+
+
+def map_execution_to_langfuse(
+    record: N8nExecutionRecord,
+    truncate_limit: Optional[int] = 4000,
+) -> LangfuseTrace:
+    trace, _assets = _map_execution(record, truncate_limit=truncate_limit, collect_binaries=False)
     return trace
 
 
@@ -1486,27 +1495,11 @@ def map_execution_with_assets(
     truncate_limit: Optional[int] = 4000,
     collect_binaries: bool = False,
 ) -> MappedTraceWithAssets:
-    """Wrapper returning trace + collected binary assets (before upload phase).
-
-    When collect_binaries is False this is equivalent to map_execution_to_langfuse.
-    """
-    trace = map_execution_to_langfuse(record, truncate_limit=truncate_limit)
-    # Early exit fast path
-    if not collect_binaries:
-        return MappedTraceWithAssets(trace=trace, assets=[])
-    # We must re-run minimal pass to collect assets because the pure mapping already
-    # stripped binaries. Future optimization: factor binary handling earlier.
-    # For now we traverse original runData again.
-    assets: list[BinaryAsset] = []
-    run_data = record.data.executionData.resultData.runData
-    for node_name, runs in run_data.items():
-        for idx, run in enumerate(runs):
-            raw = run.data
-            cloned, new_assets = _collect_binary_assets(
-                raw, execution_id=record.id, node_name=node_name, run_index=idx
-            )
-            if new_assets:
-                assets.extend(new_assets)
-    return MappedTraceWithAssets(trace=trace, assets=assets)
+    # collect_binaries kept for backwards compatibility in case external code
+    # passed False explicitly.
+    trace, assets = _map_execution(
+        record, truncate_limit=truncate_limit, collect_binaries=collect_binaries
+    )
+    return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])
 
 __all__ = ["map_execution_to_langfuse", "map_execution_with_assets"]
