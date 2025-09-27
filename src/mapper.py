@@ -29,6 +29,7 @@ from uuid import NAMESPACE_DNS, uuid5
 from dataclasses import dataclass, field
 
 from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
+from .media_uploader import BinaryAsset, MappedTraceWithAssets
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
 from .observation_mapper import map_node_to_observation_type
 
@@ -1414,4 +1415,98 @@ def map_execution_to_langfuse(
     return trace
 
 
-__all__ = ["map_execution_to_langfuse"]
+def _collect_binary_assets(run_data_obj: Any, *, execution_id: int, node_name: str, run_index: int) -> tuple[Any, list[BinaryAsset]]:
+    """Traverse a run.data dict, extracting n8n-style binary objects.
+
+    Returns (cloned_structure_with_placeholders, assets).
+    We only target the canonical n8n pattern under run.data['binary'] entries.
+    """
+    assets: list[BinaryAsset] = []
+    if not isinstance(run_data_obj, dict):
+        return run_data_obj, assets
+    if "binary" not in run_data_obj or not isinstance(run_data_obj["binary"], dict):
+        return run_data_obj, assets
+    import copy
+    cloned = copy.deepcopy(run_data_obj)
+    bin_section = cloned.get("binary")
+    if not isinstance(bin_section, dict):
+        return cloned, assets
+    for slot, slot_val in bin_section.items():
+        if not isinstance(slot_val, dict):
+            continue
+        # Common shapes: { data: <b64>, mimeType, fileName } or nested data dict
+        raw_data = slot_val.get("data")
+        mime = slot_val.get("mimeType") or slot_val.get("mime_type") or slot_val.get("fileType")
+        fname = slot_val.get("fileName") or slot_val.get("name")
+        base64_str: str | None = None
+        if isinstance(raw_data, str) and len(raw_data) > 100:
+            base64_str = raw_data
+        elif isinstance(raw_data, dict) and isinstance(raw_data.get("data"), str):
+            inner = raw_data.get("data")
+            if isinstance(inner, str) and len(inner) > 100:
+                base64_str = inner
+        if not base64_str:
+            continue
+        # Hash deterministically without decoding first (still stable); use SHA256 of decoded bytes
+        try:
+            import base64 as _b64, hashlib as _hash
+            decoded_preview = _b64.b64decode(base64_str[:4000], validate=False)  # small slice for early hash seed
+            full_bytes = _b64.b64decode(base64_str, validate=False)
+            h = _hash.sha256(full_bytes).hexdigest()
+            size_bytes = len(full_bytes)
+        except Exception:
+            # Fallback: skip asset collection if decoding fails
+            continue
+        # Replace with provisional placeholder
+        slot_val["data"] = {
+            "_media_pending": True,
+            "sha256": h,
+            "bytes": size_bytes,
+            "slot": slot,
+        }
+        assets.append(
+            BinaryAsset(
+                execution_id=execution_id,
+                node_name=node_name,
+                run_index=run_index,
+                field_path=f"binary.{slot}",
+                mime_type=mime if isinstance(mime, str) else None,
+                filename=fname if isinstance(fname, str) else None,
+                size_bytes=size_bytes,
+                sha256=h,
+                base64_len=len(base64_str),
+                content_b64=base64_str,
+            )
+        )
+    return cloned, assets
+
+
+def map_execution_with_assets(
+    record: N8nExecutionRecord,
+    truncate_limit: Optional[int] = 4000,
+    collect_binaries: bool = False,
+) -> MappedTraceWithAssets:
+    """Wrapper returning trace + collected binary assets (before upload phase).
+
+    When collect_binaries is False this is equivalent to map_execution_to_langfuse.
+    """
+    trace = map_execution_to_langfuse(record, truncate_limit=truncate_limit)
+    # Early exit fast path
+    if not collect_binaries:
+        return MappedTraceWithAssets(trace=trace, assets=[])
+    # We must re-run minimal pass to collect assets because the pure mapping already
+    # stripped binaries. Future optimization: factor binary handling earlier.
+    # For now we traverse original runData again.
+    assets: list[BinaryAsset] = []
+    run_data = record.data.executionData.resultData.runData
+    for node_name, runs in run_data.items():
+        for idx, run in enumerate(runs):
+            raw = run.data
+            cloned, new_assets = _collect_binary_assets(
+                raw, execution_id=record.id, node_name=node_name, run_index=idx
+            )
+            if new_assets:
+                assets.extend(new_assets)
+    return MappedTraceWithAssets(trace=trace, assets=assets)
+
+__all__ = ["map_execution_to_langfuse", "map_execution_with_assets"]

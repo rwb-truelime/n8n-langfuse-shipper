@@ -22,9 +22,10 @@ import os
 from .config import get_settings
 from .db import ExecutionSource
 from .models.n8n import N8nExecutionRecord, WorkflowData, ExecutionData, ExecutionDataDetails, ResultData
-from .mapper import map_execution_to_langfuse
+from .mapper import map_execution_to_langfuse, map_execution_with_assets
 from .shipper import export_trace, shutdown_exporter
 from .checkpoint import load_checkpoint, store_checkpoint
+from .media_uploader import upload_media_assets
 
 app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
 
@@ -451,7 +452,18 @@ def backfill(
             effective_trunc = settings.TRUNCATE_FIELD_LEN if truncate_len is None else truncate_len
             if effective_trunc == 0:
                 effective_trunc = None  # signal no truncation
-            trace = map_execution_to_langfuse(record, truncate_limit=effective_trunc)
+            # Media upload feature path (Azure only initial). Both flags must be true.
+            if settings.ENABLE_MEDIA_UPLOAD and settings.LANGFUSE_USE_AZURE_BLOB:
+                mapped = map_execution_with_assets(
+                    record,
+                    truncate_limit=effective_trunc,
+                    collect_binaries=True,
+                )
+                # Upload & patch spans (fail-open inside uploader)
+                upload_media_assets(mapped, settings)
+                trace = mapped.trace
+            else:
+                trace = map_execution_to_langfuse(record, truncate_limit=effective_trunc)
             span_count = len(trace.spans)
             if span_count <= 1:
                 logging.getLogger(__name__).warning(
