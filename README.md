@@ -2,7 +2,7 @@
 
 <!-- Badges -->
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![Status](https://img.shields.io/badge/status-Iteration%204-informational)
+![Status](https://img.shields.io/badge/status-active--development-informational)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
@@ -10,7 +10,7 @@
 
 High‑throughput backfill service that reads historical n8n execution data from PostgreSQL and ships it to Langfuse via the OpenTelemetry (OTLP/HTTP) endpoint.
 
-Current status: Iteration 4 (hierarchical Agent/Tool/LLM parenting + pointer‑compressed execution decoding + stable OTLP exporting).
+Current focus: recently added optional Azure Blob media upload (feature‑flag gated) alongside hierarchical Agent/Tool/LLM parenting, pointer‑compressed execution decoding, and stable OTLP exporting.
 
 ---
 
@@ -47,9 +47,9 @@ Need more? Expand the detailed sections below.
 
 ---
 <details>
-<summary><strong>Features Implemented (Iteration 4)</strong></summary>
+<summary><strong>Key Features</strong></summary>
 
-## Features Implemented (Iteration 4)
+## Key Features
 
 - Pydantic v2 models for raw n8n execution JSON (`src/models/n8n.py`).
 - Internal Langfuse models (`src/models/langfuse.py`).
@@ -73,7 +73,7 @@ Need more? Expand the detailed sections below.
 - File-based checkpointing for resumability.
 - Explicit schema/prefix override passed from settings to extractor (blank `DB_TABLE_PREFIX` respected, no silent fallback) plus startup diagnostic log of resolved tables.
 
-Additional documentation-aligned capabilities (Iteration 4 additions & clarifications):
+Additional documentation-aligned capabilities:
 - Timezone normalization: all timestamps coerced to timezone-aware UTC early; naive datetimes are forbidden (see Timezone Policy section + tests).
 - Human-readable OTLP trace id embedding: exporter derives a 32-hex trace id embedding execution id digits (see `test_trace_id_embedding.py`).
 - Parent precedence table (agent hierarchy → runtime exact run → runtime last run → static reverse graph → root) formally documented; changes require test + instructions update.
@@ -82,6 +82,7 @@ Additional documentation-aligned capabilities (Iteration 4 additions & clarifica
 - Pointer-compressed (`list` + index pointer) execution decoding detailed and resilient; failure falls back gracefully to path probing.
 - Regression checklist enumerated in `.github/copilot-instructions.md` to prevent silent drift (IDs, execution id placement, timezone, binary stripping, generation heuristics, pointer decoding, env vars, purity).
 - Binary handling invariants: unconditional stripping independent of truncation (clarified in docs & tests).
+- Optional Azure Blob media upload (feature-flag gated) replacing redaction placeholders with stable reference objects (see Media Upload section). Legacy behavior unchanged when disabled.
 
 Guardrail: Any new environment variable (e.g. future media upload flags) MUST be added to this Feature list, the Configuration Overview tables, `.github/copilot-instructions.md`, and have corresponding tests in the same PR.
 
@@ -154,6 +155,13 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | `FETCH_BATCH_SIZE` | `100` | (none) | Max executions fetched per DB batch. |
 | `CHECKPOINT_FILE` | `.backfill_checkpoint` | `--checkpoint-file` | Path for last processed execution id. |
 | `TRUNCATE_FIELD_LEN` | `0` | `--truncate-len` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
+| `ENABLE_MEDIA_UPLOAD` | `false` | (none) | Master media feature flag. Must be true along with `LANGFUSE_USE_AZURE_BLOB` to activate uploads. |
+| `LANGFUSE_USE_AZURE_BLOB` | `false` | (none) | Secondary guard (mirrors Langfuse Azure env semantics). |
+| `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` | (none) | (none) | Azure container name (Langfuse naming parity). |
+| `LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID` | (none) | (none) | Azure storage account name. |
+| `LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY` | (none) | (none) | Azure storage account key. |
+| `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` | (none) | (none) | Optional custom endpoint (Azurite / emulator) for testing. |
+| `MEDIA_MAX_BYTES` | `25000000` | (none) | Max decoded size per asset; larger assets stay redacted. |
 | `REQUIRE_EXECUTION_METADATA` | `false` | `--require-execution-metadata / --no-require-execution-metadata` | Only include executions having at least one row in `<prefix>execution_metadata` with matching id. |
 | `LOG_LEVEL` | `INFO` | (none) | Python logging level (`DEBUG`, `INFO`, etc.). |
 
@@ -215,13 +223,15 @@ python -m src backfill --limit 500 --no-dry-run \
 	--export-sleep-ms 120
 ```
 
-### Truncation & Binary Clarifications
+### Truncation, Binary & Media Clarifications
 | Case | Behavior |
 |------|----------|
 | `TRUNCATE_FIELD_LEN=0` | No textual truncation. Binary/base64 still redacted. |
 | `TRUNCATE_FIELD_LEN>0` | Input/output longer than limit truncated; metadata flags set. |
 | Binary field (n8n `binary` object) | `data` replaced with placeholder & omitted length. |
 | Long base64-looking string | Replaced with structured placeholder object. |
+| Media upload enabled + eligible asset | Placeholder first has `_media_pending=true`; after successful upload replaced by stable Azure reference object. |
+| Media upload failure / size over cap | Placeholder stays (legacy redaction), `n8n.media.upload_failed=true` metadata added. |
 
 ### Metadata Filtering Semantics
 When `REQUIRE_EXECUTION_METADATA=true` (or CLI flag), the query adds an `EXISTS` subquery requiring at least one row in `<prefix>execution_metadata` where `executionId = execution.id`. This is not a key/value equality filter; presence alone suffices.
@@ -234,7 +244,7 @@ When `REQUIRE_EXECUTION_METADATA=true` (or CLI flag), the query adds an `EXISTS`
 
 ---
 
-**Legacy Note:** Earlier iterations duplicated the execution id in trace metadata; now it appears only once as root span metadata key `n8n.execution.id`.
+**Legacy Note:** Early versions duplicated the execution id in trace metadata; now it appears only once as root span metadata key `n8n.execution.id`.
 
 ---
 
@@ -536,19 +546,61 @@ The custom hook `ensure-notice-present` blocks commits if the `NOTICE` header is
 
 ## Binary / Large Payload Handling
 
-Binary or very large base64 payloads are removed pre-export to avoid excessive OTLP span sizes while retaining structural context.
+Binary or very large base64 payloads are removed pre-export to avoid excessive OTLP span sizes while retaining structural context. When media upload is enabled (Azure phase 1) these stripped assets are uploaded and span outputs patched with reference objects.
 
 Detection heuristics:
 - Standard n8n `binary` node structure (`binary` -> item -> `{ data: <b64>, mimeType: ... }`).
 - Any long (>200 chars) base64-looking string (regex match) or strings starting with common base64 magic like `/9j/` (JPEG).
 
-Replacement:
+Replacement (legacy / disabled media):
 - In `binary` objects: `data` value replaced with `binary omitted` plus `_omitted_len` metadata.
 - Standalone strings: replaced with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <len> }`.
 
+Media upload (enabled):
+1. Mapper collects each binary asset (base64 payload, filename, mimeType, size estimate, SHA256) and inserts a temporary placeholder `{ "_media_pending": true, "sha256": "<hash>", "base64_len": <len> }`.
+2. `media_uploader.py` uploads assets to Azure Blob Storage using deterministic blob name `<executionId>/<nodeName>/<runIndex>/<sha256>[.<ext>]`.
+3. On success, span output JSON is patched in-place replacing pending placeholders with:
+```json
+{
+	"_media": true,
+	"storage": "azure",
+	"container": "<container>",
+	"blob": "<executionId>/<node>/<run>/<sha256>.ext",
+	"sha256": "<hash>",
+	"bytes": 1234
+}
+```
+4. On failure (auth, network, oversize, decode error) the temporary placeholder remains and span metadata `n8n.media.upload_failed=true` is set. The trace export continues (fail-open).
+5. Per-span `n8n.media.asset_count` increments only for successfully patched placeholders.
+
+Disable by leaving `ENABLE_MEDIA_UPLOAD` false (default) or omitting Azure credentials; behavior reverts to legacy redaction.
+
 This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future environment knobs (planned): `BINARY_PLACEHOLDER`, `BINARY_MIN_LEN`.
 
-## Roadmap (Next Iterations)
+## Media Upload (Azure Phase 1) Quick Start
+
+Enable media upload (fish):
+```fish
+set -x ENABLE_MEDIA_UPLOAD true
+set -x LANGFUSE_USE_AZURE_BLOB true
+set -x LANGFUSE_S3_EVENT_UPLOAD_BUCKET mycontainer
+set -x LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID mystorageacct
+set -x LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY myacctkey==
+# Optional local emulator
+# set -x LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT http://127.0.0.1:10000/mystorageacct
+python -m src backfill --limit 10 --dry-run
+```
+If correctly configured you will see patched span outputs containing `_media": true` reference objects and metadata `n8n.media.asset_count`.
+
+Disable again:
+```fish
+set -e ENABLE_MEDIA_UPLOAD
+set -e LANGFUSE_USE_AZURE_BLOB
+```
+
+Planned evolutions: token-based Langfuse media API integration, additional storage backends (S3/GCS), retry & circuit breaker logic, streaming large asset handling.
+
+## Roadmap (Upcoming Enhancements)
 
 1. Media upload workflow (store omitted binaries via Langfuse media API + token substitution).
 2. Error retries / resilient OTLP + media upload with dead-letter logging.
@@ -558,8 +610,8 @@ This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future en
 6. Extended observation classification & multimodal span enrichment.
 7. Optional tagging of agent root spans (`n8n.agent.root=true`) and richer lineage metadata.
 
-### Documentation Sync Summary (Iteration 4)
-The following sections were added or substantively updated in `.github/copilot-instructions.md` during Iteration 4 and are reflected here:
+### Documentation Sync Summary
+The following sections were added or substantively updated in `.github/copilot-instructions.md` and are reflected here:
 
 Added:
 - Timezone Normalization / Policy
@@ -576,6 +628,7 @@ Updated:
 - Binary Handling (unconditional stripping statement)
 - Media / Multimodal roadmap consolidation
 - Development Plan (future iterations reordered / clarified)
+ - Added Azure media upload feature (config vars, reference object schema, tests)
 
 Hardened:
 - Guardrails around purity (mapper has no network I/O)
@@ -585,7 +638,7 @@ Hardened:
 Consolidated:
 - Media + multimodality roadmap (single authoritative location)
 
-If any future change affects these documented areas, update both this README and `.github/copilot-instructions.md` plus add/adjust tests in the same pull request.
+If any future change affects these documented areas, update both this README and `.github/copilot-instructions.md` plus add/adjust tests in the same pull request. Media enhancements MUST add tests and expand the Media section (both files) in the same PR.
 
 ---
 

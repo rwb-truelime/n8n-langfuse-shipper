@@ -154,8 +154,8 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
         # Navigate to placeholder via path tokens (path recorded as a.b[c].d)
         # We store only top-level binary replacements inside run.data so we do
         # best-effort path resolution.
-        def _replace(obj):
-            # Deep search for provisional placeholder with matching sha256
+        def _replace(obj) -> int:
+            replaced = 0
             if isinstance(obj, dict):
                 for k, v in list(obj.items()):
                     if (
@@ -171,8 +171,9 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
                             "sha256": asset.sha256,
                             "bytes": asset.size_bytes,
                         }
+                        replaced += 1
                     else:
-                        _replace(v)
+                        replaced += _replace(v)
             elif isinstance(obj, list):
                 for i, v in enumerate(obj):
                     if (
@@ -188,8 +189,10 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
                             "sha256": asset.sha256,
                             "bytes": asset.size_bytes,
                         }
+                        replaced += 1
                     else:
-                        _replace(v)
+                        replaced += _replace(v)
+            return replaced
         # Upload first (so we only patch on success)
         decoded = _decode_b64_to_bytes(asset.content_b64, settings.MEDIA_MAX_BYTES)
         if decoded is None:
@@ -217,15 +220,15 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
                     span.metadata["n8n.media.upload_failed"] = True
                 continue
         # Patch JSON structure
-        _replace(parsed)
+        replacements = _replace(parsed)
         try:
             import json
             new_output = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
             span.output = new_output
-            # Media counter
-            if span.metadata is not None:
+            # Media counter (increment only if we patched a placeholder)
+            if replacements > 0 and span.metadata is not None:
                 current = span.metadata.get("n8n.media.asset_count") or 0
-                span.metadata["n8n.media.asset_count"] = int(current) + 1
+                span.metadata["n8n.media.asset_count"] = int(current) + replacements
         except Exception:
             pass
 
