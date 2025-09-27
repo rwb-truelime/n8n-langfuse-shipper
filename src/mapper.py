@@ -1010,6 +1010,18 @@ def map_execution_to_langfuse(
                                 txt = inner.get("text")
                                 if isinstance(txt, str) and txt.strip():
                                     extracted_text = txt
+                # Limescape Docs custom node: prefer `markdown` key when present.
+                # Node type pattern: contains "limescapeDocs" (provider marker already triggers generation).
+                if (
+                    extracted_text is None
+                    and isinstance(candidate, dict)
+                    and "limescape" in node_type.lower()
+                ):
+                    # After normalization we expect the promoted dict to include keys like
+                    # processedFiles / filenames / filetypes / markdown / aggregated... etc.
+                    md_val = candidate.get("markdown")
+                    if isinstance(md_val, str) and md_val.strip():
+                        extracted_text = md_val
                 # Fallback: if we still have nested ai_languageModel wrapper with list(s)
                 if extracted_text is None and isinstance(candidate, dict):
                     for k, v in candidate.items():

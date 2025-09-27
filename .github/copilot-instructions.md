@@ -461,6 +461,14 @@ Effect:
 
 Span status normalization: `LangfuseSpan.status` (if set) is derived from the logical success/error outcome and is distinct from the raw `n8n.node.execution_status` metadata value.
 
+### Generation Output Text Extraction (Concise Output Behavior)
+Generation spans attempt to expose only a concise textual output rather than large JSON wrappers:
+1. Gemini / Vertex chat: first non-empty `response.generations[0][0].text`.
+2. Limescape Docs custom node (`n8n-nodes-limescape-docs.limescapeDocs`): prefer top-level `markdown` field (post normalization) when non-empty.
+3. Fallback: serialized normalized JSON output.
+
+Adding or modifying provider-specific extraction heuristics requires simultaneous updates to this section, the README, and dedicated tests to lock behavior.
+
 ## Testing Guidance
 Add / update tests when:
 1. Changing parent resolution logic (each precedence path covered).
