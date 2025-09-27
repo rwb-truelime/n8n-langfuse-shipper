@@ -1003,6 +1003,186 @@ def _prepare_io_and_output(
     )
 
 
+# --------------------------- Stage 3 Refactor Helpers ---------------------------
+
+def _extract_model_and_metadata(
+    *,
+    run: NodeRun,
+    node_name: str,
+    node_type: str,
+    is_generation: bool,
+    wf_node_obj: Dict[str, WorkflowNode],
+    raw_input_obj: Any,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Extract model value plus related metadata flags (parameter fallback, missing signal).
+
+    Mirrors previous inline logic without altering behavior. Returns (model_val, metadata_fragment).
+    """
+    metadata: Dict[str, Any] = {}
+    model_val: Optional[str] = None
+    try:
+        if isinstance(run.data, dict):
+            search_root: Dict[str, Any] = dict(run.data)
+            if isinstance(run.inputOverride, dict):  # include explicit override context
+                search_root["_inputOverride"] = run.inputOverride
+            if raw_input_obj and isinstance(raw_input_obj, dict):  # inferred input propagation
+                search_root["_inferredInput"] = raw_input_obj
+            top_model = run.data.get("model")
+            if isinstance(top_model, str) and top_model:
+                model_val = top_model
+            else:
+                model_val = _extract_model_value(search_root)
+    except Exception:
+        pass
+    if model_val is None:
+        attempt_param_fallback = is_generation
+        node_static = wf_node_obj.get(node_name)
+        try:
+            if (
+                not attempt_param_fallback
+                and node_static
+                and isinstance(getattr(node_static, "parameters", None), dict)
+            ):
+                params_dict = node_static.parameters or {}
+                for pk in params_dict.keys():
+                    if _looks_like_model_param_key(pk):
+                        attempt_param_fallback = True
+                        break
+                if not attempt_param_fallback:
+                    for _sk, sv in params_dict.items():
+                        if isinstance(sv, dict):
+                            for pk in sv.keys():
+                                if _looks_like_model_param_key(pk):
+                                    attempt_param_fallback = True
+                                    break
+                        if attempt_param_fallback:
+                            break
+        except Exception:
+            pass
+        if attempt_param_fallback and node_static is not None:
+            try:
+                fallback = _extract_model_from_parameters(node_static)
+            except Exception:
+                fallback = None
+            if fallback:
+                model_val, key_path, extra_meta = fallback
+                metadata["n8n.model.from_parameters"] = True
+                metadata["n8n.model.parameter_key"] = key_path
+                for k, v in extra_meta.items():
+                    metadata[k] = v
+        if model_val is None and is_generation:
+            metadata["n8n.model.missing"] = True
+            try:
+                if isinstance(run.data, dict):
+                    metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
+            except Exception:
+                pass
+    return model_val, metadata
+
+
+def _detect_gemini_empty_output_anomaly(
+    *,
+    is_generation: bool,
+    norm_output_obj: Any,
+    run: NodeRun,
+    node_name: str,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Detect Gemini empty-output anomaly returning (status_override, metadata_fragment).
+
+    Side-effect: may mutate run.error to inject synthetic error object (matching prior behavior).
+    Returns status_override ('error') when anomaly detected else None.
+    """
+    if not is_generation:
+        return None, {}
+    meta: Dict[str, Any] = {}
+    try:
+        search_struct: Any = norm_output_obj if norm_output_obj is not None else run.data
+        tu_source = search_struct if isinstance(search_struct, dict) else run.data
+        tu = (
+            (
+                tu_source.get("tokenUsage")
+                if isinstance(tu_source, dict)
+                else None
+            )
+            or (
+                tu_source.get("tokenUsageEstimate")
+                if isinstance(tu_source, dict)
+                else None
+            )
+            or {}
+        )
+        prompt_tokens = None
+        completion_tokens = None
+        total_tokens = None
+        if isinstance(tu, dict):
+            prompt_tokens = (
+                tu.get("promptTokens")
+                or tu.get("inputTokens")
+                or tu.get("input_token_count")
+            )
+            completion_tokens = (
+                tu.get("completionTokens")
+                or tu.get("outputTokens")
+                or tu.get("output_token_count")
+            )
+            total_tokens = tu.get("totalTokens") or tu.get("tokenCount")
+        empty_text = False
+        gen_block = search_struct
+        if (
+            isinstance(search_struct, dict)
+            and "response" in search_struct
+            and isinstance(search_struct["response"], dict)
+        ):
+            gen_block = search_struct["response"]
+        try:
+            gens = gen_block.get("generations") if isinstance(gen_block, dict) else None
+            if isinstance(gens, list) and gens:
+                first_layer = gens[0]
+                if isinstance(first_layer, list) and first_layer:
+                    inner = first_layer[0]
+                    if isinstance(inner, dict):
+                        txt = inner.get("text")
+                        gen_info = inner.get("generationInfo")
+                        if isinstance(txt, str) and txt == "":
+                            empty_text = True
+                        if isinstance(gen_info, dict) and len(gen_info) == 0:
+                            meta["n8n.gen.empty_generation_info"] = True
+        except Exception:
+            pass
+        anomaly = (
+            empty_text
+            and isinstance(prompt_tokens, int)
+            and prompt_tokens > 0
+            and (isinstance(total_tokens, int) and total_tokens >= prompt_tokens)
+            and (completion_tokens in (0, None))
+        )
+        if anomaly:
+            meta["n8n.gen.empty_output_bug"] = True
+            meta["n8n.gen.prompt_tokens"] = prompt_tokens
+            if total_tokens is not None:
+                meta["n8n.gen.total_tokens"] = total_tokens
+            meta["n8n.gen.completion_tokens"] = completion_tokens or 0
+            if not run.error:
+                run.error = {"message": "Gemini empty output anomaly detected"}
+            try:
+                logger.warning(
+                    (
+                        "gemini_empty_output_anomaly span=%s "
+                        "prompt_tokens=%s total_tokens=%s completion_tokens=%s"
+                    ),
+                    node_name,
+                    prompt_tokens,
+                    total_tokens,
+                    completion_tokens,
+                )
+            except Exception:
+                pass
+            return "error", meta
+    except Exception:
+        return None, {}
+    return None, meta
+
+
 def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
@@ -1167,174 +1347,28 @@ def map_execution_to_langfuse(
             metadata["n8n.truncated.input"] = True
         if output_trunc:
             metadata["n8n.truncated.output"] = True
-    # Model extraction: BFS variant key search (model, model_name,
-    # modelId, model_id)
-        model_val = None
-    # Build a richer search root: primary run.data plus supplemental
-    # contexts that may hold the embedded model.
-        if isinstance(run.data, dict):
-            search_root: Dict[str, Any] = dict(run.data)
-            if isinstance(run.inputOverride, dict):
-                search_root["_inputOverride"] = run.inputOverride
-            # If we inferred parent output as input, include it (raw_input_obj already built above)
-            if raw_input_obj and isinstance(raw_input_obj, dict):
-                search_root["_inferredInput"] = raw_input_obj
-            top_model = run.data.get("model")
-            if isinstance(top_model, str) and top_model:
-                model_val = top_model
-            else:
-                model_val = _extract_model_value(search_root)
-        if model_val is None:
-            # Decide whether to attempt parameter fallback:
-            #  - Always for generation spans
-            #  - Also when parameters contain any model/deployment key even if
-            #    not generation (tool-like nodes producing model context)
-            attempt_param_fallback = is_generation
-            node_static = wf_node_obj.get(node_name)
-            if (
-                not attempt_param_fallback
-                and node_static
-                and isinstance(getattr(node_static, "parameters", None), dict)
-            ):
-                # access attribute directly (safe):
-                params_dict = node_static.parameters or {}
-                # Check top-level keys
-                for pk in params_dict.keys():
-                    if _looks_like_model_param_key(pk):
-                        attempt_param_fallback = True
-                        break
-                # Shallow dive into nested dicts for early signal (e.g., deploymentName only nested)
-                if not attempt_param_fallback:
-                    for _sk, sv in params_dict.items():
-                        if isinstance(sv, dict):
-                            for pk in sv.keys():
-                                if _looks_like_model_param_key(pk):
-                                    attempt_param_fallback = True
-                                    break
-                        if attempt_param_fallback:
-                            break
-            if attempt_param_fallback and node_static is not None:
-                fallback = _extract_model_from_parameters(node_static)
-                if fallback:
-                    model_val, key_path, extra_meta = fallback
-                    metadata["n8n.model.from_parameters"] = True
-                    metadata["n8n.model.parameter_key"] = key_path
-                    for k, v in extra_meta.items():
-                        metadata[k] = v
-            if model_val is None and is_generation:
-                metadata["n8n.model.missing"] = True
-                try:
-                    if isinstance(run.data, dict):
-                        metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
-                except Exception:
-                    pass
-        # Gemini empty-output anomaly detection:
-        # Edge case: Some Gemini (Vertex) responses yield empty string output while
-        # reporting non-zero promptTokens/totalTokens and zero completionTokens.
-        # We classify such generation spans as an error state with metadata flags.
-        if is_generation:
-            try:
-                # Prefer normalized (unwrapped) output object for anomaly detection.
-                search_struct: Any = norm_output_obj if norm_output_obj is not None else run.data
-                tu_source = search_struct if isinstance(search_struct, dict) else run.data
-                tu = (
-                    (
-                        tu_source.get("tokenUsage")
-                        if isinstance(tu_source, dict)
-                        else None
-                    )
-                    or (
-                        tu_source.get("tokenUsageEstimate")
-                        if isinstance(tu_source, dict)
-                        else None
-                    )
-                    or {}
-                )
-                prompt_tokens = None
-                completion_tokens = None
-                total_tokens = None
-                if isinstance(tu, dict):
-                    prompt_tokens = (
-                        tu.get("promptTokens")
-                        or tu.get("inputTokens")
-                        or tu.get("input_token_count")
-                    )
-                    completion_tokens = (
-                        tu.get("completionTokens")
-                        or tu.get("outputTokens")
-                        or tu.get("output_token_count")
-                    )
-                    total_tokens = tu.get("totalTokens") or tu.get("tokenCount")
-                # Attempt to detect empty textual generation payloads.
-                # Heuristic: output_str exists (already serialized) but when
-                # deserialized / original data contains
-                # generations[0][0].text == "" or similar nested structure.
-                empty_text = False
-                # The Gemini output may still be nested like {"response": {...}} OR already
-                # flattened after unwrap. Provide layered fallbacks.
-                gen_block = search_struct
-                if (
-                    isinstance(search_struct, dict)
-                    and "response" in search_struct
-                    and isinstance(search_struct["response"], dict)
-                ):
-                    gen_block = search_struct["response"]
-                # Common nesting: response -> generations -> [ [ { text:"" } ] ]
-                try:
-                    gens = gen_block.get("generations") if isinstance(gen_block, dict) else None
-                    if isinstance(gens, list) and gens:
-                        first_layer = gens[0]
-                        if isinstance(first_layer, list) and first_layer:
-                            inner = first_layer[0]
-                            if isinstance(inner, dict):
-                                txt = inner.get("text")
-                                gen_info = inner.get("generationInfo")
-                                if isinstance(txt, str) and txt == "":
-                                    empty_text = True
-                                # Treat an explicitly empty generationInfo object
-                                # as part of anomaly signal
-                                if isinstance(gen_info, dict) and len(gen_info) == 0:
-                                    metadata["n8n.gen.empty_generation_info"] = True
-                except Exception:
-                    pass
-                anomaly = (
-                    empty_text
-                    and isinstance(prompt_tokens, int)
-                    and prompt_tokens > 0
-                    and (isinstance(total_tokens, int) and total_tokens >= prompt_tokens)
-                    and (completion_tokens in (0, None))
-                )
-                if anomaly:
-                    metadata["n8n.gen.empty_output_bug"] = True
-                    metadata["n8n.gen.prompt_tokens"] = prompt_tokens
-                    if total_tokens is not None:
-                        metadata["n8n.gen.total_tokens"] = total_tokens
-                    metadata["n8n.gen.completion_tokens"] = completion_tokens or 0
-                    # Promote span status to error if not already error to highlight anomaly.
-                    status_norm = "error"
-                    if not run.error:
-                        # Attach synthetic error object for downstream systems
-                        # expecting error presence.
-                        run.error = {
-                            "message": "Gemini empty output anomaly detected"
-                        }
-                    # Structured debug log for observability (only once per span build)
-                    try:
-                        logger.warning(
-                            (
-                                "gemini_empty_output_anomaly span=%s "
-                                "prompt_tokens=%s total_tokens=%s completion_tokens=%s"
-                            ),
-                            node_name,
-                            prompt_tokens,
-                            total_tokens,
-                            completion_tokens,
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                # Suppress to avoid breaking mapping; anomaly detection is best-effort.
-                pass
+        # Model extraction & metadata
+        model_val, model_meta = _extract_model_and_metadata(
+            run=run,
+            node_name=node_name,
+            node_type=node_type,
+            is_generation=is_generation,
+            wf_node_obj=wf_node_obj,
+            raw_input_obj=raw_input_obj,
+        )
+        if model_meta:
+            metadata.update(model_meta)
+        # Gemini anomaly detection
+        status_override, anomaly_meta = _detect_gemini_empty_output_anomaly(
+            is_generation=is_generation,
+            norm_output_obj=norm_output_obj,
+            run=run,
+            node_name=node_name,
+        )
+        if anomaly_meta:
+            metadata.update(anomaly_meta)
+        if status_override:
+            status_norm = status_override
         span = LangfuseSpan(
             id=span_id,
             trace_id=trace_id,
