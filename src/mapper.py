@@ -776,6 +776,135 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
     return None
 
 
+# --------------------------- Stage 1 Refactor Helpers ---------------------------
+
+def _build_reverse_edges(workflow_data: Any) -> Dict[str, List[str]]:
+    """Construct a reverse edge map: node -> list of predecessor node names.
+
+    Mirrors the inline logic previously inside `map_execution_to_langfuse`.
+    Failures are swallowed (best-effort) to preserve existing lenient behavior.
+    """
+    reverse: Dict[str, List[str]] = {}
+    try:
+        connections = getattr(workflow_data, "connections", {}) or {}
+        for from_node, conn_types in connections.items():
+            if not isinstance(conn_types, dict):
+                continue
+            for _conn_type, outputs in conn_types.items():
+                if not isinstance(outputs, list):
+                    continue
+                for output_list in outputs:
+                    if not isinstance(output_list, list):
+                        continue
+                    for edge in output_list:
+                        to_node = edge.get("node") if isinstance(edge, dict) else None
+                        if to_node:
+                            reverse.setdefault(to_node, []).append(from_node)
+    except Exception:
+        return {}
+    return reverse
+
+
+def _build_child_agent_map(workflow_data: Any) -> Dict[str, Tuple[str, str]]:
+    """Build mapping child_node -> (agent_node, connection_type) for ai_* edges.
+
+    Reproduces the original pattern-based hierarchy detection logic.
+    """
+    mapping: Dict[str, Tuple[str, str]] = {}
+    try:
+        connections = getattr(workflow_data, "connections", {}) or {}
+        for from_node, conn_types in connections.items():
+            if not isinstance(conn_types, dict):
+                continue
+            for conn_type, outputs in conn_types.items():
+                if not (isinstance(conn_type, str) and conn_type.startswith("ai_")):
+                    continue
+                if not isinstance(outputs, list):
+                    continue
+                for output_list in outputs:
+                    if not isinstance(output_list, list):
+                        continue
+                    for edge in output_list:
+                        if isinstance(edge, dict):
+                            agent = edge.get("node")
+                            if agent:
+                                mapping[from_node] = (agent, conn_type)
+    except Exception:
+        return {}
+    return mapping
+
+
+def _flatten_runs(run_data: Dict[str, List[NodeRun]]) -> List[Tuple[int, str, int, NodeRun]]:
+    """Flatten runData into a chronologically sorted list for processing.
+
+    Returns list of tuples: (startTime_ms, node_name, run_index, NodeRun).
+    """
+    flattened: List[Tuple[int, str, int, NodeRun]] = []
+    for node_name, runs in run_data.items():
+        for idx, run in enumerate(runs):
+            flattened.append((run.startTime, node_name, idx, run))
+    flattened.sort(key=lambda x: x[0])
+    return flattened
+
+
+def _resolve_parent(
+    *,
+    node_name: str,
+    run: NodeRun,
+    trace_id: str,
+    child_agent_map: Dict[str, Tuple[str, str]],
+    last_span_for_node: Dict[str, str],
+    reverse_edges: Dict[str, List[str]],
+    root_span_id: str,
+) -> Tuple[str, Optional[str], Optional[int]]:
+    """Resolve parent span id and previous node info for a node run.
+
+    Implements precedence: agent hierarchy -> runtime exact -> runtime last ->
+    static reverse graph -> root.
+    Returns (parent_id, prev_node, prev_node_run_index).
+    """
+    parent_id: str = root_span_id
+    prev_node: Optional[str] = None
+    prev_node_run: Optional[int] = None
+
+    # 1. Agent hierarchy
+    if node_name in child_agent_map:
+        agent_name, _link_type = child_agent_map[node_name]
+        if agent_name in last_span_for_node:
+            parent_id = last_span_for_node[agent_name]
+        else:
+            parent_id = root_span_id
+        prev_node = agent_name
+        return parent_id, prev_node, prev_node_run
+
+    # 2. Runtime sequential (exact run id if provided)
+    if run.source and len(run.source) > 0 and run.source[0].previousNode:
+        prev_node = run.source[0].previousNode
+        prev_node_run = run.source[0].previousNodeRun
+        if prev_node_run is not None:
+            parent_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{prev_node}:{prev_node_run}"))
+        else:
+            parent_id = last_span_for_node.get(prev_node, root_span_id)
+        return parent_id, prev_node, prev_node_run
+
+    # 3. Static reverse graph fallback
+    if node_name in reverse_edges and reverse_edges[node_name]:
+        graph_preds = reverse_edges[node_name]
+        chosen_pred = None
+        for cand in graph_preds:
+            if cand in last_span_for_node:
+                chosen_pred = cand
+                break
+        if not chosen_pred:
+            chosen_pred = graph_preds[0]
+        prev_node = chosen_pred
+        parent_id = last_span_for_node.get(chosen_pred, parent_id)
+        return parent_id, prev_node, prev_node_run
+
+    # 4. Root fallback
+    return parent_id, prev_node, prev_node_run
+
+
 def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
@@ -855,63 +984,15 @@ def map_execution_to_langfuse(
     # Track last span id per node for fallback parent resolution (runtime execution order)
     last_span_for_node: Dict[str, str] = {}
 
-    # Build a reverse graph from workflow connections to infer predecessors
-    # when runtime source info is absent.
-    reverse_edges: Dict[str, List[str]] = {}
-    try:
-        connections = getattr(record.workflowData, "connections", {}) or {}
-        for from_node, conn_types in connections.items():
-            if not isinstance(conn_types, dict):
-                continue
-            for _conn_type, outputs in conn_types.items():
-                if not isinstance(outputs, list):
-                    continue
-                for output_list in outputs:  # each output_list is a list of connection dicts
-                    if not isinstance(output_list, list):
-                        continue
-                    for edge in output_list:
-                        to_node = edge.get("node") if isinstance(edge, dict) else None
-                        if to_node:
-                            reverse_edges.setdefault(to_node, []).append(from_node)
-    except Exception:
-        # Fail silently; graph fallback is best-effort
-        pass
+    # Build static reverse edges (best-effort) and child->agent hierarchy map.
+    reverse_edges = _build_reverse_edges(record.workflowData)
 
     run_data = record.data.executionData.resultData.runData
 
-    # Build child->agent mapping for AI hierarchy connections.
-    # Pattern-based: ANY connection type starting with 'ai_' (and not equal to literal 'main')
-    # is treated as hierarchical: from_node (child) -> edge.node (agent/parent).
-    # This future‑proofs against new n8n AI surface additions (ai_outputParser, ai_retriever, etc.).
-    child_agent_map: Dict[str, Tuple[str, str]] = {}  # child -> (agent, connection_type)
-    try:
-        connections = getattr(record.workflowData, "connections", {}) or {}
-        for from_node, conn_types in connections.items():
-            if not isinstance(conn_types, dict):
-                continue
-            for conn_type, outputs in conn_types.items():
-                if not (isinstance(conn_type, str) and conn_type.startswith("ai_")):
-                    continue
-                if not isinstance(outputs, list):
-                    continue
-                for output_list in outputs:
-                    if not isinstance(output_list, list):
-                        continue
-                    for edge in output_list:
-                        if isinstance(edge, dict):
-                            agent = edge.get("node")
-                            if agent:
-                                child_agent_map[from_node] = (agent, conn_type)
-    except Exception:
-        pass
+    child_agent_map = _build_child_agent_map(record.workflowData)
 
-    # Flatten all runs to process in chronological order, giving agent spans
-    # chance to be created before children
-    flattened: List[Tuple[int, str, int, NodeRun]] = []
-    for node_name, runs in run_data.items():
-        for idx, run in enumerate(runs):
-            flattened.append((run.startTime, node_name, idx, run))
-    flattened.sort(key=lambda x: x[0])
+    # Chronologically sorted runs (agents first if earlier start times)
+    flattened = _flatten_runs(run_data)
 
     # Maintain last output object (raw dict) per node for input propagation.
     last_output_data: Dict[str, Any] = {}
@@ -923,40 +1004,15 @@ def map_execution_to_langfuse(
         span_id = str(uuid5(SPAN_NAMESPACE, f"{trace_id}:{node_name}:{idx}"))
         start_time = _epoch_ms_to_dt(run.startTime)
         end_time = start_time + timedelta(milliseconds=run.executionTime or 0)
-        parent_id: Optional[str] = root_span_id
-        prev_node = None
-        prev_node_run = None
-
-        # Hierarchical agent first
-        if node_name in child_agent_map:
-            agent_name, link_type = child_agent_map[node_name]
-            if agent_name in last_span_for_node:
-                parent_id = last_span_for_node[agent_name]
-            else:
-                parent_id = root_span_id  # fallback until agent processed
-            prev_node = agent_name  # treat agent as previous for input inference
-        else:
-            # Sequential runtime or graph fallback
-            if run.source and len(run.source) > 0 and run.source[0].previousNode:
-                prev_node = run.source[0].previousNode
-                prev_node_run = run.source[0].previousNodeRun
-                if prev_node_run is not None:
-                    parent_id = str(
-                        uuid5(SPAN_NAMESPACE, f"{trace_id}:{prev_node}:{prev_node_run}")
-                    )
-                else:
-                    parent_id = last_span_for_node.get(prev_node, root_span_id)
-            elif node_name in reverse_edges and reverse_edges[node_name]:
-                graph_preds = reverse_edges[node_name]
-                chosen_pred = None
-                for cand in graph_preds:
-                    if cand in last_span_for_node:
-                        chosen_pred = cand
-                        break
-                if not chosen_pred:
-                    chosen_pred = graph_preds[0]
-                prev_node = chosen_pred
-                parent_id = last_span_for_node.get(chosen_pred, parent_id)
+        parent_id, prev_node, prev_node_run = _resolve_parent(
+            node_name=node_name,
+            run=run,
+            trace_id=trace_id,
+            child_agent_map=child_agent_map,
+            last_span_for_node=last_span_for_node,
+            reverse_edges=reverse_edges,
+            root_span_id=root_span_id,
+        )
 
         usage = _extract_usage(run)
         is_generation = _detect_generation(node_type, run)
