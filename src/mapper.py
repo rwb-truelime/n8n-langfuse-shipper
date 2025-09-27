@@ -905,6 +905,104 @@ def _resolve_parent(
     return parent_id, prev_node, prev_node_run
 
 
+def _prepare_io_and_output(
+    *,
+    raw_input_obj: Any,
+    raw_output_obj: Any,
+    is_generation: bool,
+    node_type: str,
+    truncate_limit: Optional[int],
+) -> Tuple[
+    Any,  # norm_input_obj
+    Any,  # norm_output_obj
+    Optional[str],  # input_str
+    bool,  # input_trunc
+    Optional[str],  # output_str (possibly extracted text)
+    bool,  # output_trunc
+    Dict[str, bool],  # input_flags
+    Dict[str, bool],  # output_flags
+]:
+    """Normalize and serialize input/output plus generation text extraction.
+
+    This consolidates prior inline logic to reduce complexity in the main loop.
+    The behavior is intentionally identical to the pre-refactor implementation:
+      1. Normalize (unwrap AI channel then generic json) for input & output.
+      2. Serialize & truncate (with binary stripping) input first.
+      3. For generation spans attempt concise textual extraction (Gemini / Limescape
+         markdown / ai_ wrapper text) using the normalized output object.
+      4. If extraction succeeds, use extracted text (never truncated); else serialize
+         normalized output with truncation.
+    """
+    norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
+    norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
+    input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
+    output_str: Optional[str] = None
+    output_trunc = False
+    if is_generation:
+        try:
+            candidate = norm_output_obj
+            extracted_text: Optional[str] = None
+            # Gemini / Vertex structure
+            if isinstance(candidate, dict):
+                resp = (
+                    candidate.get("response")
+                    if isinstance(candidate.get("response"), dict)
+                    else candidate
+                )
+                gens = resp.get("generations") if isinstance(resp, dict) else None
+                if isinstance(gens, list) and gens:
+                    first_layer = gens[0]
+                    if isinstance(first_layer, list) and first_layer:
+                        inner = first_layer[0]
+                        if isinstance(inner, dict):
+                            txt = inner.get("text")
+                            if isinstance(txt, str) and txt.strip():
+                                extracted_text = txt
+            # Limescape Docs markdown preference
+            if (
+                extracted_text is None
+                and isinstance(candidate, dict)
+                and "limescape" in node_type.lower()
+            ):
+                md_val = candidate.get("markdown")
+                if isinstance(md_val, str) and md_val.strip():
+                    extracted_text = md_val
+            # Fallback nested ai_* channel text search
+            if extracted_text is None and isinstance(candidate, dict):
+                for k, v in candidate.items():
+                    if k.startswith("ai_") and isinstance(v, list) and v:
+                        for layer in v[:3]:
+                            if isinstance(layer, list) and layer:
+                                first = layer[0]
+                                if isinstance(first, dict):
+                                    txt = first.get("text")
+                                    if isinstance(txt, str) and txt.strip():
+                                        extracted_text = txt
+                                        break
+                        if extracted_text:
+                            break
+            if extracted_text is not None:
+                output_str = extracted_text
+                output_trunc = False
+        except Exception:
+            # Best-effort; fall back to full serialization
+            pass
+    if output_str is None:
+        output_str, output_trunc = _serialize_and_truncate(
+            norm_output_obj, truncate_limit
+        )
+    return (
+        norm_input_obj,
+        norm_output_obj,
+        input_str,
+        input_trunc,
+        output_str,
+        output_trunc,
+        input_flags,
+        output_flags,
+    )
+
+
 def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
@@ -1035,71 +1133,26 @@ def map_execution_to_langfuse(
             "n8n.node.execution_time_ms": run.executionTime,
             "n8n.node.execution_status": status_norm,
         }
-        # Normalize / unwrap noisy AI & generic json wrappers
-        norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
-        norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
+        (
+            norm_input_obj,
+            norm_output_obj,
+            input_str,
+            input_trunc,
+            output_str,
+            output_trunc,
+            input_flags,
+            output_flags,
+        ) = _prepare_io_and_output(
+            raw_input_obj=raw_input_obj,
+            raw_output_obj=raw_output_obj,
+            is_generation=is_generation,
+            node_type=node_type,
+            truncate_limit=truncate_limit,
+        )
         if input_flags.get("unwrapped_ai_channel") or output_flags.get("unwrapped_ai_channel"):
             metadata["n8n.io.unwrapped_ai_channel"] = True
         if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):
             metadata["n8n.io.unwrapped_json_root"] = True
-        input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
-        # For generation spans we want a concise textual output (LLM content) rather than
-        # the entire JSON structure. We attempt provider-specific extraction heuristics.
-        extracted_text: Optional[str] = None
-        if is_generation:
-            try:
-                # Use normalized output (already unwrapped) to reduce nesting noise.
-                candidate = norm_output_obj
-                # Gemini / Vertex pattern: { response: { generations: [ [ { text: "..." } ] ] } }
-                if isinstance(candidate, dict):
-                    resp = (
-                        candidate.get("response")
-                        if isinstance(candidate.get("response"), dict)
-                        else candidate
-                    )
-                    gens = resp.get("generations") if isinstance(resp, dict) else None
-                    if isinstance(gens, list) and gens:
-                        first_layer = gens[0]
-                        if isinstance(first_layer, list) and first_layer:
-                            inner = first_layer[0]
-                            if isinstance(inner, dict):
-                                txt = inner.get("text")
-                                if isinstance(txt, str) and txt.strip():
-                                    extracted_text = txt
-                # Limescape Docs custom node: prefer `markdown` key when present.
-                # Node type pattern: contains "limescapeDocs" (provider marker already triggers generation).
-                if (
-                    extracted_text is None
-                    and isinstance(candidate, dict)
-                    and "limescape" in node_type.lower()
-                ):
-                    # After normalization we expect the promoted dict to include keys like
-                    # processedFiles / filenames / filetypes / markdown / aggregated... etc.
-                    md_val = candidate.get("markdown")
-                    if isinstance(md_val, str) and md_val.strip():
-                        extracted_text = md_val
-                # Fallback: if we still have nested ai_languageModel wrapper with list(s)
-                if extracted_text is None and isinstance(candidate, dict):
-                    for k, v in candidate.items():
-                        if k.startswith("ai_") and isinstance(v, list) and v:
-                            # Dive into first few items searching for dict with 'text'
-                            for layer in v[:3]:
-                                if isinstance(layer, list) and layer:
-                                    first = layer[0]
-                                    if isinstance(first, dict):
-                                        txt = first.get("text")
-                                        if isinstance(txt, str) and txt.strip():
-                                            extracted_text = txt
-                                            break
-                            if extracted_text:
-                                break
-            except Exception:
-                extracted_text = None
-        if extracted_text is not None:
-            output_str = extracted_text
-            output_trunc = False
-        else:
-            output_str, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
         if node_name in child_agent_map:
             agent_name, link_type = child_agent_map[node_name]
             metadata["n8n.agent.parent"] = agent_name
