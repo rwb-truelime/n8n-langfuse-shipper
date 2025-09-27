@@ -29,7 +29,7 @@ from uuid import NAMESPACE_DNS, uuid5
 from dataclasses import dataclass, field
 
 from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
-from .media_uploader import BinaryAsset, MappedTraceWithAssets
+from .media_api import BinaryAsset, MappedTraceWithAssets
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
 from .observation_mapper import map_node_to_observation_type
 
@@ -1304,8 +1304,11 @@ def _map_execution(
             raw_input_obj = run.inputOverride
         elif prev_node and prev_node in ctx.last_output_data:
             raw_input_obj = {"inferredFrom": prev_node, "data": ctx.last_output_data[prev_node]}
-        # Binary collection (if enabled) operates on a clone to avoid mutating
-        # original run.data object used for input propagation caching.
+    # Binary collection (if enabled) operates on a clone to avoid mutating
+    # original run.data object used for input propagation caching. The
+    # placeholders inserted here are later replaced by Langfuse media token
+    # strings (see media_api.patch_and_upload_media). This is a breaking
+    # change from the prior Azure JSON reference object approach.
         if collect_binaries:
             mutated_output, assets = _collect_binary_assets(
                 run.data,

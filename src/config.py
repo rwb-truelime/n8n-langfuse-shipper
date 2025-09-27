@@ -116,32 +116,17 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ---------------- Media / Binary Upload (Phase 1 Azure Only) -----------------
-    # We intentionally mirror Langfuse's environment variable naming for Azure
-    # Blob usage (even though they look S3-ish) to avoid user confusion. Langfuse
-    # docs (Azure section) repurpose these variable names when
-    # LANGFUSE_USE_AZURE_BLOB=true.
+    # ---------------- Media / Binary Upload (Langfuse Media API) -----------------
+    # BREAKING CHANGE: Azure Blob direct upload path removed. We now rely on
+    # Langfuse Media API (create + optional presigned upload) and emit token
+    # references. Only a single flag is required besides host + auth keys.
     ENABLE_MEDIA_UPLOAD: bool = Field(
         default=False,
         description=(
-            "Feature flag: when true, collect binary assets and upload them to Azure Blob before "
-            "export. When false, legacy unconditional redaction remains."
+            "Feature flag: when true, collect binary assets and invoke Langfuse Media API to "
+            "produce media tokens. When false, legacy unconditional redaction remains."
         ),
     )
-    # Langfuse Azure toggle (mirrors docs). We still require user to set this
-    # for clarity; both must be true to activate uploads.
-    LANGFUSE_USE_AZURE_BLOB: bool = Field(
-        default=False, description="Enable Azure Blob mode (Langfuse naming parity)"
-    )
-    # Container name (maps to Azure container). Langfuse docs reuse the S3 style
-    # variable for Azure as container name.
-    LANGFUSE_S3_EVENT_UPLOAD_BUCKET: Optional[str] = None
-    # Azure storage account name (docs reuse ACCESS_KEY_ID var).
-    LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: Optional[str] = None
-    # Azure storage account key (docs reuse SECRET_ACCESS_KEY var).
-    LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: Optional[str] = None
-    # Optional endpoint override (Azurite/local). (Name consistent with docs.)
-    LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: Optional[str] = None
     # Maximum size (bytes) of a single media object to upload. Large blobs are
     # left as redacted placeholders if exceeded.
     MEDIA_MAX_BYTES: int = Field(

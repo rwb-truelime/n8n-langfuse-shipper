@@ -35,7 +35,9 @@ Concise definitions of recurring terms (use these exact meanings in code comment
 * Generation: Span classified as an LLM call via heuristics (`tokenUsage` presence OR provider substring) optionally with token usage and model metadata.
 * Human-readable Trace ID (OTLP): 32-hex trace id produced by `_build_human_trace_id` embedding zero‑padded execution id digits as suffix; distinct from logical trace id string.
 * Input Propagation: Injecting parent span raw output as child logical input when `inputOverride` absent.
-* Multimodality / Media Upload: Feature-flag gated Azure Blob upload of stripped binary payloads. When enabled the mapper collects binary assets (base64 data + metadata) and a post-map phase uploads them to Azure Blob Storage, patching span outputs with stable reference objects. Fallback leaves legacy redaction placeholders when disabled or on failure.
+* Multimodality / Media Upload: Feature-flag gated Langfuse Media API token flow. Mapper collects binary
+    assets (base64 + metadata) inserting temporary placeholders; a post-map phase exchanges each asset for a
+    stable Langfuse media token string. Fail-open: on error or oversize, original redaction placeholder stays.
 * NodeRun: Runtime execution instance of a workflow node (with timing, status, source chain info, outputs, error).
 * Observation Type: Semantic classification (agent/tool/chain/etc.) derived by `observation_mapper.py` fallback chain (exact → regex → category → default span).
 * Parent Resolution Precedence: Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
@@ -71,7 +73,7 @@ graph TD
     %% Parent Resolve = agent + runtime + graph precedence
     %% Input Propagate = infer child input from parent output
     %% Binary Strip/Truncate = unconditional binary redaction + optional truncation
-    %% Media Upload = optional Azure Blob upload replacing placeholders (feature gated)
+    %% Media Upload = optional media token patching (feature gated)
     %% Backpressure = flush + sleep controls
     %% Checkpoint = last processed execution id persistence
 
@@ -82,30 +84,33 @@ Canonical definitions live in `src/models/n8n.py`. Do NOT inline-edit model shap
 3.  **Load:** The transformed trace and its spans are exported to the Langfuse OTLP endpoint using the OpenTelemetry SDK.
 Canonical definitions live in `src/models/langfuse.py`. These are the internal logical structures prior to OTLP span creation (trace, span, generation, usage). Extend with extreme caution: new fields demand tests & README alignment.
 <!-- MEDIA ROADMAP START -->
-## Media & Multimodality (Phase 1 Implemented)
-Implemented (Phase 1 Azure Only):
+## Media & Multimodality (Implemented: Langfuse Media Tokens)
+Implemented Token-Based Flow:
 1. Inline binary asset collection during mapping (single pass) producing `MappedTraceWithAssets`.
-2. Post-map upload module `media_uploader.py` (keeps mapper pure) uploads assets to Azure Blob when BOTH flags set: `ENABLE_MEDIA_UPLOAD=true` AND `LANGFUSE_USE_AZURE_BLOB=true` plus required credentials.
-3. Deterministic blob naming: `<executionId>/<nodeName>/<runIndex>/<sha256>[.<ext>]` (ext preserved if alphanumeric & <=16 chars).
-4. Successful upload patches span output JSON replacing temporary placeholders (`{"_media_pending":true,...}`) with reference objects:
-    `{ "_media": true, "storage": "azure", "container": <container>, "blob": <blob_path>, "sha256": <hash>, "bytes": <size> }`.
-5. Idempotent re-runs: existing blobs detected via `get_blob_properties`; upload skipped if already present; patch still applied.
-6. Size guard: assets whose decoded size would exceed `MEDIA_MAX_BYTES` remain legacy redacted placeholders (metadata flag `n8n.media.upload_failed=true`).
-7. Failure handling is fail-open: network / auth / upload errors retain placeholder, set `n8n.media.upload_failed=true`, never abort trace export.
-8. Per-span media count: `n8n.media.asset_count` increments by number of successfully patched placeholders for that span.
-9. Tests: success path (mocked Azure client) + disabled feature parity test ensure no drift when feature off.
+2. Temporary placeholder inserted where binary/base64 content detected:
+    `{ "_media_pending": true, "sha256": "<hex>", "base64_len": <len> }`.
+3. Post-map patch phase (`media_api.py`) iterates collected assets when `ENABLE_MEDIA_UPLOAD=true`.
+4. For each asset <= `MEDIA_MAX_BYTES` (decoded) the service calls Langfuse Media API create endpoint.
+5. If the Langfuse response includes an upload instruction (e.g. presigned URL) the raw bytes are uploaded.
+6. On success, placeholder replaced with stable token string:
+    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`.
+7. Per-span replacement count aggregated into metadata key `n8n.media.asset_count` (only successful tokens).
+8. Fail-open semantics: oversize, decode errors, API/upload failures leave placeholder (and set
+    `n8n.media.upload_failed=true` once per affected span). Processing continues; export never aborted.
+9. Determinism: same binary input (identical SHA256) yields idempotent create semantics on Langfuse side;
+    token returned is stable for that media id.
 
-Not Yet Implemented (Future Phases / Subject to Design):
-1. Langfuse native media token exchange (current implementation stores only Azure references).
-2. Additional providers (S3 / GCS) behind separate toggles.
-3. Circuit breaker on consecutive failures.
-4. Streaming large asset upload (chunked) & memory spill avoidance.
-5. Media redaction reversal / retrieval CLI.
+Not Yet Implemented (Future Enhancements):
+1. Retry / backoff strategy for repeated API failures.
+2. Streaming or chunked upload for very large assets (currently hard-capped by `MEDIA_MAX_BYTES`).
+3. Advanced MIME detection / normalization improvements.
+4. Circuit breaker after consecutive media failures (gracefully disable feature for run).
+5. CLI retrieval / verification utilities for stored media tokens.
 
 Guardrails (Still Enforced):
-* Mapper purity preserved (no direct network calls in mapping stage).
-* New env vars documented + tested in same PR (see Env Var section below).
-* Default state: feature disabled (no behavior change vs pre-media implementation).
+* Mapper purity (network I/O only in post-map patch phase).
+* New / changed env vars require synchronized README + tests + this file.
+* Disabled flag path yields identical span outputs as legacy redaction path (asserted by tests).
 <!-- MEDIA ROADMAP END -->
 1. One n8n execution row (entity+data) maps to exactly one Langfuse trace.
 2. Node span id format: `UUIDv5(namespace=SPAN_NAMESPACE, name=f"{trace_id}:{node_name}:{run_index}")` (deterministic per node run index).
@@ -296,11 +301,13 @@ If matched:
 * `_extract_usage` normalizes to `input`/`output`/`total`; if `total` absent but input & output present it is synthesized (input+output). Precedence: existing input/output/total > promptTokens/completionTokens/totalTokens > prompt/completion/total. Custom flattened Limescape Docs counters (`totalInputTokens`, `totalOutputTokens`, `totalTokens`) are also detected and mapped.
 * OTLP exporter emits `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens` only for provided fields plus `model`, `langfuse.observation.model.name` when `model` populated.
 
-### Multimodality Mapping (Future)
-- Phase not yet implemented (see Media & Multimodality Roadmap). Planned flow once enabled:
-    1. Detect binary fields.
-    2. Upload via Langfuse media API (feature flag gated).
-    3. Replace placeholders with `@@@langfuseMedia:<token>`; failures retain placeholders and do not abort trace export.
+### Multimodality Mapping (Implemented)
+When enabled (`ENABLE_MEDIA_UPLOAD=true`):
+1. Binary/base64 detection records assets + inserts `_media_pending` placeholders.
+2. Post-map phase exchanges each eligible asset for a Langfuse media token string of form
+    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`.
+3. Failures (oversize, decode, API, upload) retain placeholder; span metadata `n8n.media.upload_failed=true`.
+4. Exporter treats tokens as ordinary strings (opaque to OTLP); no special exporter logic required.
 
  **Attribute Mapping:** The shipper sets OTel attributes based on the `LangfuseSpan` model:
      - `langfuse.observation.type`
@@ -336,7 +343,8 @@ Additional notes:
 * Root span metadata holds `n8n.execution.id`; not duplicated on trace metadata.
 * Export order mirrors creation order; parents precede children.
 * Dry-run mode constructs spans but does not send them (useful for testing determinism).
-* Media upload (if enabled) occurs before shipper export; span outputs already patched with stable reference objects so exporter remains oblivious to raw binaries.
+* Media upload (if enabled) occurs before shipper export; span outputs already patched with stable tokens
+    so exporter remains oblivious to raw binaries.
 
 ## Application Flow & Control
 - **Main Loop:** A CLI script (`__main__.py`) that loads a checkpoint, streams execution batches from PostgreSQL, maps each record to a `LangfuseTrace`, passes it to the shipper, and updates the checkpoint.
@@ -363,7 +371,7 @@ Additional notes:
 4. CLI flags override env values for that invocation.
 
 ## Development Plan (Planned Enhancements)
-1. Media upload workflow (binary placeholder → upload → media token substitution).
+1. Media resilience (retry, circuit breaker, streaming uploads) & richer diagnostics.
 2. Advanced filtering flags (status, workflow, time window, id bounds).
 3. Parallel / async export pipeline (maintain deterministic ordering).
 4. PII/sensitive field redaction (configurable; test enforced).
@@ -527,30 +535,23 @@ If adding a new behavior category, extend this table and create/modify tests acc
 | 4 | Static Reverse Graph Fallback | Reverse edge from workflow connections | `n8n.graph.inferred_parent=true` |
 | 5 | Root Fallback | No parent resolved → root span | (none) |
 
-### Media Upload Environment Variables (Phase 1 Azure)
+### Media Upload Environment Variables (Token Flow)
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLE_MEDIA_UPLOAD` | `false` | Master feature flag. When false, legacy redaction only (no collection). |
-| `LANGFUSE_USE_AZURE_BLOB` | `false` | Secondary gate aligning with Langfuse Azure usage semantics. Both flags must be true to activate uploads. |
-| `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` | `None` | Azure container name (Langfuse naming parity). |
-| `LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID` | `None` | Azure storage account name (mirrors docs). |
-| `LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY` | `None` | Azure storage account key. |
-| `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` | `None` | Optional custom endpoint (e.g. Azurite/local emulator). |
-| `MEDIA_MAX_BYTES` | `25_000_000` | Max decoded size (bytes) allowed per asset for upload; larger assets remain redacted. |
+| `ENABLE_MEDIA_UPLOAD` | `false` | Master feature flag. When false, only binary redaction; no token calls. |
+| `MEDIA_MAX_BYTES` | `25_000_000` | Max decoded size allowed per asset; oversize assets left as redaction placeholders. |
 
-### Media Reference Object (Patched Span Output)
-```json
-{
-    "_media": true,
-    "storage": "azure",
-    "container": "<container>",
-    "blob": "<executionId>/<node>/<runIndex>/<sha256>.ext",
-    "sha256": "<hex>",
-    "bytes": 12345
-}
-```
+### Media Token Format
+Stable replacement string emitted into span outputs upon successful exchange:
 
-Temporary pre-upload placeholder shape (never exported if upload succeeds):
+`@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`
+
+Fields:
+* `type=<mime>`: Original (or inferred) MIME type (sanitized, lowercase).
+* `id=<mediaId>`: Langfuse-assigned identifier returned by create API.
+* `source=n8n`: Constant marker establishing provenance.
+
+Temporary pre-upload placeholder shape (never exported if token substitution succeeds):
 ```json
 { "_media_pending": true, "sha256": "<hex>", "base64_len": 45678 }
 ```
@@ -560,12 +561,27 @@ Temporary pre-upload placeholder shape (never exported if upload succeeds):
 |-----|----------|---------|
 | `n8n.media.asset_count` | After successful patching | Number of binary placeholders replaced in that span. |
 | `n8n.media.upload_failed` | Upload skipped or failed for an asset | At least one asset for that span failed (size cap, decode error, or network failure). |
+| `n8n.media.error_codes` | Media failure(s) | List of short codes per failure cause; absent on success & dedupe path. |
+
+Failure codes (stable identifiers; add new ones only with tests + README + this file update):
+* `decode_or_oversize` – Base64 decode error OR asset exceeded `MEDIA_MAX_BYTES` (size gate).
+* `create_api_error` – Non-2xx response calling Langfuse media create endpoint.
+* `missing_id` – Successful create response missing a media id field.
+* `upload_put_error` – Presigned upload (PUT) returned non-2xx status code.
+* `serialization_error` – Failed to serialize patched output after token substitution.
+
+Deduplicated create responses: When the create API returns an object with a media id but **no** `uploadUrl`
+the asset already exists; this is treated as success (counts toward `n8n.media.asset_count`) and does not
+produce `n8n.media.error_codes` or `n8n.media.upload_failed`.
 
 ### Media Upload Tests (Authoritative Coverage)
 | Test File | Scenario |
 |-----------|----------|
-| `test_media_disabled.py` | Ensures disabled feature path yields identical spans to legacy behavior (no ref changes). |
-| `test_media_upload_success.py` | Mocks Azure client; asserts placeholder replacement and `n8n.media.asset_count` increment. |
+| `test_media_api_tokens.py` | Enabled vs disabled parity, token substitution, metadata flags, oversize skip. |
+| `test_media_failure_and_oversize.py` | API failure path (error_codes, upload_failed) & oversize asset skip. |
+
+`test_media_api_tokens.py` also covers the deduplicated create response (no `uploadUrl`) confirming that it
+counts as a successful substitution without `n8n.media.upload_failed` or `n8n.media.error_codes`.
 
 Adding additional media behaviors (failure retries, other providers) REQUIRES adding new tests and updating this section plus README in the same PR.
 
@@ -598,8 +614,8 @@ Reordering requires updating tests and this table.
 - Caching only last outputs reduces accumulation risk.
 - Potential optimization: batch OTLP export or async spans while preserving parent ordering.
 
-## Media Upload (Future)
-See consolidated Media & Multimodality Roadmap above. No upload logic implemented yet; placeholders remain.
+## Media Upload
+Implemented token-based flow (see Media & Multimodality section). Exporter remains agnostic of tokens.
 
 ## Failure & Resilience Philosophy
 * Root-only fallback: malformed / missing runData still produces a trace with execution root span.

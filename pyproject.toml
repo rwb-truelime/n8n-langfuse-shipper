@@ -29,10 +29,8 @@ dev = [
     "pre-commit>=3.7.0",
     "langfuse>=3.0.0"
 ]
-media = [
-    # Azure Blob Storage client (only provider implemented in initial media feature)
-    "azure-storage-blob>=12.19.0,<13.0.0"
-]
+# Legacy 'media' extra removed (Azure Blob path deprecated). Media tokens use
+# Langfuse HTTP API only; no extra dependency required.
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

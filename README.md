@@ -10,7 +10,7 @@
 
 High‑throughput backfill service that reads historical n8n execution data from PostgreSQL and ships it to Langfuse via the OpenTelemetry (OTLP/HTTP) endpoint.
 
-Current focus: recently added optional Azure Blob media upload (feature‑flag gated) alongside hierarchical Agent/Tool/LLM parenting, pointer‑compressed execution decoding, and stable OTLP exporting.
+Current focus: optional Langfuse media token upload (feature‑flag gated) alongside hierarchical Agent/Tool/LLM parenting, pointer‑compressed execution decoding, and stable OTLP exporting.
 
 ---
 
@@ -82,7 +82,7 @@ Additional documentation-aligned capabilities:
 - Pointer-compressed (`list` + index pointer) execution decoding detailed and resilient; failure falls back gracefully to path probing.
 - Regression checklist enumerated in `.github/copilot-instructions.md` to prevent silent drift (IDs, execution id placement, timezone, binary stripping, generation heuristics, pointer decoding, env vars, purity).
 - Binary handling invariants: unconditional stripping independent of truncation (clarified in docs & tests).
-- Optional Azure Blob media upload (feature-flag gated) replacing redaction placeholders with stable reference objects (see Media Upload section). Legacy behavior unchanged when disabled.
+- Optional media token upload (feature-flag gated) replacing redaction placeholders with Langfuse media token strings (see Media Upload section). Disabled ⇒ legacy redaction.
 
 Guardrail: Any new environment variable (e.g. future media upload flags) MUST be added to this Feature list, the Configuration Overview tables, `.github/copilot-instructions.md`, and have corresponding tests in the same PR.
 
@@ -103,7 +103,7 @@ graph TD
 	MAP --> ID[(UUIDv5 Namespace)]
 	MAP --> GEN[Generation Detection]
 
-	%% Media Upload is optional (enabled only when ENABLE_MEDIA_UPLOAD & LANGFUSE_USE_AZURE_BLOB true)
+	%% Media Upload optional (enabled only when ENABLE_MEDIA_UPLOAD true)
 ```
 
 Key points:
@@ -112,7 +112,7 @@ Key points:
 - Deterministic IDs ensure idempotent re-processing (safe restarts & checkpoint replay).
 - Generation detection augments spans with GenAI semantic attributes so Langfuse auto-classifies them.
 - All timestamps are normalized to timezone-aware UTC early (naive inputs get `tzinfo=UTC`) ensuring consistent ordering & avoiding deprecated naive datetime usage.
-- Media upload (Azure Blob phase) occurs after mapping and before exporting; when disabled the pipeline links Mapper directly to Shipper.
+- Media upload (Langfuse Media API phase) occurs after mapping and before exporting; when disabled the pipeline links Mapper directly to Shipper.
 
 ---
 
@@ -159,13 +159,8 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | `FETCH_BATCH_SIZE` | `100` | (none) | Max executions fetched per DB batch. |
 | `CHECKPOINT_FILE` | `.backfill_checkpoint` | `--checkpoint-file` | Path for last processed execution id. |
 | `TRUNCATE_FIELD_LEN` | `0` | `--truncate-len` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
-| `ENABLE_MEDIA_UPLOAD` | `false` | (none) | Master media feature flag. Must be true along with `LANGFUSE_USE_AZURE_BLOB` to activate uploads. |
-| `LANGFUSE_USE_AZURE_BLOB` | `false` | (none) | Secondary guard (mirrors Langfuse Azure env semantics). |
-| `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` | (none) | (none) | Azure container name (Langfuse naming parity). |
-| `LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID` | (none) | (none) | Azure storage account name. |
-| `LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY` | (none) | (none) | Azure storage account key. |
-| `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` | (none) | (none) | Optional custom endpoint (Azurite / emulator) for testing. |
-| `MEDIA_MAX_BYTES` | `25000000` | (none) | Max decoded size per asset; larger assets stay redacted. |
+| `ENABLE_MEDIA_UPLOAD` | `false` | (none) | Master media feature flag. When false only binary redaction; no token API calls. |
+| `MEDIA_MAX_BYTES` | `25000000` | (none) | Max decoded size per asset; larger assets remain redaction placeholders. |
 | `REQUIRE_EXECUTION_METADATA` | `false` | `--require-execution-metadata / --no-require-execution-metadata` | Only include executions having at least one row in `<prefix>execution_metadata` with matching id. |
 | `LOG_LEVEL` | `INFO` | (none) | Python logging level (`DEBUG`, `INFO`, etc.). |
 
@@ -234,8 +229,33 @@ python -m src backfill --limit 500 --no-dry-run \
 | `TRUNCATE_FIELD_LEN>0` | Input/output longer than limit truncated; metadata flags set. |
 | Binary field (n8n `binary` object) | `data` replaced with placeholder & omitted length. |
 | Long base64-looking string | Replaced with structured placeholder object. |
-| Media upload enabled + eligible asset | Placeholder first has `_media_pending=true`; after successful upload replaced by stable Azure reference object. |
+| Media upload enabled + eligible asset | Placeholder with `_media_pending=true` replaced by Langfuse media token string `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`. |
 | Media upload failure / size over cap | Placeholder stays (legacy redaction), `n8n.media.upload_failed=true` metadata added. |
+| Media create deduplicated (no uploadUrl) | Token substituted (counts toward asset_count); no failure flags or error codes. |
+
+### Media Troubleshooting
+
+| Symptom | Likely Cause | Expected Behavior / Action |
+|---------|--------------|----------------------------|
+| Placeholder dict with `_media_pending` remains instead of token | API create/upload failure or feature disabled | Span metadata `n8n.media.upload_failed=true` when failure; verify host/keys & logs. |
+| Placeholder remains for large file | Asset exceeded `MEDIA_MAX_BYTES` | Flag `n8n.media.upload_failed=true`; increase limit if acceptable. |
+| `n8n.media.asset_count` missing | No successful token substitutions | Normal when all assets failed or feature disabled. |
+| Token present but media not visible in UI | (Rare) UI lag or later deletion | Token is opaque; confirm in Langfuse project media list. |
+| High memory usage | Extremely large base64 inputs in many spans | Lower `FETCH_BATCH_SIZE`, enable truncation for large text wrappers; binary already stripped early. |
+| `n8n.media.error_codes` present | One or more media processing failures | Inspect list values (see Media Error Codes) to triage root cause. |
+
+Media Error Codes (each appended once per span per affected asset type):
+* `decode_or_oversize` – Base64 decode failed or asset exceeded `MEDIA_MAX_BYTES` threshold.
+* `create_api_error` – Non-2xx status from Langfuse media create request.
+* `missing_id` – Successful create call but response lacked media id.
+* `upload_put_error` – Presigned binary upload (PUT) returned non-2xx.
+* `serialization_error` – Failed to serialize span output after token insertion.
+
+Deduplicated Media (No `uploadUrl`): The create endpoint may return an id without an upload URL when the
+exact asset (by content hash) already exists. This is treated as success: a token is emitted, it increments
+`n8n.media.asset_count`, and neither `n8n.media.upload_failed` nor `n8n.media.error_codes` is set.
+
+Token Format: `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@` (type omitted if unknown).
 
 ### Metadata Filtering Semantics
 When `REQUIRE_EXECUTION_METADATA=true` (or CLI flag), the query adds an `EXISTS` subquery requiring at least one row in `<prefix>execution_metadata` where `executionId = execution.id`. This is not a key/value equality filter; presence alone suffices.
@@ -550,7 +570,7 @@ The custom hook `ensure-notice-present` blocks commits if the `NOTICE` header is
 
 ## Binary / Large Payload Handling
 
-Binary or very large base64 payloads are removed pre-export to avoid excessive OTLP span sizes while retaining structural context. When media upload is enabled (Azure phase 1) these stripped assets are uploaded and span outputs patched with reference objects.
+Binary or very large base64 payloads are removed pre-export to avoid excessive OTLP span sizes while retaining structural context. When media upload is enabled these stripped assets are converted into Langfuse media objects and span outputs patched with media token strings.
 
 Detection heuristics:
 - Standard n8n `binary` node structure (`binary` -> item -> `{ data: <b64>, mimeType: ... }`).
@@ -561,48 +581,41 @@ Replacement (legacy / disabled media):
 - Standalone strings: replaced with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <len> }`.
 
 Media upload (enabled):
-1. Mapper collects each binary asset (base64 payload, filename, mimeType, size estimate, SHA256) and inserts a temporary placeholder `{ "_media_pending": true, "sha256": "<hash>", "base64_len": <len> }`.
-2. `media_uploader.py` uploads assets to Azure Blob Storage using deterministic blob name `<executionId>/<nodeName>/<runIndex>/<sha256>[.<ext>]`.
-3. On success, span output JSON is patched in-place replacing pending placeholders with:
-```json
-{
-	"_media": true,
-	"storage": "azure",
-	"container": "<container>",
-	"blob": "<executionId>/<node>/<run>/<sha256>.ext",
-	"sha256": "<hash>",
-	"bytes": 1234
-}
+1. Mapper collects each binary asset (base64 payload, filename, mimeType, size, SHA256) and inserts a placeholder `{ "_media_pending": true, "sha256": "<hash>", "base64_len": <len> }`.
+2. `media_api.py` calls Langfuse `/api/public/media` for each asset. Response may include a presigned `uploadUrl` (if new) or omit it (deduplicated existing media).
+3. When `uploadUrl` is present the raw bytes are PUT once; otherwise skip upload.
+4. Placeholder is replaced by a token string:
 ```
-4. On failure (auth, network, oversize, decode error) the temporary placeholder remains and span metadata `n8n.media.upload_failed=true` is set. The trace export continues (fail-open).
-5. Per-span `n8n.media.asset_count` increments only for successfully patched placeholders.
+@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@
+```
+5. Failures (API / upload / oversize / decode) leave placeholder intact and set `n8n.media.upload_failed=true` (fail-open).
+6. `n8n.media.asset_count` increments per successfully patched placeholder.
 
-Disable by leaving `ENABLE_MEDIA_UPLOAD` false (default) or omitting Azure credentials; behavior reverts to legacy redaction.
+7. Failures accumulate codes in `n8n.media.error_codes` (list) for diagnostics (see Media Error Codes table).
+	Deduplicated (no `uploadUrl`) responses are considered successful and produce no error codes.
+
+Disable by leaving `ENABLE_MEDIA_UPLOAD` false (default); behavior reverts to legacy redaction.
 
 This occurs even when truncation is disabled (`TRUNCATE_FIELD_LEN=0`). Future environment knobs (planned): `BINARY_PLACEHOLDER`, `BINARY_MIN_LEN`.
 
-## Media Upload (Azure Phase 1) Quick Start
+## Media Upload (Langfuse Token) Quick Start
 
-Enable media upload (fish):
+Enable (fish):
 ```fish
 set -x ENABLE_MEDIA_UPLOAD true
-set -x LANGFUSE_USE_AZURE_BLOB true
-set -x LANGFUSE_S3_EVENT_UPLOAD_BUCKET mycontainer
-set -x LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID mystorageacct
-set -x LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY myacctkey==
-# Optional local emulator
-# set -x LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT http://127.0.0.1:10000/mystorageacct
+set -x LANGFUSE_HOST https://cloud.langfuse.com
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
+set -x LANGFUSE_SECRET_KEY lf_sk_...
 python -m src backfill --limit 10 --dry-run
 ```
-If correctly configured you will see patched span outputs containing `_media": true` reference objects and metadata `n8n.media.asset_count`.
+If correctly configured you will see patched span outputs containing `@@@langfuseMedia:` tokens and metadata `n8n.media.asset_count`.
 
-Disable again:
+Disable:
 ```fish
 set -e ENABLE_MEDIA_UPLOAD
-set -e LANGFUSE_USE_AZURE_BLOB
 ```
 
-Planned evolutions: token-based Langfuse media API integration, additional storage backends (S3/GCS), retry & circuit breaker logic, streaming large asset handling.
+Planned evolutions: additional failure retries, large streaming upload optimizations.
 
 ## Roadmap (Upcoming Enhancements)
 
@@ -632,7 +645,7 @@ Updated:
 - Binary Handling (unconditional stripping statement)
 - Media / Multimodal roadmap consolidation
 - Development Plan (future iterations reordered / clarified)
- - Added Azure media upload feature (config vars, reference object schema, tests)
+ - Added media token upload feature (Langfuse Media API)
 
 Hardened:
 - Guardrails around purity (mapper has no network I/O)
