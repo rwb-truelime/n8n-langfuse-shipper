@@ -58,7 +58,8 @@ graph TD
         TR --> PR[Parent Resolve]
         PR --> IP[Input Propagate]
         IP --> BS[Binary Strip/Truncate]
-        BS --> EX[Export]
+        BS --> MU[Media Upload]
+        MU --> EX[Export]
         EX --> BP[Backpressure]
         BP --> CK[Checkpoint]
     end
@@ -70,6 +71,7 @@ graph TD
     %% Parent Resolve = agent + runtime + graph precedence
     %% Input Propagate = infer child input from parent output
     %% Binary Strip/Truncate = unconditional binary redaction + optional truncation
+    %% Media Upload = optional Azure Blob upload replacing placeholders (feature gated)
     %% Backpressure = flush + sleep controls
     %% Checkpoint = last processed execution id persistence
 

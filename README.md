@@ -96,11 +96,14 @@ Guardrail: Any new environment variable (e.g. future media upload flags) MUST be
 graph TD
 	PG[(PostgreSQL n8n DB)] -->|batches| EX[Extractor db.py]
 	EX -->|rows| MAP[Mapper mapper.py]
-	MAP --> SHIP[Shipper shipper.py]
+	MAP --> MU[Media Upload]
+	MU --> SHIP[Shipper shipper.py]
 	SHIP -->|OTLP spans| LF[Langfuse OTLP Endpoint]
 	MAP --> OBS[Observation Mapper]
 	MAP --> ID[(UUIDv5 Namespace)]
 	MAP --> GEN[Generation Detection]
+
+	%% Media Upload is optional (enabled only when ENABLE_MEDIA_UPLOAD & LANGFUSE_USE_AZURE_BLOB true)
 ```
 
 Key points:
@@ -109,6 +112,7 @@ Key points:
 - Deterministic IDs ensure idempotent re-processing (safe restarts & checkpoint replay).
 - Generation detection augments spans with GenAI semantic attributes so Langfuse auto-classifies them.
 - All timestamps are normalized to timezone-aware UTC early (naive inputs get `tzinfo=UTC`) ensuring consistent ordering & avoiding deprecated naive datetime usage.
+- Media upload (Azure Blob phase) occurs after mapping and before exporting; when disabled the pipeline links Mapper directly to Shipper.
 
 ---
 
