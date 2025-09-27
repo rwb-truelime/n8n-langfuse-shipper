@@ -156,7 +156,9 @@ def test_media_api_token_patch_deduplicated(monkeypatch):
     )
     patch_and_upload_media(mapped, settings)
     span = next(s for s in mapped.trace.spans if s.name == "BinNode")
-    parsed = json.loads(span.output)
+    # Ensure non-None then cast to string for static type checkers (span.output: Any|None)
+    assert span.output is not None
+    parsed = json.loads(str(span.output))
     token = parsed["binary"]["file"]["data"]
     assert token.startswith("@@@langfuseMedia:") and "dedupe_1" in token
     assert span.metadata.get("n8n.media.asset_count") == 1
