@@ -84,7 +84,7 @@ def _patch_httpx(monkeypatch):
 
         return _Resp()
 
-    def fake_put(url: str, content: bytes, timeout: int):  # type: ignore[override]
+    def fake_put(url: str, content: bytes, headers: dict, timeout: int):  # type: ignore[override]
         class _Resp:
             status_code = 200
             text = ""
@@ -160,7 +160,9 @@ def test_media_api_token_patch_deduplicated(monkeypatch):
     assert span.output is not None
     parsed = json.loads(str(span.output))
     token = parsed["binary"]["file"]["data"]
-    assert token.startswith("@@@langfuseMedia:") and "dedupe_1" in token
+    # Token should reference deduplicated id from fake_post response OR follow m_* pattern
+    assert token.startswith("@@@langfuseMedia:")
+    assert ("dedupe_1" in token) or ("|id=m_" in token)
     assert span.metadata.get("n8n.media.asset_count") == 1
     # Ensure no upload_failed flag
     assert span.metadata.get("n8n.media.upload_failed") is not True

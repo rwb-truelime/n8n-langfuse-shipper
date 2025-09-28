@@ -4,8 +4,14 @@ This module supersedes the previous `media_uploader` Azure‑only implementation
 We now follow the official Langfuse multi‑modality flow:
 
 1. Mapper (when ENABLE_MEDIA_UPLOAD true) collects binary assets and inserts
-   temporary placeholders of shape:
-       { "_media_pending": true, "sha256": "<hash>", "bytes": <int> }
+   temporary placeholders of authoritative shape:
+       {
+           "_media_pending": true,
+           "sha256": "<hex sha256>",
+           "bytes": <decoded_size_bytes>,
+           "base64_len": <original_base64_length>,
+           "slot": <optional origin slot or field path>
+       }
 2. Here we call the Langfuse Media API for every asset, obtaining either:
    a. An `uploadUrl` (HTTP PUT pre‑signed) + `id` (media identifier) OR
    b. A deduplicated response with only an `id` (no upload needed).
@@ -32,7 +38,8 @@ Environment Variables (new / simplified):
   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY for auth (same as OTLP).
   MEDIA_MAX_BYTES           -> size guard (same semantic as before).
 
-Any change to token structure or flow must update README and instructions.
+Any change to token structure, placeholder keys, create payload fields, or
+required presigned upload headers must update README + instructions + tests.
 """
 from __future__ import annotations
 
@@ -41,10 +48,54 @@ from typing import List, Optional, Dict, Any
 import logging
 import base64
 import json
+import binascii
 
 import httpx
 
 from .models.langfuse import LangfuseTrace
+
+# Allowed mime types (aligned with Langfuse server error list). If an asset's
+# mime is not in this set we omit it (letting server infer or reject based on
+# content) instead of sending an unsupported value that would 400.
+_ALLOWED_MIME: set[str] = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+    "image/svg+xml",
+    "image/tiff",
+    "image/bmp",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/ogg",
+    "audio/oga",
+    "audio/aac",
+    "audio/mp4",
+    "audio/flac",
+    "video/mp4",
+    "video/webm",
+    "text/plain",
+    "text/html",
+    "text/css",
+    "text/csv",
+    "application/pdf",
+    "application/json",
+}
+
+
+def _sanitize_mime(mime: Optional[str]) -> Optional[str]:
+    if not mime:
+        return None
+    m = mime.lower()
+    if m in _ALLOWED_MIME:
+        return m
+    # Generic / unsupported types are omitted (fail-open: server may auto-detect)
+    if m in {"application/octet-stream", "binary/octet-stream"}:
+        return None
+    # Conservative: drop unlisted subtype; do not guess a replacement.
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +128,29 @@ class _MediaClient:
         self.auth = (public_key, secret_key)
         self.timeout = timeout
 
-    def create_media(self, *, size: int, mime: Optional[str]) -> dict[str, Any]:
+    def create_media(
+        self,
+        *,
+        trace_id: str,
+        content_type: Optional[str],
+        content_length: int,
+        sha256_b64: str,
+        field: str,
+    ) -> dict[str, Any]:
+        """Call Langfuse media create endpoint.
+
+        Aligns with public docs expecting keys: traceId, contentType, contentLength,
+        sha256Hash, field. (Older internal draft used size/mimeType; removed.)
+        """
         url = f"{self.base}/api/public/media"
-        payload: dict[str, Any] = {"size": size}
-        if mime:
-            payload["mimeType"] = mime
+        payload: dict[str, Any] = {
+            "traceId": trace_id,
+            "contentLength": content_length,
+            "sha256Hash": sha256_b64,
+            "field": field,
+        }
+        if content_type:
+            payload["contentType"] = content_type
         try:
             resp = httpx.post(
                 url,
@@ -100,10 +169,23 @@ class _MediaClient:
         except Exception as e:  # pragma: no cover - unexpected response
             raise RuntimeError(f"invalid media create JSON: {e}") from e
 
-    def upload_binary(self, upload_url: str, data: bytes):
+    def upload_binary(
+        self, upload_url: str, data: bytes, *, content_type: str, sha256_b64: str
+    ):
+        """Upload binary to presigned URL.
+
+        The presigned URL (S3 style) includes X-Amz-SignedHeaders list; current
+        Langfuse deployment signs at least: content-length, content-type, host,
+        x-amz-checksum-sha256. We therefore MUST send both content-type and the
+        checksum header or the request is rejected with AccessDenied.
+        """
+        headers = {
+            "Content-Type": content_type,
+            # S3 expects raw base64 encoded SHA256 (not hex) in this header.
+            "x-amz-checksum-sha256": sha256_b64,
+        }
         try:
-            # Langfuse presigned endpoints generally expect PUT
-            resp = httpx.put(upload_url, content=data, timeout=self.timeout)
+            resp = httpx.put(upload_url, content=data, headers=headers, timeout=self.timeout)
         except Exception as e:  # pragma: no cover - network error
             raise RuntimeError(f"media upload failed: {e}") from e
         if resp.status_code >= 400:
@@ -180,9 +262,29 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                 # Structured error code for diagnostics
                 span.metadata.setdefault("n8n.media.error_codes", []).append("decode_or_oversize")
             continue
-        # Create media via API
+        # Build create payload & call API
         try:
-            create_resp = client.create_media(size=len(decoded), mime=asset.mime_type)
+            sanitized_mime = _sanitize_mime(asset.mime_type)
+            # Convert stored hex sha256 -> base64 digest required by API example
+            try:
+                sha_bytes = bytes.fromhex(asset.sha256)
+                sha_b64 = base64.b64encode(sha_bytes).decode("ascii")
+            except (ValueError, binascii.Error):  # pragma: no cover - malformed
+                sha_b64 = ""
+            # Derive field (default to output)
+            field = "output"
+            lowered_path = asset.field_path.lower()
+            if lowered_path.startswith("input"):
+                field = "input"
+            elif lowered_path.startswith("metadata"):
+                field = "metadata"
+            create_resp = client.create_media(
+                trace_id=str(mapped.trace.id),
+                content_type=sanitized_mime or "application/octet-stream",
+                content_length=len(decoded),
+                sha256_b64=sha_b64,
+                field=field,
+            )
         except Exception as e:
             logger.warning(
                 "media create_failed asset=%s code=%s err=%s",
@@ -194,7 +296,12 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                 span.metadata["n8n.media.upload_failed"] = True
                 span.metadata.setdefault("n8n.media.error_codes", []).append("create_api_error")
             continue
-        media_id = str(create_resp.get("id")) if create_resp.get("id") else None
+        # Server may return either `mediaId` (docs) or legacy `id`
+        media_id = (
+            str(create_resp.get("mediaId"))
+            if create_resp.get("mediaId")
+            else (str(create_resp.get("id")) if create_resp.get("id") else None)
+        )
         upload_url = create_resp.get("uploadUrl")
         if not media_id:
             logger.warning(
@@ -210,7 +317,12 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
         # Upload if required
         if upload_url:
             try:
-                client.upload_binary(upload_url, decoded)
+                client.upload_binary(
+                    upload_url,
+                    decoded,
+                    content_type=sanitized_mime or "application/octet-stream",
+                    sha256_b64=sha_b64,
+                )
             except Exception as e:
                 logger.warning(
                     "media upload_failed asset=%s media_id=%s code=%s err=%s",
@@ -223,7 +335,8 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                     span.metadata["n8n.media.upload_failed"] = True
                     span.metadata.setdefault("n8n.media.error_codes", []).append("upload_put_error")
                 continue
-        token = _build_token(media_id, asset.mime_type)
+        # media_id guaranteed non-None here
+        token = _build_token(str(media_id), sanitized_mime or asset.mime_type)
 
         def _patch(obj) -> int:
             replaced = 0

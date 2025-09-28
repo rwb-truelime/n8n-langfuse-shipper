@@ -133,6 +133,16 @@ class Settings(BaseSettings):
         default=25_000_000,
         description="Maximum decoded binary size (bytes) allowed for upload (default 25MB)",
     )
+    # Cap for extended (non-canonical) media asset discovery to avoid runaway
+    # scanning when many small base64 snippets exist. 0 or negative disables
+    # the cap (not recommended for very large executions).
+    EXTENDED_MEDIA_SCAN_MAX_ASSETS: int = Field(
+        default=250,
+        description=(
+            "Maximum number of non-canonical discovered binary assets to collect per node run "
+            "(to bound CPU & memory). Set <=0 to disable the cap."
+        ),
+    )
 
 
     @model_validator(mode="after")

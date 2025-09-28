@@ -161,6 +161,7 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | `TRUNCATE_FIELD_LEN` | `0` | `--truncate-len` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `ENABLE_MEDIA_UPLOAD` | `false` | (none) | Master media feature flag. When false only binary redaction; no token API calls. |
 | `MEDIA_MAX_BYTES` | `25000000` | (none) | Max decoded size per asset; larger assets remain redaction placeholders. |
+| `EXTENDED_MEDIA_SCAN_MAX_ASSETS` | `250` | (none) | Cap on number of non-canonical discovered binary assets per node run (data URL / file-like dict / contextual base64). <=0 disables. |
 | `REQUIRE_EXECUTION_METADATA` | `false` | `--require-execution-metadata / --no-require-execution-metadata` | Only include executions having at least one row in `<prefix>execution_metadata` with matching id. |
 | `LOG_LEVEL` | `INFO` | (none) | Python logging level (`DEBUG`, `INFO`, etc.). |
 
@@ -232,6 +233,7 @@ python -m src backfill --limit 500 --no-dry-run \
 | Media upload enabled + eligible asset | Placeholder with `_media_pending=true` replaced by Langfuse media token string `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`. |
 | Media upload failure / size over cap | Placeholder stays (legacy redaction), `n8n.media.upload_failed=true` metadata added. |
 | Media create deduplicated (no uploadUrl) | Token substituted (counts toward asset_count); no failure flags or error codes. |
+| Extended discovery asset (data URL / file-like / contextual base64) | Treated like canonical asset: placeholder then token (or redaction if upload disabled). Capped by EXTENDED_MEDIA_SCAN_MAX_ASSETS. |
 
 ### Media Troubleshooting
 
@@ -243,6 +245,7 @@ python -m src backfill --limit 500 --no-dry-run \
 | Token present but media not visible in UI | (Rare) UI lag or later deletion | Token is opaque; confirm in Langfuse project media list. |
 | High memory usage | Extremely large base64 inputs in many spans | Lower `FETCH_BATCH_SIZE`, enable truncation for large text wrappers; binary already stripped early. |
 | `n8n.media.error_codes` present | One or more media processing failures | Inspect list values (see Media Error Codes) to triage root cause. |
+| Missing expected data URL placeholder | Data URL below 64 chars or scan cap reached | Increase payload size or raise EXTENDED_MEDIA_SCAN_MAX_ASSETS. |
 
 Media Error Codes (each appended once per span per affected asset type):
 * `decode_or_oversize` – Base64 decode failed or asset exceeded `MEDIA_MAX_BYTES` threshold.
@@ -250,6 +253,7 @@ Media Error Codes (each appended once per span per affected asset type):
 * `missing_id` – Successful create call but response lacked media id.
 * `upload_put_error` – Presigned binary upload (PUT) returned non-2xx.
 * `serialization_error` – Failed to serialize span output after token insertion.
+* `scan_asset_limit` – Extended discovery exceeded EXTENDED_MEDIA_SCAN_MAX_ASSETS cap (remaining assets ignored).
 
 Deduplicated Media (No `uploadUrl`): The create endpoint may return an id without an upload URL when the
 exact asset (by content hash) already exists. This is treated as success: a token is emitted, it increments
@@ -575,21 +579,37 @@ Binary or very large base64 payloads are removed pre-export to avoid excessive O
 Detection heuristics:
 - Standard n8n `binary` node structure (`binary` -> item -> `{ data: <b64>, mimeType: ... }`).
 - Any long (>200 chars) base64-looking string (regex match) or strings starting with common base64 magic like `/9j/` (JPEG).
+- Item-level per-output binaries: when outputs are emitted as nested list structures of objects each containing a sibling `binary` and `json` key (e.g. `main` -> list[list[list[{ json, binary }]]] ) their `binary` slot maps are **promoted** and merged into a synthetic top-level `binary` object before placeholder insertion. First occurrence of a slot name wins (deterministic). Span metadata gains `n8n.io.promoted_item_binary=true` when this promotion occurs. If normalization unwraps list content to a list root, the promoted `binary` dict is preserved by wrapping the final output as `{ "binary": { ... }, "_items": [ ... ] }`.
 
 Replacement (legacy / disabled media):
 - In `binary` objects: `data` value replaced with `binary omitted` plus `_omitted_len` metadata.
 - Standalone strings: replaced with `{ "_binary": true, "note": "binary omitted", "_omitted_len": <len> }`.
 
 Media upload (enabled):
-1. Mapper collects each binary asset (base64 payload, filename, mimeType, size, SHA256) and inserts a placeholder `{ "_media_pending": true, "sha256": "<hash>", "base64_len": <len> }`.
-2. `media_api.py` calls Langfuse `/api/public/media` for each asset. Response may include a presigned `uploadUrl` (if new) or omit it (deduplicated existing media).
-3. When `uploadUrl` is present the raw bytes are PUT once; otherwise skip upload.
+1. Mapper collects each binary asset (base64 payload, filename, mimeType, size, SHA256) and inserts a placeholder:
+	 ```json
+	 {
+		 "_media_pending": true,
+		 "sha256": "<hex>",
+		 "bytes": <decoded_size_bytes>,
+		 "base64_len": <original_base64_length>,
+		 "slot": "<optional slot or field path>"
+	 }
+	 ```
+2. `media_api.py` calls Langfuse `POST /api/public/media` with payload keys `traceId`, `contentType`, `contentLength`, `sha256Hash` (base64 digest), and `field`. Response may include a presigned `uploadUrl` (if new) or omit it (deduplicated existing media).
+3. When `uploadUrl` is present the raw bytes are PUT once with required headers `Content-Type` and `x-amz-checksum-sha256` (same base64 digest); otherwise skip upload.
 4. Placeholder is replaced by a token string:
 ```
 @@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@
 ```
 5. Failures (API / upload / oversize / decode) leave placeholder intact and set `n8n.media.upload_failed=true` (fail-open).
 6. `n8n.media.asset_count` increments per successfully patched placeholder.
+7. Extended discovery (data URLs, file-like dicts, contextual base64) produces identical placeholders; capped by EXTENDED_MEDIA_SCAN_MAX_ASSETS. Exceeding cap leaves remaining raw values untouched and records `scan_asset_limit` in `n8n.media.error_codes`.
+
+Item-level promotion edge cases:
+- If multiple list items contain the same binary slot name only the first is retained (idempotent order defined by traversal).
+- Promotion happens only when no top-level `binary` key already exists (non-destructive).
+- Wrapper reattachment (the `{ "binary": ..., "_items": [...] }` shape) occurs only when normalization would otherwise drop the promoted `binary` due to list unwrapping.
 
 7. Failures accumulate codes in `n8n.media.error_codes` (list) for diagnostics (see Media Error Codes table).
 	Deduplicated (no `uploadUrl`) responses are considered successful and produce no error codes.
@@ -616,6 +636,7 @@ set -e ENABLE_MEDIA_UPLOAD
 ```
 
 Planned evolutions: additional failure retries, large streaming upload optimizations.
+Recent addition: item-level binary promotion + preservation wrapper (see Binary / Large Payload Handling section) to ensure media tokens appear for nodes emitting per-item binaries only.
 
 ## Roadmap (Upcoming Enhancements)
 

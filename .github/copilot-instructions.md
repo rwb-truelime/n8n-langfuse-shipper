@@ -87,8 +87,16 @@ Canonical definitions live in `src/models/langfuse.py`. These are the internal l
 ## Media & Multimodality (Implemented: Langfuse Media Tokens)
 Implemented Token-Based Flow:
 1. Inline binary asset collection during mapping (single pass) producing `MappedTraceWithAssets`.
-2. Temporary placeholder inserted where binary/base64 content detected:
-    `{ "_media_pending": true, "sha256": "<hex>", "base64_len": <len> }`.
+2. Temporary placeholder inserted where binary/base64 content detected with authoritative shape:
+     ```json
+     {
+         "_media_pending": true,
+         "sha256": "<hex>",
+         "bytes": <decoded_size_bytes>,
+         "base64_len": <original_base64_length>,
+         "slot": "<optional source slot or field path>"
+     }
+     ```
 3. Post-map patch phase (`media_api.py`) iterates collected assets when `ENABLE_MEDIA_UPLOAD=true`.
 4. For each asset <= `MEDIA_MAX_BYTES` (decoded) the service calls Langfuse Media API create endpoint.
 5. If the Langfuse response includes an upload instruction (e.g. presigned URL) the raw bytes are uploaded.
@@ -325,6 +333,12 @@ When enabled (`ENABLE_MEDIA_UPLOAD=true`):
 
 Binary stripping is unconditional (independent of truncation). Helpers: `_likely_binary_b64`, `_contains_binary_marker`, `_strip_binary_payload`. Future media upload will swap placeholders for `@@@langfuseMedia:<token>`.
 
+Wrapper Unwrapping & Binary Preservation (New): When normalizing node I/O we now unwrap channel/list/json
+wrappers (AI channel and generic `main`/`json` list nesting) while *merging back* any top-level `binary`
+block that existed on the original object. This prevents loss of collected media placeholders or redaction
+objects when an output contains both a wrapper (e.g. `{"main": [[[{"json": {...}}]]], "binary": {...}}`).
+Tests: `test_binary_unwrap_merge.py` asserts both flattened json fields and the binary placeholder coexist.
+
 ### Custom Node Classification (Limescape Docs)
 Custom node type `n8n-nodes-limescape-docs.limescapeDocs` is force-classified as a `generation` observation even when `tokenUsage` is absent. Provider marker `limescape` added to generation heuristic list. Flattened usage keys (`totalInputTokens`, `totalOutputTokens`, `totalTokens`) are recognized and mapped to `gen_ai.usage.*` attributes.
 
@@ -540,6 +554,7 @@ If adding a new behavior category, extend this table and create/modify tests acc
 |----------|---------|-------------|
 | `ENABLE_MEDIA_UPLOAD` | `false` | Master feature flag. When false, only binary redaction; no token calls. |
 | `MEDIA_MAX_BYTES` | `25_000_000` | Max decoded size allowed per asset; oversize assets left as redaction placeholders. |
+| `EXTENDED_MEDIA_SCAN_MAX_ASSETS` | `250` | Cap on number of non-canonical discovered assets per node run (data URLs / file-like dicts). <=0 disables. |
 
 ### Media Token Format
 Stable replacement string emitted into span outputs upon successful exchange:
@@ -551,10 +566,34 @@ Fields:
 * `id=<mediaId>`: Langfuse-assigned identifier returned by create API.
 * `source=n8n`: Constant marker establishing provenance.
 
-Temporary pre-upload placeholder shape (never exported if token substitution succeeds):
+Temporary pre-upload placeholder shape (never exported if token substitution succeeds) repeated for emphasis:
 ```json
-{ "_media_pending": true, "sha256": "<hex>", "base64_len": 45678 }
+{
+    "_media_pending": true,
+    "sha256": "<hex>",
+    "bytes": <decoded_size_bytes>,
+    "base64_len": <original_base64_length>,
+    "slot": "<optional source slot or field path>"
+}
 ```
+`bytes` is decoded size; `base64_len` original encoded length. Tests should assert `_media_pending` and `sha256`; auxiliary keys may evolve.
+
+### Media Create Payload (Authoritative)
+POST `/api/public/media` keys (aligned with public docs):
+
+| Key | Source | Notes |
+|-----|--------|-------|
+| traceId | `LangfuseTrace.id` | Raw execution id string |
+| contentType | Sanitized mime or default `application/octet-stream` | Omitted if unsupported mime |
+| contentLength | Decoded byte length | Must equal uploaded bytes |
+| sha256Hash | Base64 SHA256 digest | Derived from stored hex digest |
+| field | Derived from placeholder path | First segment → `input`/`output`/`metadata` |
+
+Presigned upload required headers (signed):
+* `Content-Type` (same value used in create)
+* `x-amz-checksum-sha256` (same base64 digest)
+
+Missing either previously produced S3 `AccessDenied` (unsigned headers); upload logic enforces them.
 
 ### Media-Specific Metadata Keys
 | Key | When Set | Meaning |
@@ -569,6 +608,7 @@ Failure codes (stable identifiers; add new ones only with tests + README + this 
 * `missing_id` – Successful create response missing a media id field.
 * `upload_put_error` – Presigned upload (PUT) returned non-2xx status code.
 * `serialization_error` – Failed to serialize patched output after token substitution.
+* `scan_asset_limit` – Extended discovery exceeded `EXTENDED_MEDIA_SCAN_MAX_ASSETS` cap (remaining assets ignored).
 
 Deduplicated create responses: When the create API returns an object with a media id but **no** `uploadUrl`
 the asset already exists; this is treated as success (counts toward `n8n.media.asset_count`) and does not
@@ -587,11 +627,45 @@ Adding additional media behaviors (failure retries, other providers) REQUIRES ad
 
 Reordering requires updating tests and this table.
 
+Extended Binary Discovery (Implemented - Option 4 Scope): In addition to canonical `run.data.binary` blocks
+the mapper now scans for:
+1. Data URLs (`data:<mime>;base64,<payload>`)
+2. File-like dicts `{ mimeType|fileType, fileName|name, data:<base64> }`
+3. Long base64 strings (>=64 chars) inside dicts that also contain file-indicative keys (`mimeType`, `fileName`, `fileType`).
+
+Item-Level Binary Promotion (New): Some nodes emit outputs solely as nested list wrappers
+containing objects that each have a sibling `binary` and `json` key (e.g.
+`main -> [[[ { json, binary }, { json, binary }, ... ]]]`). Previously these
+per-item binaries were lost during normalization (no top-level `binary` block),
+preventing placeholder insertion and later media token substitution. The
+mapper now:
+1. Scans wrapper list structures (depth ≤3) for dict items with a `binary` key
+    when no top-level `binary` already exists.
+2. Merges all discovered slot maps into a synthetic top-level `binary` dict.
+    First occurrence of a slot name wins (deterministic ordering).
+3. Continues canonical placeholder insertion on that promoted block.
+4. Adds span metadata `n8n.io.promoted_item_binary=true` if promotion occurred.
+5. If normalization would unwrap list content into a list root (dropping the
+    promoted `binary`), the final normalized output is wrapped as:
+    `{ "binary": { ... }, "_items": [ <unwrapped list items> ] }` and a flag
+    `promoted_binary_wrapper` appears in output flags (internal use).
+
+Edge Cases & Guarantees:
+* Promotion only runs when original output lacks a top-level `binary` key.
+* Does not traverse beyond depth 3 or >100 items per list (bounded cost).
+* Wrapper shape deterministic; test `test_item_level_binary_promotion.py` locks behavior.
+* Media upload flow treats promoted slots identically to canonical ones (same
+  placeholder schema and token substitution semantics).
+
+Discovered assets receive `_media_pending` placeholders and are uploaded/tokenized like canonical assets.
+The scan is bounded by `EXTENDED_MEDIA_SCAN_MAX_ASSETS` per node run. Excluded (staged for future): Buffer
+objects, pure hex blobs. Tests: `test_extended_binary_discovery.py`.
+
 ## Contribution Guardrails (AI & Humans)
 - No new dependencies without `pyproject.toml` update + rationale.
 * Preserve deterministic UUIDv5 namespace + seed formats (ID immutability).
 * Mapper stays pure (no network / DB writes). Media upload logic must remain outside mapper.
-* Backwards compatibility: never rename/remove public model fields without migration notes.
+* Backwards compatibility: as we are still in early development, breaking changes are allowed but must be documented in release notes. Never implement code with backwards compatibility, it is not required at this stage.
 * Update README + this file for new env vars / CLI flags / behavior changes in same PR.
 * NOTICE & LICENSE untouched aside from annual year updates.
 

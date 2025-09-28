@@ -114,7 +114,7 @@ def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
     Returns:
         True if a binary marker is found, False otherwise.
     """
-    if depth > 4:
+    if depth > 25:
         return False
     try:
         if isinstance(d, dict):
@@ -302,7 +302,7 @@ def _unwrap_ai_channel(container: Any) -> Any:
         collected: List[Dict[str, Any]] = []
 
         def _walk(v: Any, depth: int = 0):
-            if depth > 6:
+            if depth > 25:
                 return
             if isinstance(v, list):
                 for item in v[:100]:
@@ -365,7 +365,7 @@ def _unwrap_generic_json(container: Any) -> Any:
         collected: List[Dict[str, Any]] = []
 
         def _walk(o: Any, depth: int = 0):
-            if depth > 6 or len(collected) >= 50:
+            if depth > 25 or len(collected) >= 150:
                 return
             if isinstance(o, dict):
                 if "json" in o and isinstance(o.get("json"), dict):
@@ -412,12 +412,22 @@ def _normalize_node_io(obj: Any) -> Tuple[Any, Dict[str, bool]]:
     flags: Dict[str, bool] = {}
     base = obj
     if isinstance(base, dict):
+        # Preserve reference to any top-level binary block so it can be merged
+        # back after wrapper unwrapping (preventing loss of placeholders or
+        # media token structures when the generic json promotion discards
+        # sibling keys).
+        binary_block = base.get("binary") if isinstance(base.get("binary"), dict) else None
         after_ai = _unwrap_ai_channel(base)
         if after_ai is not base:
             flags["unwrapped_ai_channel"] = True
         after_json = _unwrap_generic_json(after_ai)
         if after_json is not after_ai:
             flags["unwrapped_json_root"] = True
+        if binary_block and isinstance(after_json, dict) and "binary" not in after_json:
+            # Merge; prefer unwrapped json keys, append binary at end.
+            merged = dict(after_json)
+            merged["binary"] = binary_block
+            after_json = merged
         return after_json, flags
     return base, flags
 
@@ -493,19 +503,19 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
         # Limescape Docs custom usage keys may live directly in flattened data structure.
         # Look for totalInputTokens / totalOutputTokens / totalTokens at any nesting level.
         # We'll search top-level first, then one nested level to keep cost low.
-        def _scan_custom(obj: Any, depth: int = 2):
+        def _scan_custom(obj: Any, depth: int = 25):
             if depth < 0:
                 return None
             if isinstance(obj, dict):
                 keys = obj.keys()
                 if any(k in keys for k in ("totalInputTokens", "totalOutputTokens", "totalTokens")):
                     return obj
-                for v in list(obj.values())[:25]:  # shallow guard
+                for v in list(obj.values())[:150]:  # shallow guard
                     found = _scan_custom(v, depth - 1)
                     if found:
                         return found
             elif isinstance(obj, list):
-                for item in obj[:25]:
+                for item in obj[:150]:
                     found = _scan_custom(item, depth - 1)
                     if found:
                         return found
@@ -565,7 +575,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     return LangfuseUsage(input=input_val, output=output_val, total=total_val)
 
 
-def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dict[str, Any]]:
+def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[Dict[str, Any]]:
     """Perform a depth-limited search for a dictionary containing a specific key.
 
     This helper traverses a nested structure of dictionaries and lists to find
@@ -591,7 +601,7 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 6) -> Optional[Dic
                 if found is not None:
                     return found
         elif isinstance(data, list):
-            for item in data[:25]:  # guard large lists
+            for item in data[:150]:  # guard large lists
                 found = _find_nested_key(item, target, max_depth - 1)
                 if found is not None:
                     return found
@@ -679,7 +689,7 @@ def _extract_model_value(data: Any) -> Optional[str]:
     queue: Deque[Tuple[Any, int]] = deque([(data, 0)])
     visited = 0
     max_nodes = 800  # slightly higher to account for json-string expansions
-    max_depth = 8
+    max_depth = 25
     while queue and visited < max_nodes:
         current, depth = queue.popleft()
         visited += 1
@@ -693,7 +703,7 @@ def _extract_model_value(data: Any) -> Optional[str]:
                         queue.append((v, depth + 1))
             elif isinstance(current, list):
                 if depth < max_depth:
-                    for item in current[:60]:  # cap list breadth
+                    for item in current[:150]:  # cap list breadth
                         queue.append((item, depth + 1))
             elif isinstance(current, str):
                 # Light heuristic: only attempt parse if plausible JSON object containing 'model'
@@ -771,7 +781,7 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
                     meta["n8n.model.is_deployment"] = True
                 return v, f"{path}.{k}", meta
         # Recurse breadth-first
-        if depth < 4:
+        if depth < 25:
             for k, v in current.items():
                 if isinstance(v, dict):
                     queue.append((v, f"{path}.{k}", depth + 1))
@@ -937,6 +947,23 @@ def _prepare_io_and_output(
     """
     norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
     norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
+    # Reattach promoted top-level binary if normalization unwrapped list root,
+    # ensuring binary slots persist. This occurs when earlier promotion added
+    # run.data['binary'] and _normalize_node_io unwrapped list content.
+    try:
+        if (
+            isinstance(raw_output_obj, dict)
+            and "binary" in raw_output_obj
+            and isinstance(raw_output_obj["binary"], dict)
+            and isinstance(norm_output_obj, list)
+        ):
+            norm_output_obj = {
+                "binary": raw_output_obj["binary"],
+                "_items": norm_output_obj,
+            }
+            output_flags["promoted_binary_wrapper"] = True
+    except Exception:
+        pass
     input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
     output_str: Optional[str] = None
     output_trunc = False
@@ -1016,18 +1043,19 @@ def _extract_model_and_metadata(
     wf_node_obj: Dict[str, WorkflowNode],
     raw_input_obj: Any,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
-    """Extract model value plus related metadata flags (parameter fallback, missing signal).
+    """Extract model value plus related metadata flags.
 
-    Mirrors previous inline logic without altering behavior. Returns (model_val, metadata_fragment).
+    Mirrors previous inline logic without altering behavior. Returns
+    (model_val, metadata_fragment).
     """
     metadata: Dict[str, Any] = {}
     model_val: Optional[str] = None
     try:
         if isinstance(run.data, dict):
             search_root: Dict[str, Any] = dict(run.data)
-            if isinstance(run.inputOverride, dict):  # include explicit override context
+            if isinstance(run.inputOverride, dict):
                 search_root["_inputOverride"] = run.inputOverride
-            if raw_input_obj and isinstance(raw_input_obj, dict):  # inferred input propagation
+            if raw_input_obj and isinstance(raw_input_obj, dict):
                 search_root["_inferredInput"] = raw_input_obj
             top_model = run.data.get("model")
             if isinstance(top_model, str) and top_model:
@@ -1072,13 +1100,13 @@ def _extract_model_and_metadata(
                 metadata["n8n.model.parameter_key"] = key_path
                 for k, v in extra_meta.items():
                     metadata[k] = v
-        if model_val is None and is_generation:
-            metadata["n8n.model.missing"] = True
-            try:
-                if isinstance(run.data, dict):
-                    metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
-            except Exception:
-                pass
+    if model_val is None and is_generation:
+        metadata["n8n.model.missing"] = True
+        try:
+            if isinstance(run.data, dict):
+                metadata["n8n.model.search_keys"] = list(run.data.keys())[:12]
+        except Exception:
+            pass
     return model_val, metadata
 
 
@@ -1309,8 +1337,15 @@ def _map_execution(
     # placeholders inserted here are later replaced by Langfuse media token
     # strings (see media_api.patch_and_upload_media). This is a breaking
     # change from the prior Azure JSON reference object approach.
+        limit_hit = False
+        promoted_item_binary = False
         if collect_binaries:
-            mutated_output, assets = _collect_binary_assets(
+            (
+                mutated_output,
+                assets,
+                limit_hit,
+                promoted_item_binary,
+            ) = _collect_binary_assets(
                 run.data,
                 execution_id=record.id,
                 node_name=node_name,
@@ -1351,6 +1386,8 @@ def _map_execution(
             metadata["n8n.io.unwrapped_ai_channel"] = True
         if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):
             metadata["n8n.io.unwrapped_json_root"] = True
+        if collect_binaries and promoted_item_binary:
+            metadata["n8n.io.promoted_item_binary"] = True
         if node_name in ctx.child_agent_map:
             agent_name, link_type = ctx.child_agent_map[node_name]
             metadata["n8n.agent.parent"] = agent_name
@@ -1385,6 +1422,11 @@ def _map_execution(
             metadata.update(anomaly_meta)
         if status_override:
             status_norm = status_override
+        # Media scan cap: if extended discovery exceeded configured max we attach
+        # scan_asset_limit error code (fail-open; remaining assets ignored).
+        if limit_hit:
+            metadata["n8n.media.upload_failed"] = True
+            metadata.setdefault("n8n.media.error_codes", []).append("scan_asset_limit")
         span = LangfuseSpan(
             id=span_id,
             trace_id=ctx.trace_id,
@@ -1427,70 +1469,257 @@ def map_execution_to_langfuse(
     return trace
 
 
-def _collect_binary_assets(run_data_obj: Any, *, execution_id: int, node_name: str, run_index: int) -> tuple[Any, list[BinaryAsset]]:
+def _collect_binary_assets(
+    run_data_obj: Any, *, execution_id: int, node_name: str, run_index: int
+) -> tuple[Any, list[BinaryAsset], bool, bool]:
     """Traverse a run.data dict, extracting n8n-style binary objects.
 
     Returns (cloned_structure_with_placeholders, assets).
     We only target the canonical n8n pattern under run.data['binary'] entries.
     """
     assets: list[BinaryAsset] = []
+    limit_hit = False
+    promoted_item_binary = False
     if not isinstance(run_data_obj, dict):
-        return run_data_obj, assets
-    if "binary" not in run_data_obj or not isinstance(run_data_obj["binary"], dict):
-        return run_data_obj, assets
+        return run_data_obj, assets, limit_hit, promoted_item_binary
     import copy
     cloned = copy.deepcopy(run_data_obj)
-    bin_section = cloned.get("binary")
-    if not isinstance(bin_section, dict):
-        return cloned, assets
-    for slot, slot_val in bin_section.items():
-        if not isinstance(slot_val, dict):
-            continue
-        # Common shapes: { data: <b64>, mimeType, fileName } or nested data dict
-        raw_data = slot_val.get("data")
-        mime = slot_val.get("mimeType") or slot_val.get("mime_type") or slot_val.get("fileType")
-        fname = slot_val.get("fileName") or slot_val.get("name")
-        base64_str: str | None = None
-        if isinstance(raw_data, str) and len(raw_data) > 100:
-            base64_str = raw_data
-        elif isinstance(raw_data, dict) and isinstance(raw_data.get("data"), str):
-            inner = raw_data.get("data")
-            if isinstance(inner, str) and len(inner) > 100:
-                base64_str = inner
-        if not base64_str:
-            continue
-        # Hash deterministically without decoding first (still stable); use SHA256 of decoded bytes
+    # ---------------- Item-level binary promotion -----------------
+    # Some nodes emit only wrapper lists (e.g. main -> [[[ { json, binary } ]]])
+    # without a top-level 'binary' key. We scan shallow wrapper keys (current
+    # unwrapping patterns) for list structures containing dict items with a
+    # 'binary' key and merge those slot maps into a new top-level 'binary'.
+    # First occurrence of a slot wins to preserve deterministic behavior.
+    if "binary" not in cloned:
+        aggregated: dict[str, Any] = {}
+        # Candidate wrapper keys we commonly unwrap; we also consider any
+        # list-valued top-level key to avoid missing unconventional wrappers.
+        for k, v in list(cloned.items())[:20]:  # bound to avoid pathological cases
+            if not isinstance(v, list):
+                continue
+            # Traverse up to depth 3 (mirrors existing unwrap depth) collecting
+            # item dicts that contain a 'binary' dict.
+            stack: list[tuple[Any, int]] = [(v, 0)]
+            while stack:
+                cur, depth = stack.pop()
+                if depth > 3:
+                    continue
+                if isinstance(cur, list):
+                    for itm in cur[:100]:  # cap iteration for safety
+                        stack.append((itm, depth + 1))
+                elif isinstance(cur, dict):
+                    bin_block = cur.get("binary")
+                    if isinstance(bin_block, dict):
+                        for slot, slot_val in bin_block.items():
+                            if slot not in aggregated and isinstance(slot_val, dict):
+                                # Shallow copy sufficient (will be deep-copied in
+                                # canonical processing below)
+                                aggregated[slot] = copy.deepcopy(slot_val)
+                    # Do not dive into nested dicts beyond locating 'binary'
+        if aggregated:
+            cloned["binary"] = aggregated
+            promoted_item_binary = True
+    # Canonical n8n binary block processing (if present). We do NOT early-return
+    # when absent so that extended discovery can still run for nodes that only
+    # expose ad-hoc file-like dicts or data URLs.
+    bin_section = cloned.get("binary") if isinstance(cloned, dict) else None
+    if isinstance(bin_section, dict):
+        for slot, slot_val in bin_section.items():
+            if not isinstance(slot_val, dict):
+                continue
+            raw_data = slot_val.get("data")
+            mime = (
+                slot_val.get("mimeType")
+                or slot_val.get("mime_type")
+                or slot_val.get("fileType")
+            )
+            fname = slot_val.get("fileName") or slot_val.get("name")
+            base64_str: str | None = None
+            if isinstance(raw_data, str) and len(raw_data) > 100:
+                base64_str = raw_data
+            elif isinstance(raw_data, dict) and isinstance(raw_data.get("data"), str):
+                inner = raw_data.get("data")
+                if isinstance(inner, str) and len(inner) > 100:
+                    base64_str = inner
+            if not base64_str:
+                continue
+            try:
+                import base64 as _b64, hashlib as _hash
+                _ = _b64.b64decode(base64_str[:4000], validate=False)
+                full_bytes = _b64.b64decode(base64_str, validate=False)
+                h = _hash.sha256(full_bytes).hexdigest()
+                size_bytes = len(full_bytes)
+            except Exception:
+                continue
+            slot_val["data"] = {
+                "_media_pending": True,
+                "sha256": h,
+                "bytes": size_bytes,
+                "base64_len": len(base64_str),
+                "slot": slot,
+            }
+            assets.append(
+                BinaryAsset(
+                    execution_id=execution_id,
+                    node_name=node_name,
+                    run_index=run_index,
+                    field_path=f"binary.{slot}",
+                    mime_type=mime if isinstance(mime, str) else None,
+                    filename=fname if isinstance(fname, str) else None,
+                    size_bytes=size_bytes,
+                    sha256=h,
+                    base64_len=len(base64_str),
+                    content_b64=base64_str,
+                )
+            )
+    # Discover additional assets outside canonical blocks (extended scan)
+    from .config import get_settings  # lazy import to avoid cycle in tests
+    settings = get_settings()
+    extra_assets, extra_limit_hit = _discover_additional_binary_assets(
+        cloned,
+        execution_id=execution_id,
+        node_name=node_name,
+        run_index=run_index,
+        max_assets=settings.EXTENDED_MEDIA_SCAN_MAX_ASSETS,
+    )
+    if extra_assets:
+        # Insert provisional placeholders at the first path segment location
+        for asset in extra_assets:
+            # Patch the exact leaf indicated by asset.field_path. We support simple dot paths
+            # and ignore list indices (future enhancement) while still capturing dict leaves.
+            try:
+                raw_path = asset.field_path
+                # Remove any list index notation like foo[0][1]
+                cleaned = re.sub(r"\[[0-9]+\]", "", raw_path)
+                segments = [seg for seg in cleaned.split(".") if seg]
+                if segments and segments[0] == "<root>":  # normalize root sentinel
+                    segments = segments[1:]
+                if not segments:
+                    continue
+                cursor = cloned
+                for seg in segments[:-1]:
+                    if isinstance(cursor, dict):
+                        cursor = cursor.get(seg)
+                    else:
+                        cursor = None
+                        break
+                if not isinstance(cursor, dict):
+                    continue
+                leaf = segments[-1]
+                if leaf in cursor and not isinstance(cursor.get(leaf), dict):
+                    cursor[leaf] = {
+                        "_media_pending": True,
+                        "sha256": asset.sha256,
+                        "bytes": asset.size_bytes,
+                        "base64_len": asset.base64_len,
+                        "slot": asset.field_path,
+                    }
+            except Exception:
+                continue
+        assets.extend(extra_assets)
+    if extra_limit_hit:
+        limit_hit = True
+    return cloned, assets, limit_hit, promoted_item_binary
+
+
+_DATA_URL_RE = re.compile(r"^data:([^;]+);base64,(.+)$")
+
+
+def _discover_additional_binary_assets(
+    obj: Any,
+    *,
+    execution_id: int,
+    node_name: str,
+    run_index: int,
+    max_assets: int,
+) -> tuple[list[BinaryAsset], bool]:
+    """Discover binary assets outside canonical run.data['binary'] blocks.
+
+    Supported (Option 4 scope):
+      * data URLs: data:<mime>;base64,<payload>
+      * file-like dicts with keys (mimeType|fileType) and (fileName|name) and base64 'data'
+      * standalone file-like dict with (mimeType + data) even if no filename
+      * long base64 strings (>=64 chars) when adjacent dict has mimeType or fileName
+
+    Excludes (staged for later): Buffer objects, pure hex blobs.
+    """
+    found: list[BinaryAsset] = []
+    limit_hit = False
+    seen_sha: set[str] = set()
+
+    def _add(base64_str: str, mime: str | None, fname: str | None, path: str):
+        nonlocal limit_hit
+        if max_assets > 0 and len(found) >= max_assets:
+            limit_hit = True
+            return
         try:
             import base64 as _b64, hashlib as _hash
-            decoded_preview = _b64.b64decode(base64_str[:4000], validate=False)  # small slice for early hash seed
+            if len(base64_str) < 64:
+                return
             full_bytes = _b64.b64decode(base64_str, validate=False)
             h = _hash.sha256(full_bytes).hexdigest()
-            size_bytes = len(full_bytes)
-        except Exception:
-            # Fallback: skip asset collection if decoding fails
-            continue
-        # Replace with provisional placeholder
-        slot_val["data"] = {
-            "_media_pending": True,
-            "sha256": h,
-            "bytes": size_bytes,
-            "slot": slot,
-        }
-        assets.append(
-            BinaryAsset(
-                execution_id=execution_id,
-                node_name=node_name,
-                run_index=run_index,
-                field_path=f"binary.{slot}",
-                mime_type=mime if isinstance(mime, str) else None,
-                filename=fname if isinstance(fname, str) else None,
-                size_bytes=size_bytes,
-                sha256=h,
-                base64_len=len(base64_str),
-                content_b64=base64_str,
+            if h in seen_sha:
+                return
+            seen_sha.add(h)
+            found.append(
+                BinaryAsset(
+                    execution_id=execution_id,
+                    node_name=node_name,
+                    run_index=run_index,
+                    field_path=path,
+                    mime_type=mime if isinstance(mime, str) else None,
+                    filename=fname if isinstance(fname, str) else None,
+                    size_bytes=len(full_bytes),
+                    sha256=h,
+                    base64_len=len(base64_str),
+                    content_b64=base64_str,
+                )
             )
-        )
-    return cloned, assets
+        except Exception:
+            return
+
+    def _walk(o: Any, path: str, parent: Any | None):  # noqa: C901 - complexity acceptable, bounded
+        nonlocal limit_hit
+        if max_assets > 0 and len(found) >= max_assets:
+            limit_hit = True
+            return
+        if isinstance(o, dict):
+            # File-like dict pattern
+            mime = o.get("mimeType") or o.get("mime_type") or o.get("fileType")
+            fname = o.get("fileName") or o.get("name")
+            data_field = o.get("data")
+            if isinstance(data_field, str):
+                # data URL pattern
+                m = _DATA_URL_RE.match(data_field)
+                if m and len(m.group(2)) >= 64:
+                    # Replace original 'data' key value (not a new dataUrl key)
+                    _add(m.group(2), m.group(1), fname, f"{path}.data")
+                else:
+                    # Plain base64 with supporting keys (relaxed: allow >=64 chars without requiring
+                    # global long-base64 regex; avoids missing moderately sized assets).
+                    if (mime or fname) and len(data_field) >= 64:
+                        _add(data_field, mime, fname, f"{path}.data")
+            # Long base64 value sitting in a dict with contextual keys
+            for k, v in o.items():
+                if isinstance(v, str) and len(v) >= 64:
+                    sib_keys = {sk.lower() for sk in o.keys()}
+                    if any(h in sib_keys for h in ("mimetype", "filename", "filetype")):
+                        _add(v, mime, fname, f"{path}.{k}")
+            for k, v in list(o.items())[:50]:
+                _walk(v, f"{path}.{k}" if path else k, o)
+        elif isinstance(o, list):
+            for idx, item in enumerate(o[:100]):
+                _walk(item, f"{path}[{idx}]", parent)
+        elif isinstance(o, str):
+            # Standalone data URL string
+            m = _DATA_URL_RE.match(o)
+            if m and len(m.group(2)) >= 64:
+                # For a standalone data URL string, we cannot reliably patch unless
+                # parent key known; keep existing behavior (no replacement) – future enhancement.
+                _add(m.group(2), m.group(1), None, path or "<root>")
+
+    _walk(obj, "", None)
+    return found, limit_hit
 
 
 def map_execution_with_assets(
