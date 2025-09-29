@@ -12,6 +12,12 @@ High‑throughput backfill service that reads historical n8n execution data from
 
 Current focus: optional Langfuse media token upload (feature‑flag gated) alongside hierarchical Agent/Tool/LLM parenting, pointer‑compressed execution decoding, and stable OTLP exporting.
 
+Note (Removal): The legacy Azure‑Blob specific module `media_uploader.py` has been fully removed.
+Media handling now exclusively uses the Langfuse Media API token flow implemented in `src/media_api.py`.
+If you previously depended on the Azure container naming scheme emitted by the old uploader, migrate
+by relying on the stable token string format documented in the Media Upload section. No direct
+blob storage interaction is performed by this service anymore.
+
 ---
 
 ## Quick Start

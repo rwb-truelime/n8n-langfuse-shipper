@@ -8,7 +8,7 @@ exponential backoff.
 """
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional, List, Dict, Any, Iterable
+from typing import AsyncGenerator, Optional, List, Dict, Any, Iterable, TYPE_CHECKING
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -17,13 +17,19 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import os
 import re
 
-try:  # pragma: no cover - import guarded for type checkers
+psycopg: Any | None
+dict_row: Any | None
+try:  # pragma: no cover - import guarded for runtime
     import psycopg
     from psycopg.rows import dict_row
+except Exception:  # pragma: no cover
+    psycopg = None
+    dict_row = None
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
     from psycopg import AsyncConnection
-except ImportError:  # pragma: no cover
-    psycopg = None  # type: ignore
-    AsyncConnection = Any  # type: ignore
+else:  # runtime fallback dynamic type
+    AsyncConnection = Any
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +114,7 @@ class ExecutionSource:
             raise RuntimeError("PG_DSN is empty; cannot establish database connection")
         if psycopg is None:  # pragma: no cover
             raise RuntimeError("psycopg not installed in current environment")
-        conn: AsyncConnection = await psycopg.AsyncConnection.connect(self._dsn)  # type: ignore[attr-defined]
+        conn: AsyncConnection = await psycopg.AsyncConnection.connect(self._dsn)
         try:
             yield conn
         finally:  # noqa: SIM105 (clarity over compressed form)

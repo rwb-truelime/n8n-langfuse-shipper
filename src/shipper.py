@@ -20,14 +20,20 @@ from __future__ import annotations
 import base64
 import time
 import logging
-from typing import Dict
+from typing import Dict, Any
 
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
-from opentelemetry.trace import NonRecordingSpan, set_span_in_context, SpanContext, TraceFlags, TraceState
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    set_span_in_context,
+    SpanContext,
+    TraceFlags,
+    TraceState,
+)
 
 from .models.langfuse import LangfuseTrace, LangfuseSpan
 from .config import Settings
@@ -108,7 +114,7 @@ def _init_otel(settings: Settings) -> None:
     logger.info("Initialized OTLP exporter for Langfuse endpoint %s", endpoint)
 
 
-def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:
+def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
     """Map attributes from a LangfuseSpan model to an OTel span.
 
     This function translates the fields of the internal `LangfuseSpan` data model
@@ -162,7 +168,9 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:
         ):  # defensive for dummy test spans
             span_ot.set_attribute("langfuse.observation.level", "ERROR")
         if not span_model.status_message:
-            span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
+            span_ot.set_attribute(
+                "langfuse.observation.status_message", str(span_model.error)
+            )
 
 
 _trace_export_count = 0
@@ -232,7 +240,7 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         )
         parent_ctx = set_span_in_context(NonRecordingSpan(parent_sc))
     except Exception:  # pragma: no cover - fallback safety
-        parent_ctx = None  # type: ignore
+        parent_ctx = None
     start_ns_root = int(root_model.start_time.timestamp() * 1e9)
     end_ns_root = int(root_model.end_time.timestamp() * 1e9)
     root_span = tracer.start_span(
@@ -309,8 +317,9 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     if _trace_export_count % max(1, settings.FLUSH_EVERY_N_TRACES) == 0:
         try:
             provider = trace.get_tracer_provider()
-            if hasattr(provider, "force_flush"):
-                provider.force_flush()  # type: ignore[attr-defined]
+            flush_fn = getattr(provider, "force_flush", None)
+            if callable(flush_fn):
+                flush_fn()
                 _last_flushed_spans_created = _total_spans_created
                 flushed_this_cycle = True
         except Exception:  # pragma: no cover
@@ -336,8 +345,9 @@ def shutdown_exporter() -> None:  # pragma: no cover - simple shutdown hook
     ensure that all telemetry data is sent before the process exits.
     """
     provider = trace.get_tracer_provider()
-    try:
-        if hasattr(provider, "shutdown"):
-            provider.shutdown()  # type: ignore[attr-defined]
+    try:  # provider from global tracer; attributes dynamic in SDK
+        shut_fn = getattr(provider, "shutdown", None)
+        if callable(shut_fn):
+            shut_fn()
     except Exception:  # pragma: no cover
         logger.debug("Error during tracer provider shutdown", exc_info=True)

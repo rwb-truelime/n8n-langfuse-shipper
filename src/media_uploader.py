@@ -87,7 +87,7 @@ def _decode_b64_to_bytes(b64_str: str, size_cap: int) -> Optional[bytes]:
         return None
 
 
-def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
+def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
     """Upload binary assets to Azure Blob (if enabled) and patch spans.
 
     Mutates span outputs (stringified JSON) by replacing temporary placeholders
@@ -154,7 +154,7 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings) -> None:
         # Navigate to placeholder via path tokens (path recorded as a.b[c].d)
         # We store only top-level binary replacements inside run.data so we do
         # best-effort path resolution.
-        def _replace(obj) -> int:
+        def _replace(obj: Any) -> int:
             replaced = 0
             if isinstance(obj, dict):
                 for k, v in list(obj.items()):
