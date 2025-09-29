@@ -101,7 +101,7 @@ Implemented Token-Based Flow:
 4. For each asset <= `MEDIA_MAX_BYTES` (decoded) the service calls Langfuse Media API create endpoint.
 5. If the Langfuse response includes an upload instruction (e.g. presigned URL) the raw bytes are uploaded.
 6. On success, placeholder replaced with stable token string:
-    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`.
+    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@`.
 7. Per-span replacement count aggregated into metadata key `n8n.media.asset_count` (only successful tokens).
 8. Fail-open semantics: oversize, decode errors, API/upload failures leave placeholder (and set
     `n8n.media.upload_failed=true` once per affected span). Processing continues; export never aborted.
@@ -313,7 +313,7 @@ If matched:
 When enabled (`ENABLE_MEDIA_UPLOAD=true`):
 1. Binary/base64 detection records assets + inserts `_media_pending` placeholders.
 2. Post-map phase exchanges each eligible asset for a Langfuse media token string of form
-    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`.
+    `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@`.
 3. Failures (oversize, decode, API, upload) retain placeholder; span metadata `n8n.media.upload_failed=true`.
 4. Exporter treats tokens as ordinary strings (opaque to OTLP); no special exporter logic required.
 
@@ -559,12 +559,12 @@ If adding a new behavior category, extend this table and create/modify tests acc
 ### Media Token Format
 Stable replacement string emitted into span outputs upon successful exchange:
 
-`@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`
+`@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@`
 
 Fields:
 * `type=<mime>`: Original (or inferred) MIME type (sanitized, lowercase).
 * `id=<mediaId>`: Langfuse-assigned identifier returned by create API.
-* `source=n8n`: Constant marker establishing provenance.
+* `source=base64_data_uri`: Standard Langfuse-recognized source type (mirrors original encoded content semantics).
 
 Temporary pre-upload placeholder shape (never exported if token substitution succeeds) repeated for emphasis:
 ```json
@@ -601,6 +601,9 @@ Missing either previously produced S3 `AccessDenied` (unsigned headers); upload 
 | `n8n.media.asset_count` | After successful patching | Number of binary placeholders replaced in that span. |
 | `n8n.media.upload_failed` | Upload skipped or failed for an asset | At least one asset for that span failed (size cap, decode error, or network failure). |
 | `n8n.media.error_codes` | Media failure(s) | List of short codes per failure cause; absent on success & dedupe path. |
+| `n8n.media.surface_mode` | Always | Constant string `inplace` (legacy/mirror modes removed). |
+| `n8n.media.preview_surface` | In-place replacement | A placeholder was replaced exactly at its original path enabling preview heuristics. |
+| `n8n.media.promoted_from_binary` | Binary slot promotion | Canonical `binary.<slot>` token also surfaced as shallow `<slot>` key. |
 
 Failure codes (stable identifiers; add new ones only with tests + README + this file update):
 * `decode_or_oversize` – Base64 decode error OR asset exceeded `MEDIA_MAX_BYTES` (size gate).
@@ -609,6 +612,7 @@ Failure codes (stable identifiers; add new ones only with tests + README + this 
 * `upload_put_error` – Presigned upload (PUT) returned non-2xx status code.
 * `serialization_error` – Failed to serialize patched output after token substitution.
 * `scan_asset_limit` – Extended discovery exceeded `EXTENDED_MEDIA_SCAN_MAX_ASSETS` cap (remaining assets ignored).
+* `status_patch_error` – Upload succeeded but PATCH finalization failed (best-effort, preview may lag).
 
 Deduplicated create responses: When the create API returns an object with a media id but **no** `uploadUrl`
 the asset already exists; this is treated as success (counts toward `n8n.media.asset_count`) and does not
@@ -627,8 +631,7 @@ Adding additional media behaviors (failure retries, other providers) REQUIRES ad
 
 Reordering requires updating tests and this table.
 
-Extended Binary Discovery (Implemented - Option 4 Scope): In addition to canonical `run.data.binary` blocks
-the mapper now scans for:
+Extended Binary Discovery (Implemented): In addition to canonical `run.data.binary` blocks the mapper now scans for:
 1. Data URLs (`data:<mime>;base64,<payload>`)
 2. File-like dicts `{ mimeType|fileType, fileName|name, data:<base64> }`
 3. Long base64 strings (>=64 chars) inside dicts that also contain file-indicative keys (`mimeType`, `fileName`, `fileType`).
@@ -657,9 +660,9 @@ Edge Cases & Guarantees:
 * Media upload flow treats promoted slots identically to canonical ones (same
   placeholder schema and token substitution semantics).
 
-Discovered assets receive `_media_pending` placeholders and are uploaded/tokenized like canonical assets.
-The scan is bounded by `EXTENDED_MEDIA_SCAN_MAX_ASSETS` per node run. Excluded (staged for future): Buffer
-objects, pure hex blobs. Tests: `test_extended_binary_discovery.py`.
+Discovered assets receive `_media_pending` placeholders and are uploaded/tokenized like canonical assets. The
+scan is bounded by `EXTENDED_MEDIA_SCAN_MAX_ASSETS` per node run. Excluded (staged for future): Buffer objects,
+pure hex blobs. Tests: `test_extended_binary_discovery.py`.
 
 ## Contribution Guardrails (AI & Humans)
 - No new dependencies without `pyproject.toml` update + rationale.

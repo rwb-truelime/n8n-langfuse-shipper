@@ -17,11 +17,11 @@ We now follow the official Langfuse multi‑modality flow:
    b. A deduplicated response with only an `id` (no upload needed).
 3. If `uploadUrl` present we PUT the decoded bytes (binary) exactly once.
 4. We then patch span output JSON replacing the placeholder with the canonical
-   Langfuse media token string:
-       @@@langfuseMedia:type=<mime>|id=<id>|source=n8n@@@
-   Notes:
-     * `type=<mime>` only included when mime type known.
-     * `source=n8n` constant to allow downstream grouping/analytics.
+     Langfuse media token string:
+             @@@langfuseMedia:type=<mime>|id=<id>|source=base64_data_uri@@@
+     Notes:
+         * `type=<mime>` only included when mime type known.
+         * `source=base64_data_uri` standard Langfuse source form.
 5. Span metadata `n8n.media.asset_count` records number of successful patches.
 6. Failures (API error, decode error, oversize, failed PUT) leave placeholder
    intact and set `n8n.media.upload_failed=true` (single flag even if multiple
@@ -112,6 +112,9 @@ class BinaryAsset:
     sha256: str
     base64_len: int
     content_b64: str
+    # Original path segments (dot path exploded, list indices removed) used for
+    # in-place replacement. When None we fall back to recursive placeholder search.
+    original_path_segments: Optional[list[str]] = None
 
 
 @dataclass
@@ -169,6 +172,40 @@ class _MediaClient:
         except Exception as e:  # pragma: no cover - unexpected response
             raise RuntimeError(f"invalid media create JSON: {e}") from e
 
+    def patch_media_status(
+        self,
+        *,
+        media_id: str,
+        upload_status: int,
+        upload_error: Optional[str] = None,
+    ) -> None:
+        """Patch upload status (finalization step).
+
+        Mirrors docs: send uploadedAt, uploadHttpStatus, uploadHttpError. This may
+        help the UI mark asset as available for preview immediately.
+        """
+        url = f"{self.base}/api/public/media/{media_id}"
+        from datetime import datetime, timezone
+
+        body = {
+            "uploadedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "uploadHttpStatus": upload_status,
+            "uploadHttpError": upload_error,
+        }
+        try:
+            resp = httpx.patch(
+                url,
+                json=body,
+                auth=self.auth,
+                timeout=self.timeout,
+            )
+        except Exception as e:  # pragma: no cover - network failure
+            raise RuntimeError(f"media status patch failed: {e}") from e
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"media status patch failed status={resp.status_code} body={resp.text[:300]}"
+            )
+
     def upload_binary(
         self, upload_url: str, data: bytes, *, content_type: str, sha256_b64: str
     ):
@@ -210,7 +247,9 @@ def _build_token(media_id: str, mime: Optional[str]) -> str:
     if mime:
         parts.append(f"type={mime}")
     parts.append(f"id={media_id}")
-    parts.append("source=n8n")
+    # Use standard Langfuse source type. User preference: represent origin as base64_data_uri
+    # (UI treats bytes/base64_data_uri/file equivalently for rendering).
+    parts.append("source=base64_data_uri")
     inner = "|".join(parts)
     return f"@@@langfuseMedia:{inner}@@@"
 
@@ -237,6 +276,7 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
         if isinstance(run_index, int):
             span_index[(s.name, run_index)] = s
 
+    # Always operate in simplified in-place surfacing mode (legacy modes removed).
     for asset in mapped.assets:
         span = span_index.get((asset.node_name, asset.run_index))
         if not span:
@@ -316,6 +356,7 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
             continue
         # Upload if required
         if upload_url:
+            upload_error: Optional[str] = None
             try:
                 client.upload_binary(
                     upload_url,
@@ -335,10 +376,53 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                     span.metadata["n8n.media.upload_failed"] = True
                     span.metadata.setdefault("n8n.media.error_codes", []).append("upload_put_error")
                 continue
+            # Attempt status patch (best-effort). Failure recorded but does not abort.
+            try:
+                client.patch_media_status(
+                    media_id=media_id,
+                    upload_status=200,
+                    upload_error=upload_error,
+                )
+            except Exception as e:  # pragma: no cover - patch failure path
+                logger.warning(
+                    "media status_patch_failed asset=%s media_id=%s code=%s err=%s",
+                    asset.sha256,
+                    media_id,
+                    "status_patch_error",
+                    e,
+                )
+                if span.metadata is not None:
+                    span.metadata.setdefault("n8n.media.error_codes", []).append(
+                        "status_patch_error"
+                    )
         # media_id guaranteed non-None here
         token = _build_token(str(media_id), sanitized_mime or asset.mime_type)
 
-        def _patch(obj) -> int:
+        def _inplace_by_segments(root: Any, segments: list[str]) -> bool:
+            try:
+                if not segments:
+                    return False
+                cursor = root
+                for seg in segments[:-1]:
+                    if not isinstance(cursor, dict):
+                        return False
+                    cursor = cursor.get(seg)
+                if not isinstance(cursor, dict):
+                    return False
+                leaf = segments[-1]
+                val = cursor.get(leaf)
+                if (
+                    isinstance(val, dict)
+                    and val.get("_media_pending")
+                    and val.get("sha256") == asset.sha256
+                ):
+                    cursor[leaf] = token
+                    return True
+            except Exception:
+                return False
+            return False
+
+        def _recursive_patch(obj: Any) -> int:
             replaced = 0
             if isinstance(obj, dict):
                 for k, v in list(obj.items()):
@@ -350,7 +434,7 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                         obj[k] = token
                         replaced += 1
                     else:
-                        replaced += _patch(v)
+                        replaced += _recursive_patch(v)
             elif isinstance(obj, list):
                 for i, v in enumerate(obj):
                     if (
@@ -361,16 +445,38 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                         obj[i] = token
                         replaced += 1
                     else:
-                        replaced += _patch(v)
+                        replaced += _recursive_patch(v)
             return replaced
 
-        replacements = _patch(parsed)
+        replacements = 0
+        if asset.original_path_segments:
+            if _inplace_by_segments(parsed, asset.original_path_segments):
+                replacements = 1
+        if replacements == 0:  # fallback recursive search
+            replacements = _recursive_patch(parsed)
+        # Promote canonical binary slot token to shallow key (one-time) for preview.
+        if (
+            replacements > 0
+            and isinstance(parsed, dict)
+            and asset.field_path.startswith("binary.")
+        ):
+            slot = asset.field_path.split(".", 1)[1] if "." in asset.field_path else asset.field_path
+            if slot and slot not in parsed:
+                parsed[slot] = token
+                if span.metadata is not None:
+                    span.metadata["n8n.media.promoted_from_binary"] = True
+        if span.metadata is not None and replacements > 0:
+            # Mark that at least one media token is available at (or promoted to)
+            # a surface location suitable for preview heuristics.
+            span.metadata["n8n.media.preview_surface"] = True
         if replacements > 0:
             try:
                 span.output = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
                 if span.metadata is not None:
                     current = span.metadata.get("n8n.media.asset_count") or 0
                     span.metadata["n8n.media.asset_count"] = int(current) + replacements
+                    # Surface mode constant (removed configurability) for observability.
+                    span.metadata["n8n.media.surface_mode"] = "inplace"
             except Exception:
                 # If serialization fails we leave old output; mark failure
                 logger.warning(
@@ -384,6 +490,8 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
                     span.metadata.setdefault("n8n.media.error_codes", []).append(
                         "serialization_error"
                     )
+
+    # Legacy hoist pass removed – in-place surfacing ensures preview depth.
 
 
 __all__ = [

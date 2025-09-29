@@ -144,6 +144,11 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Media surfacing: always in-place replacement (legacy/mirror modes removed
+    # for simplicity per project policy of no backward compatibility). Tokens
+    # are inserted exactly where base64 strings were, with shallow promotion of
+    # canonical binary slots. (Former MEDIA_SURFACE_MODE removed.)
+
 
     @model_validator(mode="after")
     def build_dsn_if_needed(self):  # type: ignore[override]

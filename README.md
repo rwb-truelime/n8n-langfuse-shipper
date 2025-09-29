@@ -230,7 +230,7 @@ python -m src backfill --limit 500 --no-dry-run \
 | `TRUNCATE_FIELD_LEN>0` | Input/output longer than limit truncated; metadata flags set. |
 | Binary field (n8n `binary` object) | `data` replaced with placeholder & omitted length. |
 | Long base64-looking string | Replaced with structured placeholder object. |
-| Media upload enabled + eligible asset | Placeholder with `_media_pending=true` replaced by Langfuse media token string `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@`. |
+| Media upload enabled + eligible asset | Placeholder with `_media_pending=true` replaced by Langfuse media token string `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@`. |
 | Media upload failure / size over cap | Placeholder stays (legacy redaction), `n8n.media.upload_failed=true` metadata added. |
 | Media create deduplicated (no uploadUrl) | Token substituted (counts toward asset_count); no failure flags or error codes. |
 | Extended discovery asset (data URL / file-like / contextual base64) | Treated like canonical asset: placeholder then token (or redaction if upload disabled). Capped by EXTENDED_MEDIA_SCAN_MAX_ASSETS. |
@@ -254,12 +254,29 @@ Media Error Codes (each appended once per span per affected asset type):
 * `upload_put_error` – Presigned binary upload (PUT) returned non-2xx.
 * `serialization_error` – Failed to serialize span output after token insertion.
 * `scan_asset_limit` – Extended discovery exceeded EXTENDED_MEDIA_SCAN_MAX_ASSETS cap (remaining assets ignored).
+* `status_patch_error` – Upload succeeded but final status PATCH request failed.
 
 Deduplicated Media (No `uploadUrl`): The create endpoint may return an id without an upload URL when the
 exact asset (by content hash) already exists. This is treated as success: a token is emitted, it increments
 `n8n.media.asset_count`, and neither `n8n.media.upload_failed` nor `n8n.media.error_codes` is set.
 
-Token Format: `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@` (type omitted if unknown).
+Token Format: `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@` (type omitted if unknown).
+
+Preview Surfacing & Status Patch:
+
+The shipper performs **in-place media surfacing**: each media token replaces the original base64 payload
+directly at its JSON path. Canonical `binary.<slot>` tokens are additionally promoted to a shallow `<slot>`
+key when absent, enabling Langfuse UI preview heuristics without extra wrapper keys. Legacy surfacing modes
+(`legacy`, `mirror`) and the `_media_preview` hoist key were removed to simplify behavior and guarantee a
+single deterministic structure.
+
+Current metadata additions (per span):
+* `n8n.media.surface_mode` – constant string `inplace` (observability only).
+* `n8n.media.preview_surface` – at least one token replaced in-place or promoted for preview.
+* `n8n.media.promoted_from_binary` – a canonical `binary.<slot>` was surfaced also as shallow `<slot>`.
+
+Status patch behavior: after upload (or dedupe) a PATCH sets `uploadedAt`, `uploadHttpStatus`, and optional
+`uploadHttpError`; failures append `status_patch_error` to `n8n.media.error_codes` but do not abort export.
 
 ### Metadata Filtering Semantics
 When `REQUIRE_EXECUTION_METADATA=true` (or CLI flag), the query adds an `EXISTS` subquery requiring at least one row in `<prefix>execution_metadata` where `executionId = execution.id`. This is not a key/value equality filter; presence alone suffices.
@@ -600,7 +617,7 @@ Media upload (enabled):
 3. When `uploadUrl` is present the raw bytes are PUT once with required headers `Content-Type` and `x-amz-checksum-sha256` (same base64 digest); otherwise skip upload.
 4. Placeholder is replaced by a token string:
 ```
-@@@langfuseMedia:type=<mime>|id=<mediaId>|source=n8n@@@
+@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@
 ```
 5. Failures (API / upload / oversize / decode) leave placeholder intact and set `n8n.media.upload_failed=true` (fail-open).
 6. `n8n.media.asset_count` increments per successfully patched placeholder.
