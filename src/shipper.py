@@ -21,7 +21,6 @@ import base64
 import time
 import logging
 from typing import Dict
-from datetime import datetime
 
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.resources import Resource
@@ -35,6 +34,10 @@ from .config import Settings
 
 _initialized = False
 logger = logging.getLogger(__name__)
+__all__ = [
+    "export_trace",
+    "shutdown_exporter",
+]
 
 
 def _init_otel(settings: Settings) -> None:
@@ -57,6 +60,7 @@ def _init_otel(settings: Settings) -> None:
     # Determine correct OTLP trace endpoint.
     # Langfuse base host (e.g. https://cloud.langfuse.com) expects /api/public/otel/v1/traces
     # Some users may already provide a partial or full path; normalize minimally.
+    endpoint: str | None
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
         endpoint = settings.OTEL_EXPORTER_OTLP_ENDPOINT.rstrip("/")
     else:
@@ -104,7 +108,7 @@ def _init_otel(settings: Settings) -> None:
     logger.info("Initialized OTLP exporter for Langfuse endpoint %s", endpoint)
 
 
-def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: ignore
+def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:
     """Map attributes from a LangfuseSpan model to an OTel span.
 
     This function translates the fields of the internal `LangfuseSpan` data model
@@ -122,10 +126,13 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
     if span_model.status:
         span_ot.set_attribute("langfuse.observation.status", span_model.status)
     # Explicit level / status_message provided (non-error spans included)
-    if span_model.level:
+    # Optional level / status_message (fields present on model)
+    if getattr(span_model, "level", None):  # guard for older serialized variants
         span_ot.set_attribute("langfuse.observation.level", span_model.level)
-    if span_model.status_message:
-        span_ot.set_attribute("langfuse.observation.status_message", span_model.status_message)
+    if getattr(span_model, "status_message", None):
+        span_ot.set_attribute(
+            "langfuse.observation.status_message", span_model.status_message
+        )
     if span_model.usage:
         if span_model.usage.input is not None:
             span_ot.set_attribute("gen_ai.usage.input_tokens", span_model.usage.input)
@@ -150,7 +157,9 @@ def _apply_span_attributes(span_ot, span_model: LangfuseSpan) -> None:  # type: 
             span_ot.set_attribute(f"langfuse.observation.metadata.{k}", str(v))
     if span_model.error:
         # Only override level/status_message if not explicitly set above
-        if "langfuse.observation.level" not in getattr(span_ot, "attributes", {}):  # defensive for dummy test spans
+        if "langfuse.observation.level" not in getattr(
+            span_ot, "attributes", {}
+        ):  # defensive for dummy test spans
             span_ot.set_attribute("langfuse.observation.level", "ERROR")
         if not span_model.status_message:
             span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
@@ -226,7 +235,9 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         parent_ctx = None  # type: ignore
     start_ns_root = int(root_model.start_time.timestamp() * 1e9)
     end_ns_root = int(root_model.end_time.timestamp() * 1e9)
-    root_span = tracer.start_span(name=root_model.name, start_time=start_ns_root, context=parent_ctx)  # type: ignore[arg-type]
+    root_span = tracer.start_span(
+        name=root_model.name, start_time=start_ns_root, context=parent_ctx
+    )
     _apply_span_attributes(root_span, root_model)
     # trace-level attributes
     for k, v in trace_model.metadata.items():
@@ -277,7 +288,7 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         end_ns = int(child.end_time.timestamp() * 1e9)
         span_ot = tracer.start_span(
             name=child.name,
-            context=parent_ctx,  # type: ignore[arg-type]
+            context=parent_ctx,
             start_time=start_ns,
         )
         _apply_span_attributes(span_ot, child)
@@ -318,7 +329,7 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         time.sleep(sleep_s)
 
 
-def shutdown_exporter():  # pragma: no cover - simple shutdown hook
+def shutdown_exporter() -> None:  # pragma: no cover - simple shutdown hook
     """Flush any buffered spans and shut down the OTLP exporter.
 
     This function should be called at the end of the application's lifecycle to

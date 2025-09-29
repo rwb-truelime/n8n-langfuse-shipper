@@ -13,7 +13,8 @@ process. It orchestrates the entire ETL pipeline:
 from __future__ import annotations
 
 import typer
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
+from datetime import datetime
 import logging
 import asyncio
 from pydantic import ValidationError
@@ -31,8 +32,8 @@ app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
 
 
 def _build_execution_data(
-    raw_data: Optional[dict | str | list],
-    workflow_data_raw: Optional[dict] = None,
+    raw_data: Optional[dict[str, Any] | str | list[Any]],
+    workflow_data_raw: Optional[dict[str, Any]] = None,
     *,
     debug: bool = False,
     attempt_decompress: bool = False,
@@ -101,7 +102,7 @@ def _build_execution_data(
         return empty
 
     # Helper to materialize ExecutionData from a run_data dict
-    def _from_run_data(rd: dict) -> ExecutionData:
+    def _from_run_data(rd: dict[str, Any]) -> ExecutionData:
         return ExecutionData(
             executionData=ExecutionDataDetails(
                 resultData=ResultData(runData=rd)
@@ -126,7 +127,7 @@ def _build_execution_data(
             logger.debug("ExecutionData validation failed: %s", ve)
 
     # Probe multiple candidate paths for runData
-    candidates = []
+    candidates: list[Any] = []
     try:
         candidates.append(raw_data.get("executionData", {}).get("resultData", {}).get("runData"))
     except Exception:
@@ -172,7 +173,11 @@ def _build_execution_data(
     return empty
 
 
-def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution_id: Optional[int] = None) -> Optional[ExecutionData]:
+def _decode_compact_pointer_execution(
+    pool: list[Any],
+    debug: bool = False,
+    execution_id: Optional[int] = None,
+) -> Optional[ExecutionData]:
     """Decode the "pointer-compressed" execution format into `ExecutionData`.
 
     Some n8n versions store execution data in a compact format where the top-level
@@ -202,7 +207,7 @@ def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution
     memo: dict[int, Any] = {}
     resolving: set[int] = set()
 
-    def resolve_index(i: int):
+    def resolve_index(i: int) -> Any:
         if i in memo:
             return memo[i]
         if i < 0 or i >= len(pool):
@@ -216,7 +221,7 @@ def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution
         memo[i] = res
         return res
 
-    def _resolve_value(v: Any):
+    def _resolve_value(v: Any) -> Any:
         if isinstance(v, str) and v.isdigit():
             return resolve_index(int(v))
         if isinstance(v, list):
@@ -240,8 +245,8 @@ def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution
     from .models.n8n import NodeRun, NodeRunSource, ExecutionData, ExecutionDataDetails, ResultData
     node_run_map: dict[str, list[NodeRun]] = {}
 
-    def collect_runs(val: Any) -> list[dict]:
-        out: list[dict] = []
+    def collect_runs(val: Any) -> List[dict[str, Any]]:
+        out: List[dict[str, Any]] = []
         if isinstance(val, dict):
             if "startTime" in val and "executionStatus" in val:
                 out.append(val)
@@ -331,7 +336,7 @@ def _decode_compact_pointer_execution(pool: list, debug: bool = False, execution
 
 
 @app.callback()
-def main():  # pragma: no cover - simple callback
+def main() -> None:  # pragma: no cover - simple callback
     """n8n-langfuse-shipper CLI.
 
     Use a subcommand like 'backfill' to run a process.
@@ -374,7 +379,7 @@ def backfill(
         None,
         help="Override EXPORT_SLEEP_MS (sleep duration in ms when backlog exceeds soft limit)",
     ),
-):
+) -> None:
     """Run a backfill cycle to process and export n8n executions.
 
     This command orchestrates the ETL process:
@@ -390,9 +395,10 @@ def backfill(
     typer.echo("Starting backfill with mapping...")
     # Apply optional runtime overrides for export backpressure tuning
     if export_queue_soft_limit is not None:
-        settings.EXPORT_QUEUE_SOFT_LIMIT = export_queue_soft_limit  # type: ignore[attr-defined]
+        # Runtime override of settings attribute (present on Settings model)
+        setattr(settings, "EXPORT_QUEUE_SOFT_LIMIT", int(export_queue_soft_limit))
     if export_sleep_ms is not None:
-        settings.EXPORT_SLEEP_MS = export_sleep_ms  # type: ignore[attr-defined]
+        setattr(settings, "EXPORT_SLEEP_MS", int(export_sleep_ms))
     # Determine metadata filter flag: CLI overrides env/settings
     require_meta_flag = (
         require_execution_metadata
@@ -417,11 +423,13 @@ def backfill(
                 "Loaded checkpoint id %s from %s", loaded, cp_path
             )
 
-    async def _run():
-        count = 0
-        last_id = effective_start_after
-        earliest_started: Optional[Any] = None  # track earliest startedAt among processed
-        latest_started: Optional[Any] = None
+    async def _run() -> None:
+        count: int = 0
+        last_id: Optional[int] = effective_start_after
+        # Track earliest and latest startedAt among processed executions for user reconciliation.
+        earliest_started: Optional[datetime] = None
+        latest_started: Optional[datetime] = None
+
         async for raw in source.stream(start_after_id=effective_start_after, limit=limit):
             record = N8nExecutionRecord(
                 id=raw["id"],
@@ -441,15 +449,18 @@ def backfill(
             )
             if debug and debug_dump_dir:
                 try:
-                    import json, os
-                    os.makedirs(debug_dump_dir, exist_ok=True)
-                    dump_path = os.path.join(debug_dump_dir, f"execution_{record.id}_data.json")
+                    import json
+                    import os as _os
+                    _os.makedirs(debug_dump_dir, exist_ok=True)
+                    dump_path = _os.path.join(debug_dump_dir, f"execution_{record.id}_data.json")
                     with open(dump_path, "w", encoding="utf-8") as f:
                         json.dump(raw.get("data"), f, ensure_ascii=False, indent=2)
                     logging.getLogger(__name__).info("Dumped raw data JSON to %s", dump_path)
                 except Exception as e:
                     logging.getLogger(__name__).warning("Failed dumping raw data JSON: %s", e)
-            effective_trunc = settings.TRUNCATE_FIELD_LEN if truncate_len is None else truncate_len
+            effective_trunc: Optional[int] = (
+                settings.TRUNCATE_FIELD_LEN if truncate_len is None else truncate_len
+            )
             if effective_trunc == 0:
                 effective_trunc = None  # signal no truncation
             # Media upload feature path (Langfuse Media API). When enabled we
@@ -488,7 +499,7 @@ def backfill(
                     record.startedAt.isoformat(),
                 )
             count += 1
-            last_id = record.id
+            last_id = int(record.id)
         if not dry_run and last_id is not None:
             store_checkpoint(cp_path, last_id)
             logging.getLogger(__name__).info(
@@ -499,9 +510,13 @@ def backfill(
         )
         if count:
             logging.getLogger(__name__).info(
-                "Execution time window processed: earliest_started=%s latest_started=%s (UTC). If Langfuse UI date filter excludes part of this range, displayed trace count may be lower.",
-                getattr(earliest_started, 'isoformat', lambda: earliest_started)(),
-                getattr(latest_started, 'isoformat', lambda: latest_started)(),
+                (
+                    "Execution time window processed: earliest_started=%s "
+                    "latest_started=%s (UTC). If Langfuse UI date filter excludes part of "
+                    "this range, displayed trace count may be lower."
+                ),
+                earliest_started.isoformat() if earliest_started else None,
+                latest_started.isoformat() if latest_started else None,
             )
 
     asyncio.run(_run())

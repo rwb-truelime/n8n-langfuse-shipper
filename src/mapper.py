@@ -275,127 +275,106 @@ def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[st
 
 
 def _unwrap_ai_channel(container: Any) -> Any:
-    """Heuristically unwrap the noisy list nesting of n8n AI node outputs.
+    """Unwrap an ai_* channel wrapper returning inner json payload(s).
 
-    n8n AI nodes often wrap their actual output in a deeply nested structure
-    like `{"ai_languageModel": [[{"json": {...}}]]}`. This function attempts
-    to extract the core `json` object(s) to improve readability in Langfuse.
-
-    It looks for a dictionary with a single 'ai_*' key and flattens the
-    nested lists to return the core payload.
-
-    Args:
-        container: The object to unwrap, typically a dictionary from a node's
-            input or output.
-
-    Returns:
-        The unwrapped object if the pattern is matched, otherwise the original
-        container.
+    Returns original object on mismatch or failure. Depth / breadth guarded.
     """
+    if not isinstance(container, dict) or len(container) != 1:
+        return container
     try:
-        if not isinstance(container, dict) or len(container) != 1:
-            return container
-        (only_key, value), = container.items()  # type: ignore[misc]
-        if not (isinstance(only_key, str) and only_key.startswith("ai_")):
-            return container
-        # Flatten nested list layers while collecting dict leaves
-        collected: List[Dict[str, Any]] = []
-
-        def _walk(v: Any, depth: int = 0):
-            if depth > 25:
-                return
-            if isinstance(v, list):
-                for item in v[:100]:
-                    _walk(item, depth + 1)
-            elif isinstance(v, dict):
-                # Prefer inner 'json' dict if present
-                j = v.get("json") if isinstance(v.get("json"), dict) else None
-                if j:
-                    collected.append(j)  # type: ignore[arg-type]
-                else:
-                    # If dict itself seems like a payload (has model/usage
-                    # markers) collect directly
-                    if any(
-                        k in v
-                        for k in (
-                            "model",
-                            "model_name",
-                            "modelId",
-                            "model_id",
-                            "tokenUsage",
-                            "tokenUsageEstimate",
-                        )
-                    ):
-                        collected.append(v)  # type: ignore[arg-type]
-            # Other primitive types ignored
-
-        _walk(value)
-        if not collected:
-            return container
-        if len(collected) == 1:
-            return collected[0]
-        # Deduplicate by json dump signature (lightweight)
-        import json
-        seen = set()
-        uniq: List[Dict[str, Any]] = []
-        for c in collected:
-            try:
-                sig = json.dumps(c, sort_keys=True)[:4000]
-            except Exception:
-                sig = str(id(c))
-            if sig not in seen:
-                seen.add(sig)
-                uniq.append(c)
-        return uniq
+        (only_key, value) = next(iter(container.items()))
     except Exception:
         return container
+    if not (isinstance(only_key, str) and only_key.startswith("ai_")):
+        return container
+    collected: List[Dict[str, Any]] = []
+
+    def _walk(v: Any, depth: int = 0) -> None:
+        if depth > 25:
+            return
+        if isinstance(v, list):
+            for item in v[:100]:
+                _walk(item, depth + 1)
+        elif isinstance(v, dict):
+            j = v.get("json") if isinstance(v.get("json"), dict) else None
+            if j:
+                collected.append(j)
+            else:
+                if any(
+                    k in v
+                    for k in (
+                        "model",
+                        "model_name",
+                        "modelId",
+                        "model_id",
+                        "tokenUsage",
+                        "tokenUsageEstimate",
+                    )
+                ):
+                    collected.append(v)
+
+    try:
+        _walk(value)
+    except Exception:
+        return container
+    if not collected:
+        return container
+    if len(collected) == 1:
+        return collected[0]
+    import json
+    seen: set[str] = set()
+    uniq: List[Dict[str, Any]] = []
+    for c in collected:
+        try:
+            sig = json.dumps(c, sort_keys=True)[:4000]
+        except Exception:
+            sig = str(id(c))
+        if sig not in seen:
+            seen.add(sig)
+            uniq.append(c)
+    return uniq
 
 
 def _unwrap_generic_json(container: Any) -> Any:
-    """Promote nested list/channel wrappers exposing inner {"json": {...}} payloads to root.
+    """Promote deeply nested list/main/json wrappers to direct json payload(s)."""
+    if not isinstance(container, dict):
+        return container
+    collected: List[Dict[str, Any]] = []
 
-    Patterns addressed:
-      {"main": [[[{"json": {...}}]]]} -> {...}
-      Mixed multi-json -> list of json dicts (deduped)
-    Conservative traversal limits to avoid pathological shapes.
-    """
+    def _walk(o: Any, depth: int = 0) -> None:
+        if depth > 25 or len(collected) >= 150:
+            return
+        if isinstance(o, dict):
+            j = o.get("json") if isinstance(o.get("json"), dict) else None
+            if j:
+                collected.append(j)
+            else:
+                for v in o.values():
+                    _walk(v, depth + 1)
+        elif isinstance(o, list):
+            for item in o[:100]:
+                _walk(item, depth + 1)
+
     try:
-        if not isinstance(container, dict):
-            return container
-        collected: List[Dict[str, Any]] = []
-
-        def _walk(o: Any, depth: int = 0):
-            if depth > 25 or len(collected) >= 150:
-                return
-            if isinstance(o, dict):
-                if "json" in o and isinstance(o.get("json"), dict):
-                    collected.append(o["json"])  # type: ignore[arg-type]
-                else:
-                    for v in o.values():
-                        _walk(v, depth + 1)
-            elif isinstance(o, list):
-                for item in o[:100]:
-                    _walk(item, depth + 1)
-
         _walk(container)
-        if not collected:
-            return container
-        if len(collected) == 1:
-            return collected[0]
-        import json
-        seen = set()
-        uniq: List[Dict[str, Any]] = []
-        for c in collected:
-            try:
-                sig = json.dumps(c, sort_keys=True)[:4000]
-            except Exception:
-                sig = str(id(c))
-            if sig not in seen:
-                seen.add(sig)
-                uniq.append(c)
-        return uniq
     except Exception:
         return container
+    if not collected:
+        return container
+    if len(collected) == 1:
+        return collected[0]
+    import json
+    seen: set[str] = set()
+    uniq: List[Dict[str, Any]] = []
+    for c in collected:
+        try:
+            sig = json.dumps(c, sort_keys=True)[:4000]
+        except Exception:
+            sig = str(id(c))
+        if sig not in seen:
+            seen.add(sig)
+            uniq.append(c)
+    return uniq
 
 
 def _normalize_node_io(obj: Any) -> Tuple[Any, Dict[str, bool]]:
@@ -495,7 +474,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     if tu is None:
         for key in ("tokenUsage", "tokenUsageEstimate"):
             container = _find_nested_key(data, key)
-            if container and isinstance(container.get(key), dict):  # type: ignore[arg-type]
+            if container and isinstance(container.get(key), dict):
                 tu = container[key]
                 break
 
@@ -503,7 +482,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
         # Limescape Docs custom usage keys may live directly in flattened data structure.
         # Look for totalInputTokens / totalOutputTokens / totalTokens at any nesting level.
         # We'll search top-level first, then one nested level to keep cost low.
-        def _scan_custom(obj: Any, depth: int = 25):
+        def _scan_custom(obj: Any, depth: int = 25) -> Optional[Dict[str, Any]]:
             if depth < 0:
                 return None
             if isinstance(obj, dict):
@@ -565,7 +544,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
             total_val = t_tokens
         elif input_val is not None and output_val is not None:
             try:
-                total_val = int(input_val) + int(output_val)  # type: ignore[arg-type]
+                total_val = int(input_val) + int(output_val)
             except Exception:
                 pass
 
@@ -575,7 +554,9 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     return LangfuseUsage(input=input_val, output=output_val, total=total_val)
 
 
-def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[Dict[str, Any]]:
+def _find_nested_key(
+    data: Any, target: str, max_depth: int = 150
+) -> Optional[Dict[str, Any]]:
     """Perform a depth-limited search for a dictionary containing a specific key.
 
     This helper traverses a nested structure of dictionaries and lists to find
@@ -595,7 +576,7 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[D
             return None
         if isinstance(data, dict):
             if target in data:
-                return data  # type: ignore[return-value]
+                return data
             for v in data.values():
                 found = _find_nested_key(v, target, max_depth - 1)
                 if found is not None:
@@ -681,7 +662,7 @@ def _extract_model_value(data: Any) -> Optional[str]:
             return direct
         j = data.get("json") if isinstance(data.get("json"), dict) else None
         if j:
-            direct = _direct_scan(j)  # type: ignore[arg-type]
+            direct = _direct_scan(j)
             if direct:
                 return direct
 
@@ -764,10 +745,10 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
             if pk in current:
                 v = current.get(pk)
                 if isinstance(v, str) and v and not v.startswith("={{"):
-                    meta: Dict[str, Any] = {}
+                    meta_pk: Dict[str, Any] = {}
                     if "azure" in node.type.lower():
-                        meta["n8n.model.is_deployment"] = True
-                    return v, f"{path}.{pk}", meta
+                        meta_pk["n8n.model.is_deployment"] = True
+                    return v, f"{path}.{pk}", meta_pk
         # 2. Generic fallback (excluding modelProvider handled in helper)
         for k, v in current.items():
             if (
@@ -776,10 +757,10 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
                 and not v.startswith("={{")
                 and _looks_like_model_param_key(k)
             ):
-                meta: Dict[str, Any] = {}
+                meta_k: Dict[str, Any] = {}
                 if "azure" in node.type.lower():
-                    meta["n8n.model.is_deployment"] = True
-                return v, f"{path}.{k}", meta
+                    meta_k["n8n.model.is_deployment"] = True
+                return v, f"{path}.{k}", meta_k
         # Recurse breadth-first
         if depth < 25:
             for k, v in current.items():
@@ -1465,7 +1446,9 @@ def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
 ) -> LangfuseTrace:
-    trace, _assets = _map_execution(record, truncate_limit=truncate_limit, collect_binaries=False)
+    trace, _assets = _map_execution(
+        record, truncate_limit=truncate_limit, collect_binaries=False
+    )
     return trace
 
 
@@ -1648,7 +1631,7 @@ def _discover_additional_binary_assets(
     limit_hit = False
     seen_sha: set[str] = set()
 
-    def _add(base64_str: str, mime: str | None, fname: str | None, path: str):
+    def _add(base64_str: str, mime: str | None, fname: str | None, path: str) -> None:
         nonlocal limit_hit
         if max_assets > 0 and len(found) >= max_assets:
             limit_hit = True
@@ -1680,7 +1663,7 @@ def _discover_additional_binary_assets(
         except Exception:
             return
 
-    def _walk(o: Any, path: str, parent: Any | None):  # noqa: C901 - complexity acceptable, bounded
+    def _walk(o: Any, path: str, parent: Any | None) -> None:  # noqa: C901 - complexity acceptable, bounded
         nonlocal limit_hit
         if max_assets > 0 and len(found) >= max_assets:
             limit_hit = True

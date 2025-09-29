@@ -18,7 +18,10 @@ NOTICE_PATH = REPO_ROOT / "NOTICE"
 CONFIG_PATH = REPO_ROOT / "notice_check.toml"
 
 
-def load_config():
+from typing import Any, Dict
+
+
+def load_config() -> Dict[str, Any]:
     """Load configuration from notice_check.toml if present.
 
     Structure:
@@ -27,7 +30,7 @@ def load_config():
       header_must_contain = "n8n-langfuse-shipper"
       header_search_chars = 200
     """
-    default = {
+    default: Dict[str, Any] = {
         "required_substrings": [
             "n8n-langfuse-shipper",
             "Apache License, Version 2.0",

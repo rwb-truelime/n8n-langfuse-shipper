@@ -51,8 +51,8 @@ class LangfuseSpan(BaseModel):
     status_message: Optional[str] = None  # human-readable status / error message
 
     @model_validator(mode="after")
-    def _noop(self):  # type: ignore[override]
-        """A no-op validator, can be used for future cross-field validation."""
+    def _noop(self) -> "LangfuseSpan":
+        """No-op validator placeholder for future cross-field validation."""
         return self
 
 

@@ -8,7 +8,7 @@ exponential backoff.
 """
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional, List, Dict, Any
+from typing import AsyncGenerator, Optional, List, Dict, Any, Iterable
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -20,7 +20,7 @@ import re
 try:  # pragma: no cover - import guarded for type checkers
     import psycopg
     from psycopg.rows import dict_row
-    from psycopg import AsyncConnection  # type: ignore
+    from psycopg import AsyncConnection
 except ImportError:  # pragma: no cover
     psycopg = None  # type: ignore
     AsyncConnection = Any  # type: ignore
@@ -102,27 +102,16 @@ class ExecutionSource:
         )
 
     @asynccontextmanager
-    async def _connect(self) -> AsyncGenerator[AsyncConnection, None]:  # type: ignore
-        """Create and manage an asynchronous database connection.
-
-        This is a private context manager that handles the lifecycle of a
-        `psycopg.AsyncConnection`, ensuring it is properly closed.
-
-        Yields:
-            An active `psycopg.AsyncConnection` object.
-
-        Raises:
-            RuntimeError: If the DSN is not configured or `psycopg` is not
-                installed.
-        """
+    async def _connect(self) -> AsyncGenerator[AsyncConnection, None]:
+        """Async context manager yielding a live PostgreSQL connection."""
         if not self._dsn:
             raise RuntimeError("PG_DSN is empty; cannot establish database connection")
         if psycopg is None:  # pragma: no cover
             raise RuntimeError("psycopg not installed in current environment")
-        conn = await psycopg.AsyncConnection.connect(self._dsn)  # type: ignore[attr-defined]
+        conn: AsyncConnection = await psycopg.AsyncConnection.connect(self._dsn)  # type: ignore[attr-defined]
         try:
             yield conn
-        finally:
+        finally:  # noqa: SIM105 (clarity over compressed form)
             try:
                 await conn.close()
             except Exception:  # pragma: no cover - best effort
@@ -136,7 +125,7 @@ class ExecutionSource:
     )
     async def _fetch_batch(
         self, conn: Any, last_id: int, limit: int
-    ) -> List[Dict[str, Any]]:  # conn typed as Any for compatibility
+    ) -> List[Dict[str, Any]]:
         """Fetch a single batch of execution records from the database.
 
         This method executes a SQL query to get the next batch of records after
@@ -187,7 +176,7 @@ class ExecutionSource:
                 'LIMIT %s'
             )
             params = (last_id, limit)
-        async with conn.cursor(row_factory=dict_row) as cur:  # type: ignore
+        async with conn.cursor(row_factory=dict_row) as cur:
             try:
                 await cur.execute(sql, params)
             except Exception as ex:  # noqa: BLE001 broad for friendly diagnostics then re-raise
@@ -208,12 +197,12 @@ class ExecutionSource:
                         self._table_prefix,
                     )
                 raise
-            rows = await cur.fetchall()
-            return rows  # type: ignore[return-value]
+            rows: List[Dict[str, Any]] = await cur.fetchall()
+            return rows
 
     async def stream(
         self, start_after_id: Optional[int] = None, limit: Optional[int] = None
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream execution records from the database.
 
         This is the main public method of the class. It acts as an asynchronous
