@@ -151,7 +151,7 @@ class Settings(BaseSettings):
 
 
     @model_validator(mode="after")
-    def build_dsn_if_needed(self):  # type: ignore[override]
+    def build_dsn_if_needed(self) -> "Settings":
         """Construct the PostgreSQL DSN from component parts if not provided.
 
         This validator runs after initial model creation. If `PG_DSN` is not set,

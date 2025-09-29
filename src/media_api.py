@@ -44,7 +44,7 @@ required presigned upload headers must update README + instructions + tests.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast, Protocol
 import logging
 import base64
 import json
@@ -168,7 +168,7 @@ class _MediaClient:
                 f"media create failed status={resp.status_code} body={resp.text[:500]}"
             )
         try:
-            return resp.json()
+            return cast(dict[str, Any], resp.json())
         except Exception as e:  # pragma: no cover - unexpected response
             raise RuntimeError(f"invalid media create JSON: {e}") from e
 
@@ -208,7 +208,7 @@ class _MediaClient:
 
     def upload_binary(
         self, upload_url: str, data: bytes, *, content_type: str, sha256_b64: str
-    ):
+    ) -> None:
         """Upload binary to presigned URL.
 
         The presigned URL (S3 style) includes X-Amz-SignedHeaders list; current
@@ -254,7 +254,16 @@ def _build_token(media_id: str, mime: Optional[str]) -> str:
     return f"@@@langfuseMedia:{inner}@@@"
 
 
-def patch_and_upload_media(mapped: MappedTraceWithAssets, settings) -> None:
+class _SettingsProto(Protocol):  # pragma: no cover - structural typing helper
+    ENABLE_MEDIA_UPLOAD: bool
+    LANGFUSE_HOST: str
+    LANGFUSE_PUBLIC_KEY: str
+    LANGFUSE_SECRET_KEY: str
+    OTEL_EXPORTER_OTLP_TIMEOUT: int
+    MEDIA_MAX_BYTES: int
+
+
+def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsProto) -> None:
     if not settings.ENABLE_MEDIA_UPLOAD:
         return
     if not mapped.assets:
