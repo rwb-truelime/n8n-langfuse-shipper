@@ -169,11 +169,11 @@ def _strip_binary_payload(obj: Any) -> Any:
     placeholder_text = "binary omitted"
     try:
         if isinstance(obj, dict):
-            new_d = {}
+            new_d: Dict[str, Any] = {}
             for k, v in obj.items():
                 if k == "binary" and isinstance(v, dict):
                     # replace inner binary data parts
-                    new_bin = {}
+                    new_bin: Dict[str, Any] = {}
                     for bk, bv in v.items():
                         if isinstance(bv, dict):
                             bv2 = dict(bv)
@@ -714,15 +714,19 @@ def _looks_like_model_param_key(key: str) -> bool:
 
 
 def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str, Dict[str, Any]]]:
-    """Attempt to extract a model/deployment name from a static workflow node's parameters.
+    """Attempt to extract a model/deployment name from static workflow node parameters.
 
-    Returns (model_value, key_path, extra_meta) or None.
-    extra_meta may include deployment hint flags.
+    Returns a tuple ``(model_value, key_path, extra_meta)`` or ``None``. Previous
+    implementation returned early inside loops which triggered a mypy
+    ``unreachable`` warning for subsequent code. This refactor preserves first
+    match semantics while using an accumulator to avoid early ``return`` inside
+    the BFS loop (eliminating the unreachable diagnostic).
     """
     params = getattr(node, "parameters", None)
     if not isinstance(params, dict):
         return None
     from collections import deque as _dq
+
     queue = _dq([(params, "parameters", 0)])
     seen = 0
     max_nodes = 120
@@ -735,20 +739,24 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
         "model_id",
         "modelId",
     ]
+    result: Optional[Tuple[str, str, Dict[str, Any]]] = None
+    azure_flag = "azure" in node.type.lower()
+
     while queue and seen < max_nodes:
         current, path, depth = queue.popleft()
         seen += 1
-        if not isinstance(current, dict):
-            continue
+        if result is not None:
+            break
         # 1. Priority exact key pass
         for pk in priority_keys:
             if pk in current:
                 v = current.get(pk)
                 if isinstance(v, str) and v and not v.startswith("={{"):
                     meta_pk: Dict[str, Any] = {}
-                    if "azure" in node.type.lower():
+                    if azure_flag:
                         meta_pk["n8n.model.is_deployment"] = True
-                    return v, f"{path}.{pk}", meta_pk
+                    result = (v, f"{path}.{pk}", meta_pk)
+                    break
         # 2. Generic fallback (excluding modelProvider handled in helper)
         for k, v in current.items():
             if (
@@ -758,15 +766,16 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
                 and _looks_like_model_param_key(k)
             ):
                 meta_k: Dict[str, Any] = {}
-                if "azure" in node.type.lower():
+                if azure_flag:
                     meta_k["n8n.model.is_deployment"] = True
-                return v, f"{path}.{k}", meta_k
+                result = (v, f"{path}.{k}", meta_k)
+                break
         # Recurse breadth-first
         if depth < 25:
             for k, v in current.items():
                 if isinstance(v, dict):
                     queue.append((v, f"{path}.{k}", depth + 1))
-    return None
+    return result
 
 
 # --------------------------- Stage 1 Refactor Helpers ---------------------------
@@ -1580,10 +1589,11 @@ def _collect_binary_assets(
                     segments = segments[1:]
                 if not segments:
                     continue
-                cursor = cloned
+                cursor: Optional[Dict[str, Any]] = cloned if isinstance(cloned, dict) else None
                 for seg in segments[:-1]:
-                    if isinstance(cursor, dict):
-                        cursor = cursor.get(seg)
+                    if cursor is not None and isinstance(cursor, dict):
+                        nxt = cursor.get(seg)
+                        cursor = nxt if isinstance(nxt, dict) else None
                     else:
                         cursor = None
                         break
