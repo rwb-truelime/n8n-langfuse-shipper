@@ -583,7 +583,11 @@ POST `/api/public/media` keys (aligned with public docs):
 
 | Key | Source | Notes |
 |-----|--------|-------|
-| traceId | `LangfuseTrace.id` | Raw execution id string |
+| traceId | OTLP hex trace id (`LangfuseTrace.otel_trace_id_hex`) | 32-hex with execution id suffix |
+| observationId | OTLP span id (`LangfuseSpan.otel_span_id`, 16-hex) | OPTIONAL in API schema but **REQUIRED** for
+|  |  | observation-level previews. When omitted the media is only trace-scoped and the UI will
+|  |  | not show it inside the span's Media panel. Always supply the exact span id owning the
+|  |  | placeholder. |
 | contentType | Sanitized mime or default `application/octet-stream` | Omitted if unsupported mime |
 | contentLength | Decoded byte length | Must equal uploaded bytes |
 | sha256Hash | Base64 SHA256 digest | Derived from stored hex digest |
@@ -617,6 +621,15 @@ Failure codes (stable identifiers; add new ones only with tests + README + this 
 Deduplicated create responses: When the create API returns an object with a media id but **no** `uploadUrl`
 the asset already exists; this is treated as success (counts toward `n8n.media.asset_count`) and does not
 produce `n8n.media.error_codes` or `n8n.media.upload_failed`.
+
+Observation Linking Invariant:
+* The UI does not parse `@@@langfuseMedia:...@@@` tokens from arbitrary JSON to discover assets.
+    It queries backend `observation_media` for a given span id. Therefore every successful media
+    create call originating from a span MUST include `observationId=<otel_span_id>` (the 16-hex OTLP span id) or the preview pane
+    will remain empty even though tokens appear in the span output JSON. Tests:
+    `test_media_observation_link.py` asserts this linkage. A regression (missing observationId)
+    previously produced "tokens present / no previews" confusion. Never remove this field without
+    updating both tests and docs.
 
 ### Media Upload Tests (Authoritative Coverage)
 | Test File | Scenario |

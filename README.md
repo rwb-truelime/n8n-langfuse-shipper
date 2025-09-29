@@ -661,6 +661,59 @@ set -e ENABLE_MEDIA_UPLOAD
 Planned evolutions: additional failure retries, large streaming upload optimizations.
 Recent addition: item-level binary promotion + preservation wrapper (see Binary / Large Payload Handling section) to ensure media tokens appear for nodes emitting per-item binaries only.
 
+### Media Upload Troubleshooting
+
+#### **Problem: Media tokens present in span output but NO PREVIEWS in Langfuse UI**
+
+**Primary Cause (Current)**: Missing `observationId` linkage in the `POST /api/public/media` create
+payload. The Langfuse UI does **not** scrape token strings from JSON to discover assets; it queries the
+backend `observation_media` table keyed by span id. If the create call omitted `observationId`, the
+media becomes trace-scoped only and will not appear inside that span's Media panel.
+
+**Invariant**: Every asset originating from a span must call create with:
+```
+{
+	"traceId": <execution_id_str>,
+	"observationId": <span.id>,
+	"contentLength": <bytes>,
+	"sha256Hash": <base64_sha256>,
+	"field": "output" | "input" | "metadata",
+	"contentType": <mime?>
+}
+```
+If `observationId` is missing you will see tokens like
+`@@@langfuseMedia:type=image/png|id=...|source=base64_data_uri@@@` in the span output JSON but an empty
+media panel.
+
+**Secondary (Legacy) Cause (Now Fixed)**: Earlier versions double-stringified span outputs with Python
+`str()` causing invalid JSON for token parsing. This is no longer the active failure mode but remains
+covered by `tests/test_media_token_json_serialization.py`.
+
+**Diagnosis Steps**:
+1. Enable DEBUG logs and confirm lines: `media create ... observation_id=<span_id>` appear.
+2. Inspect one create request (proxy/log) → ensure `observationId` present.
+3. Check span metadata: `n8n.media.asset_count` > 0 and absence of `n8n.media.upload_failed`.
+4. If assets deduplicated (no `uploadUrl`), still expect previews provided `observationId` was sent.
+5. For self-hosted: verify object storage (S3/minio) accessible; network 403/AccessDenied indicates
+	 missing required headers (`Content-Type`, `x-amz-checksum-sha256`).
+
+**Remediation**:
+- Upgrade to a version including observation linkage (look for `test_media_observation_link.py` in repo).
+- If you forked earlier code, patch `media_api.py` so `create_media(... observation_id=span.id ...)` is used.
+
+**Quick Verification (Python REPL)**:
+After a run, locate a span with media metadata and assert the output contains tokens and metadata count:
+```python
+assert '"n8n.media.asset_count"' in json.dumps(span.metadata)
+assert '@@@langfuseMedia:' in span.output
+```
+
+**Relevant Tests**:
+- `test_media_observation_link.py` – ensures `observationId` included.
+- `test_media_api_tokens.py` – token substitution & dedupe path.
+- `test_media_token_json_serialization.py` – guards against double-stringify regression.
+
+
 ## Roadmap (Upcoming Enhancements)
 
 1. Media upload workflow (store omitted binaries via Langfuse media API + token substitution).

@@ -49,6 +49,11 @@ class LangfuseSpan(BaseModel):
     status: Optional[str] = None  # normalized business outcome (e.g. success, error)
     level: Optional[str] = None  # severity level (DEBUG|DEFAULT|WARNING|ERROR)
     status_message: Optional[str] = None  # human-readable status / error message
+    # OTLP span id (16 hex chars) captured during export. This differs from the
+    # deterministic logical UUIDv5 `id` above. Media uploads must use this
+    # value for `observationId` so the Langfuse backend links media to the
+    # persisted observation row. Absent until `export_trace` runs.
+    otel_span_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _noop(self) -> "LangfuseSpan":
@@ -80,3 +85,7 @@ class LangfuseTrace(BaseModel):
     environment: Optional[str] = None
     trace_input: Optional[Any] = None
     trace_output: Optional[Any] = None
+    # OTLP 32-hex trace id actually sent to exporter (human-embedded form). Set
+    # during export; used by media create calls so traceId matches observation
+    # rows. Raw logical id (execution id string) remains in `id`.
+    otel_trace_id_hex: Optional[str] = None

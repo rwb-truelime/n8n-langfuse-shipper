@@ -20,9 +20,9 @@ class DummyMediaClient:
         self.created = []
         self.uploaded = []
 
-    def create_media(self, trace_id, content_type, content_length, sha256_b64, field):
+    def create_media(self, trace_id, observation_id, content_type, content_length, sha256_b64, field):  # type: ignore[override]
         media_id = f"m_{len(self.created)}"
-        self.created.append((trace_id, content_type, content_length, sha256_b64, field))
+        self.created.append((trace_id, observation_id, content_type, content_length, sha256_b64, field))
         # Dedup path: no uploadUrl triggers immediate token substitution without upload
         return {"mediaId": media_id}
 
@@ -30,20 +30,19 @@ class DummyMediaClient:
         self.uploaded.append(args)
 
 class Settings:
-    ENABLE_MEDIA_UPLOAD = True
-    MEDIA_MAX_BYTES = 25_000_000
-    EXTENDED_MEDIA_SCAN_MAX_ASSETS = 250
-    LANGFUSE_HOST = "https://dummy"
-    LANGFUSE_PUBLIC_KEY = "pk_test"
-    LANGFUSE_SECRET_KEY = "sk_test"
-    OTEL_EXPORTER_OTLP_TIMEOUT = 10
+    # Provide explicit annotations so test helper conforms to _SettingsProto
+    ENABLE_MEDIA_UPLOAD: bool = True
+    MEDIA_MAX_BYTES: int = 25_000_000
+    EXTENDED_MEDIA_SCAN_MAX_ASSETS: int = 250
+    LANGFUSE_HOST: str = "https://dummy"
+    LANGFUSE_PUBLIC_KEY: str = "pk_test"
+    LANGFUSE_SECRET_KEY: str = "sk_test"
+    OTEL_EXPORTER_OTLP_TIMEOUT: int = 10
 
 # Monkeypatch get_settings in media_api to return our settings
 from src import media_api as media_mod  # noqa
 media_mod.get_settings = lambda: Settings()  # type: ignore
 
-# Monkeypatch internal _MediaClient class used by patch_and_upload_media
-media_mod._MediaClient = DummyMediaClient  # type: ignore
 
 B64 = ("aGVsbG9faXRlbV9wcm9tb3RlZF9iaW5hcnk=" * 8)
 
@@ -93,6 +92,8 @@ def _record():
     )
 
 def test_media_token_substitution_with_item_level_promotion(monkeypatch):
+    # Patch internal client for this test only (auto-reverted by monkeypatch)
+    monkeypatch.setattr(media_mod, "_MediaClient", DummyMediaClient)
     rec = _record()
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     trace = mapped.trace

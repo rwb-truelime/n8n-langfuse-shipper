@@ -135,6 +135,7 @@ class _MediaClient:
         self,
         *,
         trace_id: str,
+        observation_id: str | None,
         content_type: Optional[str],
         content_length: int,
         sha256_b64: str,
@@ -152,6 +153,11 @@ class _MediaClient:
             "sha256Hash": sha256_b64,
             "field": field,
         }
+        # observationId optional – when provided links media to observation so
+        # UI observation view fetch (observation_media) returns it. Without it
+        # media is only trace-scoped and won't appear inside span preview.
+        if observation_id:
+            payload["observationId"] = observation_id
         if content_type:
             payload["contentType"] = content_type
         try:
@@ -327,8 +333,16 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
                 field = "input"
             elif lowered_path.startswith("metadata"):
                 field = "metadata"
+            # Use real OTLP span id when available; fallback to logical id for
+            # backwards compatibility in tests (pre-export usage). The OTLP id
+            # is required for Langfuse to associate media with observations.
+            obs_id = getattr(span, "otel_span_id", None) or span.id
+            # Use OTLP 32-hex trace id when available to ensure alignment with
+            # observation rows; fallback to logical id only if export did not
+            # populate it (e.g. dry-run).
             create_resp = client.create_media(
-                trace_id=str(mapped.trace.id),
+                trace_id=getattr(mapped.trace, "otel_trace_id_hex", None) or str(mapped.trace.id),
+                observation_id=obs_id,
                 content_type=sanitized_mime or "application/octet-stream",
                 content_length=len(decoded),
                 sha256_b64=sha_b64,
@@ -345,6 +359,12 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
                 span.metadata["n8n.media.upload_failed"] = True
                 span.metadata.setdefault("n8n.media.error_codes", []).append("create_api_error")
             continue
+            logger.debug(
+                "media create_resp media_id=%s observation_id_sent=%s resp_keys=%s",
+                create_resp.get("mediaId") or create_resp.get("id"),
+                getattr(span, "otel_span_id", None) or span.id,
+                list(create_resp.keys()),
+            )
         # Server may return either `mediaId` (docs) or legacy `id`
         media_id = (
             str(create_resp.get("mediaId"))
@@ -503,8 +523,85 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
     # Legacy hoist pass removed – in-place surfacing ensures preview depth.
 
 
+def relink_media_observations(mapped: MappedTraceWithAssets, settings: _SettingsProto) -> None:
+    """Post-export idempotent relink ensuring observation-level media association.
+
+    Rationale: The initial media create calls may occur *before* the OTLP exporter
+    has flushed spans and the Langfuse backend has persisted observation rows.
+    Some deployments appear to only create `trace_media` (trace-scoped) entries
+    when the referenced observation id does not yet exist, resulting in tokens
+    present in span output JSON but no previews inside the span-level Media UI.
+
+    Calling create_media again *after* export (and a minimal delay) is safe:
+    - If observation linkage already exists this is a deduplicated no-op.
+    - If only trace-level linkage exists the backend can now add
+      `observation_media` row, enabling previews.
+
+    We do *not* re-upload bytes; dedupe path returns an id without uploadUrl.
+    """
+    if not settings.ENABLE_MEDIA_UPLOAD:
+        return
+    if not mapped.assets:
+        return
+    host = settings.LANGFUSE_HOST
+    if not host or not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
+        return
+    # Small delay gives the batch span processor (if any) a chance to persist
+    # observations before linking. Adjust if future async exporter semantics change.
+    try:  # pragma: no cover - timing nondeterministic in tests
+        import time
+        time.sleep(0.25)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    client = _MediaClient(
+        host=host,
+        public_key=settings.LANGFUSE_PUBLIC_KEY,
+        secret_key=settings.LANGFUSE_SECRET_KEY,
+        timeout=settings.OTEL_EXPORTER_OTLP_TIMEOUT,
+    )
+    span_index: Dict[tuple[str, int], Any] = {}
+    for s in mapped.trace.spans:
+        run_index = s.metadata.get("n8n.node.run_index") if s.metadata else None
+        if isinstance(run_index, int):
+            span_index[(s.name, run_index)] = s
+    for asset in mapped.assets:
+        span = span_index.get((asset.node_name, asset.run_index))
+        if not span:
+            continue
+        # Reconstruct values (no need to decode content again).
+        try:
+            try:
+                sha_bytes = bytes.fromhex(asset.sha256)
+                sha_b64 = base64.b64encode(sha_bytes).decode("ascii")
+            except Exception:  # pragma: no cover - malformed hash edge
+                sha_b64 = ""
+            field = "output"
+            lowered_path = asset.field_path.lower()
+            if lowered_path.startswith("input"):
+                field = "input"
+            elif lowered_path.startswith("metadata"):
+                field = "metadata"
+            client.create_media(
+                trace_id=str(mapped.trace.id),
+                observation_id=span.id,
+                content_type=_sanitize_mime(asset.mime_type) or "application/octet-stream",
+                content_length=asset.size_bytes,
+                sha256_b64=sha_b64,
+                field=field,
+            )
+            logger.debug(
+                "media relink_ok media_sha256=%s span=%s field=%s", asset.sha256, span.id, field
+            )
+        except Exception as e:  # pragma: no cover - network / backend error path
+            # Non-fatal: previews may still appear if original call sufficed.
+            logger.debug(
+                "media relink_failed media_sha256=%s span=%s err=%s", asset.sha256, span.id, e
+            )
+
+
 __all__ = [
     "BinaryAsset",
     "MappedTraceWithAssets",
     "patch_and_upload_media",
+    "relink_media_observations",
 ]

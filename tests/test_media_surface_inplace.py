@@ -71,7 +71,7 @@ def test_inplace_surface_replaces_placeholder(monkeypatch):
             return self._json
 
     def fake_post(url, json=None, auth=None, timeout=None):  # noqa: A002
-        return Resp({"mediaId": "m123"})
+        return Resp({"mediaId": "m123", "observationId": "obs_123"})
 
     def fake_put(url, content=None, headers=None, timeout=None):  # noqa: A002
         return Resp({}, 200)

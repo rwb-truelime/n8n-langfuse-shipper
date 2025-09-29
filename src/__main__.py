@@ -463,15 +463,18 @@ def backfill(
             )
             if effective_trunc == 0:
                 effective_trunc = None  # signal no truncation
-            # Media upload feature path (Langfuse Media API). When enabled we
-            # always collect binaries then patch with media tokens.
+            # Media upload feature path (Langfuse Media API).
+            # Phase order change: we first export spans to obtain OTLP span ids
+            # (observation ids) then run media upload so create_media can link
+            # assets to observations. Tokens patched locally after export; the
+            # OTLP-exported span output may not include tokens (contract
+            # update documented in instructions & README).
             if settings.ENABLE_MEDIA_UPLOAD:
                 mapped = map_execution_with_assets(
                     record,
                     truncate_limit=effective_trunc,
                     collect_binaries=True,
                 )
-                patch_and_upload_media(mapped, settings)
                 trace = mapped.trace
             else:
                 trace = map_execution_to_langfuse(record, truncate_limit=effective_trunc)
@@ -485,6 +488,14 @@ def backfill(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
             export_trace(trace, settings, dry_run=dry_run)
+            if settings.ENABLE_MEDIA_UPLOAD and 'mapped' in locals():
+                # Now that OTLP span ids are populated, perform media create + upload.
+                try:
+                    patch_and_upload_media(mapped, settings)
+                except Exception as e:  # pragma: no cover - non-fatal path
+                    logging.getLogger(__name__).warning(
+                        "media upload phase failed execution=%s err=%s", record.id, e
+                    )
             # Track earliest / latest window for user reconciliation with Langfuse UI filters.
             if earliest_started is None or record.startedAt < earliest_started:
                 earliest_started = record.startedAt

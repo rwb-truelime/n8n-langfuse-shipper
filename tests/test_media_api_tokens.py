@@ -73,7 +73,6 @@ def _patch_httpx(monkeypatch):
             status_code = 200
 
             def json(self):  # noqa: D401
-                # Return uploadUrl only for first asset
                 idx = len(created)
                 media_id = f"m_{idx}"
                 created.append(json)

@@ -227,6 +227,10 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     # Build deterministic human-searchable trace id: 000...<executionId>
     try:
         int_trace_id, hex_trace_id = _build_human_trace_id(trace_model.id)
+        try:
+            trace_model.otel_trace_id_hex = hex_trace_id
+        except Exception:  # pragma: no cover - defensive
+            pass
         # Derive a deterministic parent span id seed from the hex trace id
         import hashlib
         parent_seed = hashlib.sha256((hex_trace_id + ':parent').encode()).hexdigest()[:16]
@@ -246,6 +250,10 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     root_span = tracer.start_span(
         name=root_model.name, start_time=start_ns_root, context=parent_ctx
     )
+    try:  # Capture OTLP span id for downstream media linkage
+        root_model.otel_span_id = format(root_span.get_span_context().span_id, "016x")
+    except Exception:  # pragma: no cover - defensive
+        root_model.otel_span_id = None
     _apply_span_attributes(root_span, root_model)
     # trace-level attributes
     for k, v in trace_model.metadata.items():
@@ -279,9 +287,23 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     if wf_id_val is not None:
         root_span.set_attribute("langfuse.workflow.id", wf_id_val)
     if root_model.input is not None:
-        root_span.set_attribute("langfuse.observation.input", str(root_model.input))
+        import json as _json
+        try:
+            root_span.set_attribute(
+                "langfuse.observation.input",
+                _json.dumps(root_model.input, separators=(",", ":"), ensure_ascii=False)
+            )
+        except Exception:
+            root_span.set_attribute("langfuse.observation.input", str(root_model.input))
     if root_model.output is not None:
-        root_span.set_attribute("langfuse.observation.output", str(root_model.output))
+        import json as _json
+        try:
+            root_span.set_attribute(
+                "langfuse.observation.output",
+                _json.dumps(root_model.output, separators=(",", ":"), ensure_ascii=False)
+            )
+        except Exception:
+            root_span.set_attribute("langfuse.observation.output", str(root_model.output))
     ctx_lookup: Dict[str, SpanContext] = {root_model.id: root_span.get_span_context()}
 
     # Children
@@ -299,11 +321,29 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             context=parent_ctx,
             start_time=start_ns,
         )
+        try:  # Persist OTLP span id (needed for media observationId)
+            child.otel_span_id = format(span_ot.get_span_context().span_id, "016x")
+        except Exception:  # pragma: no cover - defensive
+            child.otel_span_id = None
         _apply_span_attributes(span_ot, child)
         if child.input is not None:
-            span_ot.set_attribute("langfuse.observation.input", str(child.input))
+            import json as _json
+            try:
+                span_ot.set_attribute(
+                    "langfuse.observation.input",
+                    _json.dumps(child.input, separators=(",", ":"), ensure_ascii=False)
+                )
+            except Exception:
+                span_ot.set_attribute("langfuse.observation.input", str(child.input))
         if child.output is not None:
-            span_ot.set_attribute("langfuse.observation.output", str(child.output))
+            import json as _json
+            try:
+                span_ot.set_attribute(
+                    "langfuse.observation.output",
+                    _json.dumps(child.output, separators=(",", ":"), ensure_ascii=False)
+                )
+            except Exception:
+                span_ot.set_attribute("langfuse.observation.output", str(child.output))
         span_ot.end(end_time=end_ns)
         ctx_lookup[child.id] = span_ot.get_span_context()
 
