@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -44,7 +45,9 @@ def _build_record(node_pairs):
         startedAt=now,
         stoppedAt=now,
         workflowData=WorkflowData(id="wf-gen-matrix", name="Gen Matrix", nodes=nodes),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     return rec
 
@@ -71,19 +74,24 @@ def test_generation_detection_provider_matrix():
     names = {p[0] for p in providers}
     for span in trace.spans:
         if span.name in names:
-            assert span.observation_type == "generation", f"Expected generation for {span.name}/{span.metadata.get('n8n.node.type')}"
+            assert (
+                span.observation_type == "generation"
+            ), f"Expected generation for {span.name}/{span.metadata.get('n8n.node.type')}"
 
 
 def test_generation_excludes_embeddings():
     rec = _build_record([("EmbeddingsNode", "EmbeddingsOpenAI")])
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "EmbeddingsNode")
-    assert span.observation_type != "generation", "Embeddings should not be classified as generation"
+    assert (
+        span.observation_type != "generation"
+    ), "Embeddings should not be classified as generation"
 
 
 def test_generation_detection_nested_token_usage():
     # Simulate n8n nested output channel wrapping tokenUsage
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     nested_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
@@ -95,7 +103,11 @@ def test_generation_detection_nested_token_usage():
                     {
                         "json": {
                             "response": {"generations": [[{"text": "Hello world"}]]},
-                            "tokenUsage": {"promptTokens": 12, "completionTokens": 3, "totalTokens": 15},
+                            "tokenUsage": {
+                                "promptTokens": 12,
+                                "completionTokens": 3,
+                                "totalTokens": 15,
+                            },
                         }
                     }
                 ]
@@ -124,7 +136,9 @@ def test_generation_detection_nested_token_usage():
                 WorkflowNode(name="NestedModel", type="GoogleGemini"),
             ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "NestedModel")
@@ -135,6 +149,7 @@ def test_generation_detection_nested_token_usage():
 
 def test_nested_model_extraction():
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     nested_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 5,
@@ -146,7 +161,11 @@ def test_nested_model_extraction():
                     {
                         "json": {
                             "model": "gpt-4o-mini",
-                            "tokenUsage": {"promptTokens": 2, "completionTokens": 1, "totalTokens": 3},
+                            "tokenUsage": {
+                                "promptTokens": 2,
+                                "completionTokens": 1,
+                                "totalTokens": 3,
+                            },
                         }
                     }
                 ]
@@ -175,7 +194,9 @@ def test_nested_model_extraction():
                 WorkflowNode(name="NestedModel", type="OpenAi"),
             ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "NestedModel")
@@ -185,6 +206,7 @@ def test_nested_model_extraction():
 def test_model_extraction_variant_keys():
     # Ensure alternative key names are detected
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     variant_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 5,
@@ -224,7 +246,9 @@ def test_model_extraction_variant_keys():
                 WorkflowNode(name="VariantNode", type="CohereChat"),
             ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "VariantNode")
@@ -233,6 +257,7 @@ def test_model_extraction_variant_keys():
 
 def test_limescape_docs_custom_generation_and_flat_usage():
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     # Simulate a Limescape Docs node run with flattened usage counters but no tokenUsage object
     starter = NodeRun(
@@ -270,17 +295,24 @@ def test_limescape_docs_custom_generation_and_flat_usage():
                 WorkflowNode(name="Limescape Docs", type="n8n-nodes-limescape-docs.limescapeDocs"),
             ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     ls_span = next(s for s in trace.spans if s.name == "Limescape Docs")
-    assert ls_span.observation_type == "generation", "Limescape Docs node not classified as generation"
+    assert (
+        ls_span.observation_type == "generation"
+    ), "Limescape Docs node not classified as generation"
     assert ls_span.usage is not None, "Flattened usage counters not extracted"
-    assert ls_span.usage.input == 5683 and ls_span.usage.output == 4160 and ls_span.usage.total == 9843
+    assert (
+        ls_span.usage.input == 5683 and ls_span.usage.output == 4160 and ls_span.usage.total == 9843
+    )
 
 
 def test_model_priority_over_model_provider():
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     starter = NodeRun(
         startTime=int(now.timestamp() * 1000),
@@ -290,6 +322,7 @@ def test_model_priority_over_model_provider():
     )
     # Parameters include modelProvider (Azure) and model (gpt-4.1)
     from src.models.n8n import WorkflowNode
+
     node = WorkflowNode(
         name="Limescape Docs",
         type="n8n-nodes-limescape-docs.limescapeDocs",
@@ -314,11 +347,17 @@ def test_model_priority_over_model_provider():
         status="success",
         startedAt=now,
         stoppedAt=now,
-        workflowData=WorkflowData(id="wf-model-priority", name="Model Priority", nodes=[
-            WorkflowNode(name="Starter", type="ToolWorkflow"),
-            node,
-        ]),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        workflowData=WorkflowData(
+            id="wf-model-priority",
+            name="Model Priority",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                node,
+            ],
+        ),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "Limescape Docs")
@@ -328,6 +367,7 @@ def test_model_priority_over_model_provider():
 def test_model_extraction_ai_languageModel_options_path():
     # Mirrors screenshot: ai_languageModel -> [[ { json: { messages:[], estimatedTokens, options:{ base_url, model } } } ]]
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
@@ -372,9 +412,10 @@ def test_model_extraction_ai_languageModel_options_path():
                 WorkflowNode(name="Google Gemini Chat Model", type="GoogleGemini"),
             ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "Google Gemini Chat Model")
     assert span.model == "gemini-2.5-pro"
-

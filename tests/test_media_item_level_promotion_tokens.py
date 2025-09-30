@@ -1,33 +1,36 @@
-import json
 from datetime import datetime, timezone
-import base64
 
 from src.mapper import map_execution_with_assets
 from src.media_api import patch_and_upload_media  # type: ignore
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.models.langfuse import LangfuseTrace
+
 
 class DummyMediaClient:
     def __init__(self, *args, **kwargs):
         self.created = []
         self.uploaded = []
 
-    def create_media(self, trace_id, observation_id, content_type, content_length, sha256_b64, field):  # type: ignore[override]
+    def create_media(
+        self, trace_id, observation_id, content_type, content_length, sha256_b64, field
+    ):  # type: ignore[override]
         media_id = f"m_{len(self.created)}"
-        self.created.append((trace_id, observation_id, content_type, content_length, sha256_b64, field))
+        self.created.append(
+            (trace_id, observation_id, content_type, content_length, sha256_b64, field)
+        )
         # Dedup path: no uploadUrl triggers immediate token substitution without upload
         return {"mediaId": media_id}
 
     def upload_binary(self, *args, **kwargs):  # pragma: no cover - not used
         self.uploaded.append(args)
+
 
 class Settings:
     # Provide explicit annotations so test helper conforms to _SettingsProto
@@ -39,12 +42,15 @@ class Settings:
     LANGFUSE_SECRET_KEY: str = "sk_test"
     OTEL_EXPORTER_OTLP_TIMEOUT: int = 10
 
+
 # Monkeypatch get_settings in media_api to return our settings
 from src import media_api as media_mod  # noqa
+
 media_mod.get_settings = lambda: Settings()  # type: ignore
 
 
-B64 = ("aGVsbG9faXRlbV9wcm9tb3RlZF9iaW5hcnk=" * 8)
+B64 = "aGVsbG9faXRlbV9wcm9tb3RlZF9iaW5hcnk=" * 8
+
 
 def _record():
     payload = {
@@ -53,11 +59,15 @@ def _record():
                 [
                     {
                         "json": {"ok": True, "idx": 0},
-                        "binary": {"slotA": {"data": B64, "mimeType": "image/png", "fileName": "a.png"}},
+                        "binary": {
+                            "slotA": {"data": B64, "mimeType": "image/png", "fileName": "a.png"}
+                        },
                     },
                     {
                         "json": {"ok": True, "idx": 1},
-                        "binary": {"slotB": {"data": B64, "mimeType": "image/png", "fileName": "b.png"}},
+                        "binary": {
+                            "slotB": {"data": B64, "mimeType": "image/png", "fileName": "b.png"}
+                        },
                     },
                 ]
             ]
@@ -91,6 +101,7 @@ def _record():
         ),
     )
 
+
 def test_media_token_substitution_with_item_level_promotion(monkeypatch):
     # Patch internal client for this test only (auto-reverted by monkeypatch)
     monkeypatch.setattr(media_mod, "_MediaClient", DummyMediaClient)
@@ -106,6 +117,7 @@ def test_media_token_substitution_with_item_level_promotion(monkeypatch):
     assert span.output is not None
     # Output is now a dict (not JSON string)
     assert isinstance(span.output, dict), "Output must be dict"
+
     # Walk to ensure tokens present replacing placeholders
     def _contains_token(o):
         if isinstance(o, str) and o.startswith("@@@langfuseMedia:"):
@@ -115,4 +127,5 @@ def test_media_token_substitution_with_item_level_promotion(monkeypatch):
         if isinstance(o, list):
             return any(_contains_token(v) for v in o)
         return False
+
     assert _contains_token(span.output), "Expected media tokens in output after patch"

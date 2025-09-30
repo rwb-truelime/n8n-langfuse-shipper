@@ -4,10 +4,12 @@ These models define the logical structure of traces, spans, and usage data
 before they are converted into OpenTelemetry (OTLP) objects by the `shipper`.
 They serve as the target data structure for the `mapper` module.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -18,6 +20,7 @@ class LangfuseUsage(BaseModel):
     standardized structure. The exporter then maps these fields to the
     corresponding OTel GenAI semantic conventions.
     """
+
     input: Optional[int] = None
     output: Optional[int] = None
     total: Optional[int] = None

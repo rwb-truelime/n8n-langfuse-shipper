@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import uuid5
 
 from src.mapper import (
-    _resolve_parent,
-    _extract_model_and_metadata,
-    _detect_gemini_empty_output_anomaly,
     SPAN_NAMESPACE,
+    _detect_gemini_empty_output_anomaly,
+    _extract_model_and_metadata,
+    _resolve_parent,
 )
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from uuid import uuid5
 
 
 def _simple_record(nodes: list[WorkflowNode], run_data_map):
@@ -30,13 +29,9 @@ def _simple_record(nodes: list[WorkflowNode], run_data_map):
         status="success",
         startedAt=now,
         stoppedAt=now,
-        workflowData=WorkflowData(
-            id="wf-test", name="HelperTest", nodes=nodes
-        ),
+        workflowData=WorkflowData(id="wf-test", name="HelperTest", nodes=nodes),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData=run_data_map)
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=run_data_map))
         ),
     )
 
@@ -56,9 +51,7 @@ def test_resolve_parent_precedence_agent_hierarchy():
     record = _simple_record([node_a, node_agent], {"ToolA": [run_a], "Agent": [run_agent]})
     # Agent hierarchy map: ToolA child of Agent via ai_tool edge (simulate)
     child_agent_map = {"ToolA": ("Agent", "ai_tool")}
-    last_span_for_node = {
-        "Agent": str(uuid5(SPAN_NAMESPACE, f"{record.id}:Agent:0"))
-    }
+    last_span_for_node = {"Agent": str(uuid5(SPAN_NAMESPACE, f"{record.id}:Agent:0"))}
     parent_id, prev_node, prev_run = _resolve_parent(
         node_name="ToolA",
         run=run_a,
@@ -84,7 +77,6 @@ def test_extract_model_and_metadata_parameter_fallback():
     model_val, meta = _extract_model_and_metadata(
         run=run,
         node_name="LLM",
-        node_type=node.type,
         is_generation=True,
         wf_node_obj={"LLM": node},
         raw_input_obj=None,
@@ -122,4 +114,3 @@ def test_gemini_empty_output_anomaly_detection():
     assert meta.get("n8n.gen.empty_output_bug") is True
     # synthetic error inserted
     assert run.error and "Gemini empty output" in run.error.get("message", "")
-

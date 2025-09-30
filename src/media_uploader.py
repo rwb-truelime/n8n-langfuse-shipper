@@ -27,13 +27,13 @@ Reference object inserted into span output JSON in place of original binary:
 Failure handling: fail-open. If an upload fails, the placeholder remains a
 legacy redaction form and span metadata gets `n8n.media.upload_failed=true`.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Any, Dict, Optional
-import logging
 import base64
-import hashlib
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from .models.langfuse import LangfuseTrace
 
@@ -70,10 +70,7 @@ def _build_blob_name(asset: BinaryAsset) -> str:
         candidate = asset.filename.rsplit(".", 1)[-1].lower()[:16]
         if candidate.isalnum():
             ext = f".{candidate}"
-    return (
-        f"{asset.execution_id}/{asset.node_name}/{asset.run_index}/"
-        f"{asset.sha256}{ext}"
-    )
+    return f"{asset.execution_id}/{asset.node_name}/{asset.run_index}/" f"{asset.sha256}{ext}"
 
 
 def _decode_b64_to_bytes(b64_str: str, size_cap: int) -> Optional[bytes]:
@@ -109,9 +106,7 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
     try:
         from azure.storage.blob import BlobServiceClient  # type: ignore
     except Exception as e:  # pragma: no cover - import guard
-        logger.error(
-            "azure-storage-blob dependency missing or failed to import: %s", e
-        )
+        logger.error("azure-storage-blob dependency missing or failed to import: %s", e)
         return
     conn_url = endpoint or f"https://{account}.blob.core.windows.net"
     try:
@@ -146,11 +141,13 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
         # Skip if span output already patched (idempotence in repeated calls)
         try:
             import json
+
             parsed = json.loads(span.output) if span.output else None
         except Exception:
             parsed = None
         if not isinstance(parsed, (dict, list)):
             continue
+
         # Navigate to placeholder via path tokens (path recorded as a.b[c].d)
         # We store only top-level binary replacements inside run.data so we do
         # best-effort path resolution.
@@ -193,6 +190,7 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
                     else:
                         replaced += _replace(v)
             return replaced
+
         # Upload first (so we only patch on success)
         decoded = _decode_b64_to_bytes(asset.content_b64, settings.MEDIA_MAX_BYTES)
         if decoded is None:
@@ -223,6 +221,7 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
         replacements = _replace(parsed)
         try:
             import json
+
             new_output = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
             span.output = new_output
             # Media counter (increment only if we patched a placeholder)
@@ -231,6 +230,7 @@ def upload_media_assets(mapped: MappedTraceWithAssets, settings: Any) -> None:
                 span.metadata["n8n.media.asset_count"] = int(current) + replacements
         except Exception:
             pass
+
 
 __all__ = [
     "BinaryAsset",

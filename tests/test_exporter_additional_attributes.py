@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
-from src.models.langfuse import LangfuseTrace, LangfuseSpan, LangfuseUsage
+from src.models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from src.shipper import _apply_span_attributes
 
 
@@ -33,7 +32,7 @@ def test_usage_details_json_emitted_only_present_keys():
     assert usage_json is not None
     assert '"input_tokens":5' in usage_json
     assert '"total_tokens":7' in usage_json
-    assert 'output_tokens' not in usage_json  # ensure absent key not serialized
+    assert "output_tokens" not in usage_json  # ensure absent key not serialized
 
 
 def test_root_flag_and_trace_identity_serialization():
@@ -64,13 +63,18 @@ def test_root_flag_and_trace_identity_serialization():
     _apply_span_attributes(dummy, root_span)
     # Manually replicate export_trace root attribute setting additions
     import json
+
     dummy.set_attribute("langfuse.trace.name", trace_model.name)
     dummy.set_attribute("langfuse.as_root", True)
     dummy.set_attribute("langfuse.trace.user_id", trace_model.user_id)
     dummy.set_attribute("langfuse.trace.session_id", trace_model.session_id)
     dummy.set_attribute("langfuse.trace.tags", json.dumps(trace_model.tags, separators=(",", ":")))
-    dummy.set_attribute("langfuse.trace.input", json.dumps(trace_model.trace_input, separators=(",", ":")))
-    dummy.set_attribute("langfuse.trace.output", json.dumps(trace_model.trace_output, separators=(",", ":")))
+    dummy.set_attribute(
+        "langfuse.trace.input", json.dumps(trace_model.trace_input, separators=(",", ":"))
+    )
+    dummy.set_attribute(
+        "langfuse.trace.output", json.dumps(trace_model.trace_output, separators=(",", ":"))
+    )
 
     assert dummy.attributes["langfuse.as_root"] is True
     assert dummy.attributes["langfuse.trace.user_id"] == "user-123"

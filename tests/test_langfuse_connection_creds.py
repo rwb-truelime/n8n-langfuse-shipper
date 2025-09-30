@@ -1,5 +1,6 @@
-from langfuse import Langfuse
 import os
+
+from langfuse import Langfuse
 
 # Use env vars (fall back to dummy values for local/dev); avoid hard-coding real secrets in tests.
 langfuse = Langfuse(
@@ -10,13 +11,10 @@ langfuse = Langfuse(
 
 # Simple working trace with one child span and one generation
 with langfuse.start_as_current_span(
-    name="connection-test",
-    metadata={"purpose": "sdk-connectivity"}
+    name="connection-test", metadata={"purpose": "sdk-connectivity"}
 ):
     with langfuse.start_as_current_span(
-        name="sample-span",
-        input={"message": "hello"},
-        output={"response": "world"}
+        name="sample-span", input={"message": "hello"}, output={"response": "world"}
     ):
         pass
 
@@ -27,7 +25,7 @@ with langfuse.start_as_current_span(
         input="What is 2+2?",
         output="4",
         model="dummy-model",
-        metadata={"observation_type": "generation", "model": "dummy-model"}
+        metadata={"observation_type": "generation", "model": "dummy-model"},
     ):
         pass
 

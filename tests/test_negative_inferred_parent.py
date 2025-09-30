@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -44,9 +45,14 @@ def test_no_inferred_parent_when_runtime_source_present():
         workflowData=WorkflowData(
             id="wf-inf",
             name="Inferred Negative WF",
-            nodes=[WorkflowNode(name="A", type="ToolWorkflow"), WorkflowNode(name="B", type="ToolWorkflow")],
+            nodes=[
+                WorkflowNode(name="A", type="ToolWorkflow"),
+                WorkflowNode(name="B", type="ToolWorkflow"),
+            ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     b_span = next(s for s in trace.spans if s.name == "B")

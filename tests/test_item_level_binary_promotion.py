@@ -1,19 +1,18 @@
-import json
 from datetime import datetime, timezone
 
 from src.mapper import map_execution_with_assets
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 # Short base64 repeated to exceed >100 char canonical threshold
-B64 = ("aGVsbG9fYnVpbGRfYmluYXJ5X2RhdGE=" * 8)
+B64 = "aGVsbG9fYnVpbGRfYmluYXJ5X2RhdGE=" * 8
 
 
 def _record():
@@ -68,9 +67,7 @@ def _record():
             connections={},
         ),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData={"NodeY": [run]})
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData={"NodeY": [run]}))
         ),
     )
 

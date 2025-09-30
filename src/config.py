@@ -8,6 +8,7 @@ behavior.
 The `get_settings` function provides a cached, singleton instance of the
 configuration, ensuring consistent settings throughout the application.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -58,8 +59,7 @@ class Settings(BaseSettings):
     TRUNCATE_FIELD_LEN: int = Field(
         default=0,
         description=(
-            "Max length for large text fields (input/output) before truncation "
-            "(0 = disabled)"
+            "Max length for large text fields (input/output) before truncation " "(0 = disabled)"
         ),
     )
 
@@ -149,7 +149,6 @@ class Settings(BaseSettings):
     # are inserted exactly where base64 strings were, with shallow promotion of
     # canonical binary slots. (Former MEDIA_SURFACE_MODE removed.)
 
-
     @model_validator(mode="after")
     def build_dsn_if_needed(self) -> "Settings":
         """Construct the PostgreSQL DSN from component parts if not provided.
@@ -167,7 +166,9 @@ class Settings(BaseSettings):
             pwd = self.DB_POSTGRESDB_PASSWORD or ""
             auth = f"{user}:{pwd}@" if pwd else f"{user}@"
             port = self.DB_POSTGRESDB_PORT or 5432
-            self.PG_DSN = f"postgresql://{auth}{self.DB_POSTGRESDB_HOST}:{port}/{self.DB_POSTGRESDB_DATABASE}"
+            self.PG_DSN = (
+                f"postgresql://{auth}{self.DB_POSTGRESDB_HOST}:{port}/{self.DB_POSTGRESDB_DATABASE}"
+            )
         # DB_TABLE_PREFIX is required (pydantic enforces presence). Allow empty string.
         return self
 

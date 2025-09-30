@@ -18,18 +18,19 @@ Key responsibilities include:
   explicit input override is present.
 - Generating deterministic, repeatable IDs for traces and spans.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from uuid import NAMESPACE_DNS, uuid5
-from dataclasses import dataclass, field
 
-from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .media_api import BinaryAsset, MappedTraceWithAssets
+from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
 from .observation_mapper import map_node_to_observation_type
 
@@ -37,9 +38,7 @@ SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 logger = logging.getLogger(__name__)
 
 
-def _flatten_dict(
-    data: Any, parent_key: str = "", sep: str = "."
-) -> Any:
+def _flatten_dict(data: Any, parent_key: str = "", sep: str = ".") -> Any:
     """Recursively flatten nested dicts/lists to single-level dict.
 
     Transforms nested structures into flat key-value pairs using dot notation
@@ -72,11 +71,7 @@ def _flatten_dict(
 
     # Special case: media placeholders should be preserved as nested dicts
     # (temporary internal structures replaced by media API before export)
-    if (
-        isinstance(data, dict)
-        and data.get("_media_pending") is True
-        and "sha256" in data
-    ):
+    if isinstance(data, dict) and data.get("_media_pending") is True and "sha256" in data:
         return {parent_key: data} if parent_key else data
 
     if isinstance(data, dict):
@@ -102,9 +97,7 @@ def _flatten_dict(
                         break
                     list_key = f"{new_key}{sep}{i}"
                     if isinstance(item, (dict, list)):
-                        items.extend(
-                            _flatten_dict(item, list_key, sep=sep).items()
-                        )
+                        items.extend(_flatten_dict(item, list_key, sep=sep).items())
                     else:
                         items.append((list_key, item))
                 # Handle empty list
@@ -227,10 +220,7 @@ def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
                                 and isinstance(b64, str)
                                 and (
                                     len(b64) > 200
-                                    and (
-                                        _BASE64_RE.match(b64)
-                                        or b64.startswith("/9j/")
-                                    )
+                                    and (_BASE64_RE.match(b64) or b64.startswith("/9j/"))
                                 )
                             ):
                                 return True
@@ -277,9 +267,8 @@ def _strip_binary_payload(obj: Any) -> Any:
                             data_section = bv2.get("data")
                             # Case 1: legacy assumption where data_section is a
                             # dict containing its own 'data'
-                            if (
-                                isinstance(data_section, dict)
-                                and isinstance(data_section.get("data"), str)
+                            if isinstance(data_section, dict) and isinstance(
+                                data_section.get("data"), str
                             ):
                                 ds = data_section.copy()
                                 raw_b64 = ds.get("data", "")
@@ -290,14 +279,11 @@ def _strip_binary_payload(obj: Any) -> Any:
                             # Case 2: common n8n shape where bv2['data'] is
                             # directly the base64 string alongside
                             # mimeType/fileType
-                            elif (
-                                isinstance(data_section, str)
+                            elif isinstance(data_section, str) and (
+                                len(data_section) > 64
                                 and (
-                                    len(data_section) > 64
-                                    and (
-                                        _BASE64_RE.match(data_section)
-                                        or data_section.startswith("/9j/")
-                                    )
+                                    _BASE64_RE.match(data_section)
+                                    or data_section.startswith("/9j/")
                                 )
                             ):
                                 bv2["_omitted_len"] = len(data_section)
@@ -361,6 +347,7 @@ def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[st
         pass
     try:
         import json
+
         raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         raw = str(obj)
@@ -419,6 +406,7 @@ def _unwrap_ai_channel(container: Any) -> Any:
     if len(collected) == 1:
         return collected[0]
     import json
+
     seen: set[str] = set()
     uniq: List[Dict[str, Any]] = []
     for c in collected:
@@ -461,6 +449,7 @@ def _unwrap_generic_json(container: Any) -> Any:
     if len(collected) == 1:
         return collected[0]
     import json
+
     seen: set[str] = set()
     uniq: List[Dict[str, Any]] = []
     for c in collected:
@@ -510,11 +499,23 @@ def _normalize_node_io(obj: Any) -> Tuple[Any, Dict[str, bool]]:
 
 _GENERATION_PROVIDER_MARKERS = [
     # Core providers
-    "openai", "anthropic", "gemini", "mistral", "groq",
+    "openai",
+    "anthropic",
+    "gemini",
+    "mistral",
+    "groq",
     # Chat wrappers / legacy internal labels
-    "lmchat", "lmopenai",
+    "lmchat",
+    "lmopenai",
     # Newly added / upstream supported vendors
-    "cohere", "deepseek", "ollama", "openrouter", "bedrock", "vertex", "huggingface", "xai",
+    "cohere",
+    "deepseek",
+    "ollama",
+    "openrouter",
+    "bedrock",
+    "vertex",
+    "huggingface",
+    "xai",
     # Custom provider marker for Limescape Docs node
     "limescape",
 ]
@@ -541,8 +542,7 @@ def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
         return True
     # Nested search (common n8n shape: {"ai_languageModel": [[{"json": {"tokenUsage": {...}}}]]})
     if any(
-        _find_nested_key(node_run.data, k) is not None
-        for k in ("tokenUsage", "tokenUsageEstimate")
+        _find_nested_key(node_run.data, k) is not None for k in ("tokenUsage", "tokenUsageEstimate")
     ):
         return True
     lowered = node_type.lower()
@@ -596,6 +596,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
                     if found:
                         return found
             return None
+
         tu = _scan_custom(data)
         if not isinstance(tu, dict):
             return None
@@ -608,11 +609,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     # Legacy verbose keys
     p_tokens = tu.get("promptTokens")
     c_tokens = tu.get("completionTokens")
-    t_tokens = (
-        tu.get("totalTokens")
-        or tu.get("totalInputTokens")
-        or tu.get("totalOutputTokens")
-    )
+    t_tokens = tu.get("totalTokens") or tu.get("totalInputTokens") or tu.get("totalOutputTokens")
     # Limescape custom flattened keys (treat totalInputTokens /
     # totalOutputTokens as input/output if canonical missing)
     if input_val is None:
@@ -651,9 +648,7 @@ def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
     return LangfuseUsage(input=input_val, output=output_val, total=total_val)
 
 
-def _find_nested_key(
-    data: Any, target: str, max_depth: int = 150
-) -> Optional[Dict[str, Any]]:
+def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[Dict[str, Any]]:
     """Perform a depth-limited search for a dictionary containing a specific key.
 
     This helper traverses a nested structure of dictionaries and lists to find
@@ -786,9 +781,10 @@ def _extract_model_value(data: Any) -> Optional[str]:
             elif isinstance(current, str):
                 # Light heuristic: only attempt parse if plausible JSON object containing 'model'
                 s = current.strip()
-                if 10 < len(s) < 50_000 and s.startswith('{') and 'model' in s:
+                if 10 < len(s) < 50_000 and s.startswith("{") and "model" in s:
                     # Avoid expensive parsing repeatedly for huge unrelated strings.
                     import json
+
                     try:
                         parsed = json.loads(s)
                         if isinstance(parsed, dict):
@@ -874,8 +870,6 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
                     queue.append((v, f"{path}.{k}", depth + 1))
     return result
 
-
-# --------------------------- Stage 1 Refactor Helpers ---------------------------
 
 def _build_reverse_edges(workflow_data: Any) -> Dict[str, List[str]]:
     """Construct a reverse edge map: node -> list of predecessor node names.
@@ -1013,8 +1007,7 @@ def _prepare_io_and_output(
     truncate_limit: Optional[int],
     collect_binaries: bool = False,
 ) -> Tuple[
-    Any,  # norm_input_obj
-    Any,  # norm_output_obj
+    Any,  # norm_output_obj (needed for Gemini anomaly detection)
     Any,  # input_flat (flattened dict or primitive)
     bool,  # input_trunc
     Any,  # output_flat (flattened dict, extracted string, or primitive)
@@ -1032,7 +1025,7 @@ def _prepare_io_and_output(
          Limescape markdown / ai_ wrapper text) using normalized output object.
       4. If extraction succeeds, use extracted text string; else use flattened dict.
       5. Track truncation flags for metadata (based on original serialized size).
-    
+
     Returns flattened dictionaries (or primitives/strings) ready for LangfuseSpan,
     NOT JSON strings. The shipper will serialize these when creating OTLP attributes.
     """
@@ -1055,7 +1048,7 @@ def _prepare_io_and_output(
             output_flags["promoted_binary_wrapper"] = True
     except Exception:
         pass
-    
+
     # Binary stripping before flattening: Remove binary payloads UNLESS
     # collect_binaries=True (media upload phase inserts placeholders instead)
     if not collect_binaries:
@@ -1063,62 +1056,37 @@ def _prepare_io_and_output(
             norm_input_obj = _strip_binary_payload(norm_input_obj)
         if _contains_binary_marker(norm_output_obj):
             norm_output_obj = _strip_binary_payload(norm_output_obj)
-    
-    # Smart input/output handling: preserve natural content form
-    # - Plain strings → keep as string (markdown renders in Langfuse)
-    # - Single-key dicts with string value → extract string
-    # - Flat dicts (no nesting) → keep as dict (JSON viewer)
-    # - Complex nested structures → flatten to single-level dict
-    def _process_io_field(obj: Any) -> Any:
-        """Process input/output field intelligently."""
-        # Already a primitive? Keep it
-        if isinstance(obj, (str, int, float, bool, type(None))):
-            return obj
-        
-        # List with single dict element? Unwrap one level first
-        if isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], dict):
-            obj = obj[0]
-        
-        # Dictionary processing
-        if isinstance(obj, dict):
-            # Single-key dict with string value? Extract the string
-            if len(obj) == 1:
-                k, v = next(iter(obj.items()))
-                if isinstance(v, str):
-                    # Return string directly for markdown rendering in Langfuse
-                    return v
-            
-            # Check for nesting
-            has_nesting = any(isinstance(v, (dict, list)) for v in obj.values())
-            
-            if has_nesting:
-                # Nested structure → flatten with dot notation
-                return _flatten_dict(obj)
-            else:
-                # Flat dict (no nesting) → keep as-is for JSON viewer
-                return obj
-        
-        # Lists or other complex cases → flatten
-        if isinstance(obj, (list, dict)):
-            return _flatten_dict(obj)
-        
-        return obj
-    
-    # Process input (always use smart logic)
-    input_flat = _process_io_field(norm_input_obj)
-    
-    # Process output (with optional generation-specific extraction)
-    output_flat = norm_output_obj
+
+    # Apply flattening to normalized I/O before passing to LangfuseSpan
+    # This ensures Langfuse UI renders data as flat key-value pairs instead of
+    # nested collapsed trees
+    input_flat = (
+        _flatten_dict(norm_input_obj)
+        if isinstance(norm_input_obj, (dict, list))
+        else norm_input_obj
+    )
+    output_flat = (
+        _flatten_dict(norm_output_obj)
+        if isinstance(norm_output_obj, (dict, list))
+        else norm_output_obj
+    )
+
+    # Track if truncation WOULD have occurred (used for metadata flags)
+    # Note: binary already stripped above, so _serialize_and_truncate won't
+    # need to strip again (but it has safeguards anyway)
+    _, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
+    output_str_temp: Optional[str] = None
+    output_trunc = False
     if is_generation:
-        # Try generation-specific extraction first
         try:
+            candidate = norm_output_obj
             extracted_text: Optional[str] = None
             # Gemini / Vertex structure
-            if isinstance(norm_output_obj, dict):
+            if isinstance(candidate, dict):
                 resp = (
-                    norm_output_obj.get("response")
-                    if isinstance(norm_output_obj.get("response"), dict)
-                    else norm_output_obj
+                    candidate.get("response")
+                    if isinstance(candidate.get("response"), dict)
+                    else candidate
                 )
                 gens = resp.get("generations") if isinstance(resp, dict) else None
                 if isinstance(gens, list) and gens:
@@ -1132,15 +1100,15 @@ def _prepare_io_and_output(
             # Limescape Docs markdown preference
             if (
                 extracted_text is None
-                and isinstance(norm_output_obj, dict)
+                and isinstance(candidate, dict)
                 and "limescape" in node_type.lower()
             ):
-                md_val = norm_output_obj.get("markdown")
+                md_val = candidate.get("markdown")
                 if isinstance(md_val, str) and md_val.strip():
                     extracted_text = md_val
             # Fallback nested ai_* channel text search
-            if extracted_text is None and isinstance(norm_output_obj, dict):
-                for k, v in norm_output_obj.items():
+            if extracted_text is None and isinstance(candidate, dict):
+                for k, v in candidate.items():
                     if k.startswith("ai_") and isinstance(v, list) and v:
                         for layer in v[:3]:
                             if isinstance(layer, list) and layer:
@@ -1152,27 +1120,26 @@ def _prepare_io_and_output(
                                         break
                         if extracted_text:
                             break
-            
-            # Use extracted text if found, else fall through to smart processing
             if extracted_text is not None:
-                output_flat = extracted_text
+                output_str_temp = extracted_text
+                output_trunc = False
         except Exception:
-            # Best-effort; fall back to smart processing
+            # Best-effort; fall back to full serialization
             pass
-    
-    # If no generation extraction occurred, use smart processing
-    if output_flat is norm_output_obj:
-        output_flat = _process_io_field(norm_output_obj)
-    
-    # Track if truncation WOULD have occurred (used for metadata flags)
-    # Note: binary already stripped above, so _serialize_and_truncate won't
-    # need to strip again (but it has safeguards anyway)
-    _, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
-    _, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
-    
+    if output_str_temp is None:
+        output_flat = (
+            _flatten_dict(norm_output_obj)
+            if isinstance(norm_output_obj, (dict, list))
+            else norm_output_obj
+        )
+        _, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
+    else:
+        # Extracted text (e.g., Gemini first generation text) - keep as string
+        output_flat = output_str_temp
+        output_trunc = False
+
     return (
-        norm_input_obj,
-        norm_output_obj,
+        norm_output_obj,  # Only needed for Gemini anomaly detection
         input_flat,  # Flattened input (dict or primitive)
         input_trunc,
         output_flat,  # Flattened output (dict, string, or primitive)
@@ -1182,13 +1149,10 @@ def _prepare_io_and_output(
     )
 
 
-# --------------------------- Stage 3 Refactor Helpers ---------------------------
-
 def _extract_model_and_metadata(
     *,
     run: NodeRun,
     node_name: str,
-    node_type: str,
     is_generation: bool,
     wf_node_obj: Dict[str, WorkflowNode],
     raw_input_obj: Any,
@@ -1279,16 +1243,8 @@ def _detect_gemini_empty_output_anomaly(
         search_struct: Any = norm_output_obj if norm_output_obj is not None else run.data
         tu_source = search_struct if isinstance(search_struct, dict) else run.data
         tu = (
-            (
-                tu_source.get("tokenUsage")
-                if isinstance(tu_source, dict)
-                else None
-            )
-            or (
-                tu_source.get("tokenUsageEstimate")
-                if isinstance(tu_source, dict)
-                else None
-            )
+            (tu_source.get("tokenUsage") if isinstance(tu_source, dict) else None)
+            or (tu_source.get("tokenUsageEstimate") if isinstance(tu_source, dict) else None)
             or {}
         )
         prompt_tokens = None
@@ -1296,14 +1252,10 @@ def _detect_gemini_empty_output_anomaly(
         total_tokens = None
         if isinstance(tu, dict):
             prompt_tokens = (
-                tu.get("promptTokens")
-                or tu.get("inputTokens")
-                or tu.get("input_token_count")
+                tu.get("promptTokens") or tu.get("inputTokens") or tu.get("input_token_count")
             )
             completion_tokens = (
-                tu.get("completionTokens")
-                or tu.get("outputTokens")
-                or tu.get("output_token_count")
+                tu.get("completionTokens") or tu.get("outputTokens") or tu.get("output_token_count")
             )
             total_tokens = tu.get("totalTokens") or tu.get("tokenCount")
         empty_text = False
@@ -1365,12 +1317,14 @@ def _detect_gemini_empty_output_anomaly(
 
 # --------------------------- Stage 4 Refactor: MappingContext ---------------------------
 
+
 @dataclass
 class MappingContext:
     """Aggregate shared mapping state (static + mutable) for clarity.
 
     Pure organizational refactor; behavior must remain unchanged.
     """
+
     trace_id: str
     root_span_id: str
     wf_node_lookup: Dict[str, Dict[str, Optional[str]]]
@@ -1484,11 +1438,11 @@ def _map_execution(
             raw_input_obj = run.inputOverride
         elif prev_node and prev_node in ctx.last_output_data:
             raw_input_obj = {"inferredFrom": prev_node, "data": ctx.last_output_data[prev_node]}
-    # Binary collection (if enabled) operates on a clone to avoid mutating
-    # original run.data object used for input propagation caching. The
-    # placeholders inserted here are later replaced by Langfuse media token
-    # strings (see media_api.patch_and_upload_media). This is a breaking
-    # change from the prior Azure JSON reference object approach.
+        # Binary collection (if enabled) operates on a clone to avoid mutating
+        # original run.data object used for input propagation caching. The
+        # placeholders inserted here are later replaced by Langfuse media token
+        # strings (see media_api.patch_and_upload_media). This is a breaking
+        # change from the prior Azure JSON reference object approach.
         limit_hit = False
         promoted_item_binary = False
         if collect_binaries:
@@ -1519,7 +1473,6 @@ def _map_execution(
             "n8n.node.execution_status": status_norm,
         }
         (
-            norm_input_obj,
             norm_output_obj,
             input_str,
             input_trunc,
@@ -1558,7 +1511,6 @@ def _map_execution(
         model_val, model_meta = _extract_model_and_metadata(
             run=run,
             node_name=node_name,
-            node_type=node_type,
             is_generation=is_generation,
             wf_node_obj=ctx.wf_node_obj,
             raw_input_obj=raw_input_obj,
@@ -1618,9 +1570,7 @@ def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
 ) -> LangfuseTrace:
-    trace, _assets = _map_execution(
-        record, truncate_limit=truncate_limit, collect_binaries=False
-    )
+    trace, _assets = _map_execution(record, truncate_limit=truncate_limit, collect_binaries=False)
     return trace
 
 
@@ -1638,6 +1588,7 @@ def _collect_binary_assets(
     if not isinstance(run_data_obj, dict):
         return run_data_obj, assets, limit_hit, promoted_item_binary
     import copy
+
     cloned = copy.deepcopy(run_data_obj)
     # ---------------- Item-level binary promotion -----------------
     # Some nodes emit only wrapper lists (e.g. main -> [[[ { json, binary } ]]])
@@ -1649,7 +1600,7 @@ def _collect_binary_assets(
         aggregated: dict[str, Any] = {}
         # Candidate wrapper keys we commonly unwrap; we also consider any
         # list-valued top-level key to avoid missing unconventional wrappers.
-        for k, v in list(cloned.items())[:20]:  # bound to avoid pathological cases
+        for _k, v in list(cloned.items())[:20]:  # bound to avoid pathological cases
             if not isinstance(v, list):
                 continue
             # Traverse up to depth 3 (mirrors existing unwrap depth) collecting
@@ -1683,11 +1634,7 @@ def _collect_binary_assets(
             if not isinstance(slot_val, dict):
                 continue
             raw_data = slot_val.get("data")
-            mime = (
-                slot_val.get("mimeType")
-                or slot_val.get("mime_type")
-                or slot_val.get("fileType")
-            )
+            mime = slot_val.get("mimeType") or slot_val.get("mime_type") or slot_val.get("fileType")
             fname = slot_val.get("fileName") or slot_val.get("name")
             base64_str: str | None = None
             if isinstance(raw_data, str) and len(raw_data) > 100:
@@ -1699,7 +1646,9 @@ def _collect_binary_assets(
             if not base64_str:
                 continue
             try:
-                import base64 as _b64, hashlib as _hash
+                import base64 as _b64
+                import hashlib as _hash
+
                 _ = _b64.b64decode(base64_str[:4000], validate=False)
                 full_bytes = _b64.b64decode(base64_str, validate=False)
                 h = _hash.sha256(full_bytes).hexdigest()
@@ -1730,6 +1679,7 @@ def _collect_binary_assets(
             )
     # Discover additional assets outside canonical blocks (extended scan)
     from .config import get_settings  # lazy import to avoid cycle in tests
+
     settings = get_settings()
     extra_assets, extra_limit_hit = _discover_additional_binary_assets(
         cloned,
@@ -1810,7 +1760,9 @@ def _discover_additional_binary_assets(
             limit_hit = True
             return
         try:
-            import base64 as _b64, hashlib as _hash
+            import base64 as _b64
+            import hashlib as _hash
+
             if len(base64_str) < 64:
                 return
             full_bytes = _b64.b64decode(base64_str, validate=False)
@@ -1824,7 +1776,11 @@ def _discover_additional_binary_assets(
                     node_name=node_name,
                     run_index=run_index,
                     field_path=path,
-                    original_path_segments=[seg for seg in re.sub(r"\[[0-9]+\]", "", path).split(".") if seg and seg != "<root>"],
+                    original_path_segments=[
+                        seg
+                        for seg in re.sub(r"\[[0-9]+\]", "", path).split(".")
+                        if seg and seg != "<root>"
+                    ],
                     mime_type=mime if isinstance(mime, str) else None,
                     filename=fname if isinstance(fname, str) else None,
                     size_bytes=len(full_bytes),
@@ -1891,5 +1847,6 @@ def map_execution_with_assets(
         record, truncate_limit=truncate_limit, collect_binaries=collect_binaries
     )
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])
+
 
 __all__ = ["map_execution_to_langfuse", "map_execution_with_assets"]

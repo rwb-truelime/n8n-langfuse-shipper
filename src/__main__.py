@@ -10,23 +10,31 @@ process. It orchestrates the entire ETL pipeline:
 5.  Exporting the traces via OTLP (`shipper.py`).
 6.  Storing the new checkpoint upon successful processing.
 """
+
 from __future__ import annotations
 
-import typer
-from typing import Optional, Any, List, Dict
-from datetime import datetime
-import logging
 import asyncio
-from pydantic import ValidationError
+import logging
 import os
+from datetime import datetime
+from typing import Any, List, Optional
 
+import typer
+from pydantic import ValidationError
+
+from .checkpoint import load_checkpoint, store_checkpoint
 from .config import get_settings
 from .db import ExecutionSource
-from .models.n8n import N8nExecutionRecord, WorkflowData, ExecutionData, ExecutionDataDetails, ResultData
 from .mapper import map_execution_to_langfuse, map_execution_with_assets
-from .shipper import export_trace, shutdown_exporter
-from .checkpoint import load_checkpoint, store_checkpoint
 from .media_api import patch_and_upload_media
+from .models.n8n import (
+    ExecutionData,
+    ExecutionDataDetails,
+    N8nExecutionRecord,
+    ResultData,
+    WorkflowData,
+)
+from .shipper import export_trace, shutdown_exporter
 
 app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
 
@@ -74,6 +82,7 @@ def _build_execution_data(
     if isinstance(raw_data, str):
         try:
             import json
+
             raw_data = json.loads(raw_data)
         except Exception:
             logger.debug("Failed to json.loads execution data string; returning empty runData")
@@ -82,20 +91,28 @@ def _build_execution_data(
     # Optionally attempt decompression if payload looks like base64+gzip and flag enabled.
     if attempt_decompress and isinstance(raw_data, (bytes, str)):
         # Not implemented yet; placeholder for future extension.
-        logger.debug("attempt_decompress flag set but decompression logic not implemented; skipping")
+        logger.debug(
+            "attempt_decompress flag set but decompression logic not implemented; skipping"
+        )
 
     # Special case: some n8n instances store a pointer-compressed array (list) root instead of dict.
     if isinstance(raw_data, list):
-        decoded = _decode_compact_pointer_execution(raw_data, debug=debug, execution_id=execution_id)
+        decoded = _decode_compact_pointer_execution(
+            raw_data, debug=debug, execution_id=execution_id
+        )
         if decoded is not None:
             return decoded
 
     if not raw_data or not isinstance(raw_data, dict):
         # Fallback: attempt to derive runData from workflowData raw if provided (edge cases / custom storage)
         if workflow_data_raw and isinstance(workflow_data_raw, dict):
-            maybe_rd = workflow_data_raw.get("runData") or workflow_data_raw.get("resultData", {}).get("runData")
+            maybe_rd = workflow_data_raw.get("runData") or workflow_data_raw.get(
+                "resultData", {}
+            ).get("runData")
             if isinstance(maybe_rd, dict) and maybe_rd:
-                logger.warning("Using workflowData payload as source for runData (data column empty)")
+                logger.warning(
+                    "Using workflowData payload as source for runData (data column empty)"
+                )
                 return ExecutionData(
                     executionData=ExecutionDataDetails(resultData=ResultData(runData=maybe_rd))
                 )
@@ -103,11 +120,7 @@ def _build_execution_data(
 
     # Helper to materialize ExecutionData from a run_data dict
     def _from_run_data(rd: dict[str, Any]) -> ExecutionData:
-        return ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData=rd)
-            )
-        )
+        return ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=rd)))
 
     # Attempt full pydantic parse first if key present
     if "executionData" in raw_data:
@@ -141,7 +154,9 @@ def _build_execution_data(
     try:
         nested_data = raw_data.get("data")
         if isinstance(nested_data, dict):
-            candidates.append(nested_data.get("executionData", {}).get("resultData", {}).get("runData"))
+            candidates.append(
+                nested_data.get("executionData", {}).get("resultData", {}).get("runData")
+            )
             candidates.append(nested_data.get("resultData", {}).get("runData"))
     except Exception:
         pass
@@ -158,7 +173,9 @@ def _build_execution_data(
 
     # Last chance: workflowData fallback (non-standard)
     if workflow_data_raw and isinstance(workflow_data_raw, dict):
-        maybe_rd = workflow_data_raw.get("runData") or workflow_data_raw.get("resultData", {}).get("runData")
+        maybe_rd = workflow_data_raw.get("runData") or workflow_data_raw.get("resultData", {}).get(
+            "runData"
+        )
         if isinstance(maybe_rd, dict) and maybe_rd:
             logger.warning("Recovered runData from workflowData (non-standard storage)")
             return _from_run_data(maybe_rd)
@@ -242,7 +259,8 @@ def _decode_compact_pointer_execution(
         return None
 
     # Collect NodeRun compatible structures
-    from .models.n8n import NodeRun, NodeRunSource, ExecutionData, ExecutionDataDetails, ResultData
+    from .models.n8n import ExecutionData, ExecutionDataDetails, NodeRun, NodeRunSource, ResultData
+
     node_run_map: dict[str, list[NodeRun]] = {}
 
     def collect_runs(val: Any) -> List[dict[str, Any]]:
@@ -270,7 +288,9 @@ def _decode_compact_pointer_execution(
                 execution_time = int(rd.get("executionTime", rd.get("execution_time", 0)) or 0)
                 status = str(rd.get("executionStatus") or rd.get("status") or "unknown")
                 data_resolved = _resolve_value(rd.get("data"))
-                input_override_resolved = _resolve_value(rd.get("inputOverride")) if rd.get("inputOverride") else None
+                input_override_resolved = (
+                    _resolve_value(rd.get("inputOverride")) if rd.get("inputOverride") else None
+                )
                 source_resolved = _resolve_value(rd.get("source"))
                 sources: list[NodeRunSource] = []
                 if isinstance(source_resolved, dict):
@@ -297,7 +317,6 @@ def _decode_compact_pointer_execution(
                                 pnr = None
                             sources.append(NodeRunSource(previousNode=pn, previousNodeRun=pnr))
                 # Token usage may be referenced separately; attempt inline
-                token_usage = None
                 if isinstance(data_resolved, dict) and "tokenUsage" not in data_resolved:
                     # Heuristic: rd may have tokenUsage pointer
                     tu = _resolve_value(rd.get("tokenUsage"))
@@ -307,9 +326,13 @@ def _decode_compact_pointer_execution(
                     startTime=start_time,
                     executionTime=execution_time,
                     executionStatus=status,
-                    data=data_resolved if isinstance(data_resolved, dict) else {"value": data_resolved},
+                    data=data_resolved
+                    if isinstance(data_resolved, dict)
+                    else {"value": data_resolved},
                     source=sources or None,
-                    inputOverride=input_override_resolved if isinstance(input_override_resolved, dict) else None,
+                    inputOverride=input_override_resolved
+                    if isinstance(input_override_resolved, dict)
+                    else None,
                     error=None,
                 )
                 node_runs.append(node_run)
@@ -329,9 +352,7 @@ def _decode_compact_pointer_execution(
             total_runs,
         )
     return ExecutionData(
-        executionData=ExecutionDataDetails(
-            resultData=ResultData(runData=node_run_map)
-        )
+        executionData=ExecutionDataDetails(resultData=ResultData(runData=node_run_map))
     )
 
 
@@ -347,12 +368,15 @@ def main() -> None:  # pragma: no cover - simple callback
 @app.command(help="Run a single backfill cycle (Iteration 2 basic mapping).")
 def backfill(
     start_after_id: Optional[int] = typer.Option(
-        None, help="Start processing executions with id greater than this value (overrides checkpoint)"
+        None,
+        help="Start processing executions with id greater than this value (overrides checkpoint)",
     ),
     limit: Optional[int] = typer.Option(
         None, help="Maximum number of executions to process in this run"
     ),
-    dry_run: bool = typer.Option(True, help="If true, do not send spans to Langfuse (mapping only)"),
+    dry_run: bool = typer.Option(
+        True, help="If true, do not send spans to Langfuse (mapping only)"
+    ),
     checkpoint_file: Optional[str] = typer.Option(
         None, help="Path to checkpoint file (defaults to settings.CHECKPOINT_FILE)"
     ),
@@ -391,14 +415,16 @@ def backfill(
     settings = get_settings()
     logging.basicConfig(level=settings.LOG_LEVEL)
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
-        typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
+        typer.echo(
+            "Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper"
+        )
     typer.echo("Starting backfill with mapping...")
     # Apply optional runtime overrides for export backpressure tuning
     if export_queue_soft_limit is not None:
         # Runtime override of settings attribute (present on Settings model)
-        setattr(settings, "EXPORT_QUEUE_SOFT_LIMIT", int(export_queue_soft_limit))
+        settings.EXPORT_QUEUE_SOFT_LIMIT = int(export_queue_soft_limit)
     if export_sleep_ms is not None:
-        setattr(settings, "EXPORT_SLEEP_MS", int(export_sleep_ms))
+        settings.EXPORT_SLEEP_MS = int(export_sleep_ms)
     # Determine metadata filter flag: CLI overrides env/settings
     require_meta_flag = (
         require_execution_metadata
@@ -419,9 +445,7 @@ def backfill(
         loaded = load_checkpoint(cp_path)
         if loaded is not None:
             effective_start_after = loaded
-            logging.getLogger(__name__).info(
-                "Loaded checkpoint id %s from %s", loaded, cp_path
-            )
+            logging.getLogger(__name__).info("Loaded checkpoint id %s from %s", loaded, cp_path)
 
     async def _run() -> None:
         count: int = 0
@@ -451,6 +475,7 @@ def backfill(
                 try:
                     import json
                     import os as _os
+
                     _os.makedirs(debug_dump_dir, exist_ok=True)
                     dump_path = _os.path.join(debug_dump_dir, f"execution_{record.id}_data.json")
                     with open(dump_path, "w", encoding="utf-8") as f:
@@ -469,6 +494,7 @@ def backfill(
             # assets to observations. Tokens patched locally after export; the
             # OTLP-exported span output may not include tokens (contract
             # update documented in instructions & README).
+            mapped = None  # Initialize to avoid unbound variable warning
             if settings.ENABLE_MEDIA_UPLOAD:
                 mapped = map_execution_with_assets(
                     record,
@@ -481,14 +507,17 @@ def backfill(
             span_count = len(trace.spans)
             if span_count <= 1:
                 logging.getLogger(__name__).warning(
-                    "Execution %s produced %d span(s); likely missing runData. workflowId=%s", record.id, span_count, record.workflowId
+                    "Execution %s produced %d span(s); likely missing runData. workflowId=%s",
+                    record.id,
+                    span_count,
+                    record.workflowId,
                 )
             else:
                 logging.getLogger(__name__).debug(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
             export_trace(trace, settings, dry_run=dry_run)
-            if settings.ENABLE_MEDIA_UPLOAD and 'mapped' in locals():
+            if settings.ENABLE_MEDIA_UPLOAD and mapped is not None:
                 # Now that OTLP span ids are populated, perform media create + upload.
                 try:
                     patch_and_upload_media(mapped, settings)
@@ -513,9 +542,7 @@ def backfill(
             last_id = int(record.id)
         if not dry_run and last_id is not None:
             store_checkpoint(cp_path, last_id)
-            logging.getLogger(__name__).info(
-                "Stored checkpoint id %s to %s", last_id, cp_path
-            )
+            logging.getLogger(__name__).info("Stored checkpoint id %s to %s", last_id, cp_path)
         typer.echo(
             f"Processed {count} execution(s). dry_run={dry_run} start_after={effective_start_after}"
         )

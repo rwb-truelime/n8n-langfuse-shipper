@@ -41,14 +41,14 @@ Environment Variables (new / simplified):
 Any change to token structure, placeholder keys, create payload fields, or
 required presigned upload headers must update README + instructions + tests.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, cast, Protocol
-import logging
 import base64
-import json
 import binascii
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, cast
 
 import httpx
 
@@ -96,6 +96,7 @@ def _sanitize_mime(mime: Optional[str]) -> Optional[str]:
         return None
     # Conservative: drop unlisted subtype; do not guess a replacement.
     return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -484,12 +485,10 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
         if replacements == 0:  # fallback recursive search
             replacements = _recursive_patch(parsed)
         # Promote canonical binary slot token to shallow key (one-time) for preview.
-        if (
-            replacements > 0
-            and isinstance(parsed, dict)
-            and asset.field_path.startswith("binary.")
-        ):
-            slot = asset.field_path.split(".", 1)[1] if "." in asset.field_path else asset.field_path
+        if replacements > 0 and isinstance(parsed, dict) and asset.field_path.startswith("binary."):
+            slot = (
+                asset.field_path.split(".", 1)[1] if "." in asset.field_path else asset.field_path
+            )
             if slot and slot not in parsed:
                 parsed[slot] = token
                 if span.metadata is not None:
@@ -536,6 +535,7 @@ def relink_media_observations(mapped: MappedTraceWithAssets, settings: _Settings
     # observations before linking. Adjust if future async exporter semantics change.
     try:  # pragma: no cover - timing nondeterministic in tests
         import time
+
         time.sleep(0.25)
     except Exception:  # pragma: no cover - defensive
         pass

@@ -6,13 +6,13 @@ from pathlib import Path
 
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
@@ -38,7 +38,7 @@ def test_no_naive_datetime_patterns():
             for i, line in enumerate(lines, start=1):
                 stripped = line.strip()
                 # Skip comment-only or docstring lines to reduce false positives (documentation references)
-                if stripped.startswith("#") or stripped.startswith("\""):
+                if stripped.startswith("#") or stripped.startswith('"'):
                     continue
                 if "datetime.utcnow(" in stripped:
                     forbidden.append((py_file, i, "datetime.utcnow(", stripped))
@@ -50,10 +50,17 @@ def test_no_naive_datetime_patterns():
                         if not inner:
                             forbidden.append((py_file, i, "datetime.now() naive", stripped))
                         elif "timezone.utc" not in inner and "tz=" not in inner:
-                            forbidden.append((py_file, i, f"datetime.now({inner}) lacks explicit timezone", stripped))
+                            forbidden.append(
+                                (
+                                    py_file,
+                                    i,
+                                    f"datetime.now({inner}) lacks explicit timezone",
+                                    stripped,
+                                )
+                            )
     assert not forbidden, (
-        "Found naive datetime usages (add '# allow-naive-datetime' comment to intentionally allow):\n" +
-        "\n".join(f"{p}:{ln}: {reason} -> {snippet}" for p, ln, reason, snippet in forbidden)
+        "Found naive datetime usages (add '# allow-naive-datetime' comment to intentionally allow):\n"
+        + "\n".join(f"{p}:{ln}: {reason} -> {snippet}" for p, ln, reason, snippet in forbidden)
     )
 
 

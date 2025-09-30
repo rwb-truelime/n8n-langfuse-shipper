@@ -91,7 +91,7 @@ graph TD
 
 * **ALWAYS flattened:** `LangfuseSpan.input`, `LangfuseSpan.output`
 * **NEVER flattened:** `LangfuseSpan.metadata` (metadata keys already flat by design; values may be primitives or small JSON strings)
-* **Special cases:** 
+* **Special cases:**
   - Media token strings (`@@@langfuseMedia:...@@@`) treated as primitive strings during flattening (not decomposed)
   - Media placeholder dicts (`{"_media_pending": True, "sha256": "...", ...}`) preserved as nested objects (temporary internal structures replaced by media API before export)
 

@@ -5,10 +5,12 @@ from the `n8n_execution_entity` and `n8n_execution_data` tables in the n8n
 PostgreSQL database. They are used to safely access nested fields during the
 transformation process in the `mapper` module.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 

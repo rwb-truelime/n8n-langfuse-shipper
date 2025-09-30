@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -34,7 +35,9 @@ def _base_record(node: WorkflowNode, run: NodeRun) -> N8nExecutionRecord:
             name="Params Model",
             nodes=[WorkflowNode(name="Starter", type="ToolWorkflow"), node],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
     )
     return rec
 

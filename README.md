@@ -309,7 +309,7 @@ set -x DB_POSTGRESDB_PASSWORD n8n
 set -x DB_POSTGRESDB_SCHEMA public
 set -x DB_TABLE_PREFIX n8n_
 set -x LANGFUSE_HOST https://cloud.langfuse.com
-set -x LANGFUSE_PUBLIC_KEY lf_pk_... 
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
 set -x LANGFUSE_SECRET_KEY lf_sk_...
 ```
 
@@ -801,5 +801,3 @@ header_search_chars = 250
 ## License
 
 Apache License 2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
-
-

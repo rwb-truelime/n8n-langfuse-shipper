@@ -1,15 +1,14 @@
-import json
 from datetime import datetime, timezone
 
 from src.mapper import map_execution_with_assets
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -49,9 +48,7 @@ def _make_run() -> N8nExecutionRecord:
             connections={},
         ),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData={"NodeA": [run]})
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData={"NodeA": [run]}))
         ),
     )
 

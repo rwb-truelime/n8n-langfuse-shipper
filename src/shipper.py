@@ -15,28 +15,29 @@ Key responsibilities include:
 - Implementing a simple backpressure mechanism to prevent memory overruns during
   high-throughput exports.
 """
+
 from __future__ import annotations
 
 import base64
-import time
 import logging
-from typing import Dict, Any
+import time
+from typing import Any, Dict
 
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import (
     NonRecordingSpan,
-    set_span_in_context,
     SpanContext,
     TraceFlags,
     TraceState,
+    set_span_in_context,
 )
 
-from .models.langfuse import LangfuseTrace, LangfuseSpan
 from .config import Settings
+from .models.langfuse import LangfuseSpan, LangfuseTrace
 
 _initialized = False
 logger = logging.getLogger(__name__)
@@ -136,9 +137,7 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
     if getattr(span_model, "level", None):  # guard for older serialized variants
         span_ot.set_attribute("langfuse.observation.level", span_model.level)
     if getattr(span_model, "status_message", None):
-        span_ot.set_attribute(
-            "langfuse.observation.status_message", span_model.status_message
-        )
+        span_ot.set_attribute("langfuse.observation.status_message", span_model.status_message)
     if span_model.usage:
         if span_model.usage.input is not None:
             span_ot.set_attribute("gen_ai.usage.input_tokens", span_model.usage.input)
@@ -156,7 +155,11 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
             usage_details["total_tokens"] = span_model.usage.total
         if usage_details:
             import json as _json
-            span_ot.set_attribute("langfuse.observation.usage_details", _json.dumps(usage_details, separators=(",", ":")))
+
+            span_ot.set_attribute(
+                "langfuse.observation.usage_details",
+                _json.dumps(usage_details, separators=(",", ":")),
+            )
     # Basic metadata mapping
     for k, v in (span_model.metadata or {}).items():
         if v is not None:
@@ -168,9 +171,7 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
         ):  # defensive for dummy test spans
             span_ot.set_attribute("langfuse.observation.level", "ERROR")
         if not span_model.status_message:
-            span_ot.set_attribute(
-                "langfuse.observation.status_message", str(span_model.error)
-            )
+            span_ot.set_attribute("langfuse.observation.status_message", str(span_model.error))
 
 
 _trace_export_count = 0
@@ -185,11 +186,11 @@ def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
     and left-pad with zeros. This keeps the execution id visually searchable (suffix match)
     while remaining spec compliant.
     """
-    digits = ''.join(ch for ch in execution_id_str if ch.isdigit()) or '0'
+    digits = "".join(ch for ch in execution_id_str if ch.isdigit()) or "0"
     if len(digits) > 32:
         # Very unlikely (n8n execution ids won't be this long); keep last 32 digits
         digits = digits[-32:]
-    hex_str = digits.rjust(32, '0')  # still valid hex (digits only)
+    hex_str = digits.rjust(32, "0")  # still valid hex (digits only)
     return int(hex_str, 16), hex_str
 
 
@@ -233,7 +234,8 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             pass
         # Derive a deterministic parent span id seed from the hex trace id
         import hashlib
-        parent_seed = hashlib.sha256((hex_trace_id + ':parent').encode()).hexdigest()[:16]
+
+        parent_seed = hashlib.sha256((hex_trace_id + ":parent").encode()).hexdigest()[:16]
         parent_span_id = int(parent_seed, 16)
         parent_sc = SpanContext(
             trace_id=int_trace_id,
@@ -270,17 +272,27 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         root_span.set_attribute("session.id", trace_model.session_id)
     if trace_model.tags:
         import json as _json
-        root_span.set_attribute("langfuse.trace.tags", _json.dumps(trace_model.tags, separators=(",", ":")))
+
+        root_span.set_attribute(
+            "langfuse.trace.tags", _json.dumps(trace_model.tags, separators=(",", ":"))
+        )
     if trace_model.trace_input is not None:
         import json as _json
+
         try:
-            root_span.set_attribute("langfuse.trace.input", _json.dumps(trace_model.trace_input, separators=(",", ":")))
+            root_span.set_attribute(
+                "langfuse.trace.input", _json.dumps(trace_model.trace_input, separators=(",", ":"))
+            )
         except Exception:
             root_span.set_attribute("langfuse.trace.input", str(trace_model.trace_input))
     if trace_model.trace_output is not None:
         import json as _json
+
         try:
-            root_span.set_attribute("langfuse.trace.output", _json.dumps(trace_model.trace_output, separators=(",", ":")))
+            root_span.set_attribute(
+                "langfuse.trace.output",
+                _json.dumps(trace_model.trace_output, separators=(",", ":")),
+            )
         except Exception:
             root_span.set_attribute("langfuse.trace.output", str(trace_model.trace_output))
     wf_id_val = trace_model.metadata.get("workflowId")
@@ -288,19 +300,21 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         root_span.set_attribute("langfuse.workflow.id", wf_id_val)
     if root_model.input is not None:
         import json as _json
+
         try:
             root_span.set_attribute(
                 "langfuse.observation.input",
-                _json.dumps(root_model.input, separators=(",", ":"), ensure_ascii=False)
+                _json.dumps(root_model.input, separators=(",", ":"), ensure_ascii=False),
             )
         except Exception:
             root_span.set_attribute("langfuse.observation.input", str(root_model.input))
     if root_model.output is not None:
         import json as _json
+
         try:
             root_span.set_attribute(
                 "langfuse.observation.output",
-                _json.dumps(root_model.output, separators=(",", ":"), ensure_ascii=False)
+                _json.dumps(root_model.output, separators=(",", ":"), ensure_ascii=False),
             )
         except Exception:
             root_span.set_attribute("langfuse.observation.output", str(root_model.output))
@@ -328,32 +342,24 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         _apply_span_attributes(span_ot, child)
         if child.input is not None:
             import json as _json
-            # If input is already a plain string (e.g., extracted generation text),
-            # use it directly without JSON serialization to preserve formatting
-            if isinstance(child.input, str):
-                span_ot.set_attribute("langfuse.observation.input", child.input)
-            else:
-                try:
-                    span_ot.set_attribute(
-                        "langfuse.observation.input",
-                        _json.dumps(child.input, separators=(",", ":"), ensure_ascii=False)
-                    )
-                except Exception:
-                    span_ot.set_attribute("langfuse.observation.input", str(child.input))
+
+            try:
+                span_ot.set_attribute(
+                    "langfuse.observation.input",
+                    _json.dumps(child.input, separators=(",", ":"), ensure_ascii=False),
+                )
+            except Exception:
+                span_ot.set_attribute("langfuse.observation.input", str(child.input))
         if child.output is not None:
             import json as _json
-            # If output is already a plain string (e.g., extracted generation text),
-            # use it directly without JSON serialization to preserve formatting
-            if isinstance(child.output, str):
-                span_ot.set_attribute("langfuse.observation.output", child.output)
-            else:
-                try:
-                    span_ot.set_attribute(
-                        "langfuse.observation.output",
-                        _json.dumps(child.output, separators=(",", ":"), ensure_ascii=False)
-                    )
-                except Exception:
-                    span_ot.set_attribute("langfuse.observation.output", str(child.output))
+
+            try:
+                span_ot.set_attribute(
+                    "langfuse.observation.output",
+                    _json.dumps(child.output, separators=(",", ":"), ensure_ascii=False),
+                )
+            except Exception:
+                span_ot.set_attribute("langfuse.observation.output", str(child.output))
         span_ot.end(end_time=end_ns)
         ctx_lookup[child.id] = span_ot.get_span_context()
 

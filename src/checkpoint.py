@@ -8,6 +8,7 @@ The `store_checkpoint` function uses an atomic write pattern (write to a
 temporary file then rename) to prevent checkpoint corruption if the process is
 interrupted.
 """
+
 from __future__ import annotations
 
 import os

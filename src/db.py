@@ -6,16 +6,17 @@ database and streaming execution records in batches. It handles dynamic table
 naming (schema and prefix), connection management, and resilient fetching with
 exponential backoff.
 """
+
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional, List, Dict, Any, Iterable, TYPE_CHECKING
 import asyncio
 import logging
-from contextlib import asynccontextmanager
-
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import os
 import re
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
+
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 psycopg: Any | None
 dict_row: Any | None
@@ -59,18 +60,18 @@ class ExecutionSource:
     ):
         """Initialize the execution source and resolve database configuration.
 
-    The schema is resolved via explicit arg -> env -> default 'public'.
-    The table prefix is mandatory (explicit arg or DB_TABLE_PREFIX env). No implicit default.
+        The schema is resolved via explicit arg -> env -> default 'public'.
+        The table prefix is mandatory (explicit arg or DB_TABLE_PREFIX env). No implicit default.
 
-        Args:
-            dsn: The full PostgreSQL connection string.
-            batch_size: The number of records to fetch in each database query.
-            schema: The database schema to use.
-            table_prefix: The prefix for n8n's tables (e.g., 'n8n_'). An empty
-                string means no prefix.
-            require_execution_metadata: If True, only executions that have at
-                least one corresponding row in the `execution_metadata` table
-                will be fetched.
+            Args:
+                dsn: The full PostgreSQL connection string.
+                batch_size: The number of records to fetch in each database query.
+                schema: The database schema to use.
+                table_prefix: The prefix for n8n's tables (e.g., 'n8n_'). An empty
+                    string means no prefix.
+                require_execution_metadata: If True, only executions that have at
+                    least one corresponding row in the `execution_metadata` table
+                    will be fetched.
         """
         self._dsn = dsn
         self._batch_size = batch_size
@@ -84,7 +85,9 @@ class ExecutionSource:
             self._table_prefix = table_prefix  # may be empty
         else:
             if "DB_TABLE_PREFIX" not in os.environ:
-                raise RuntimeError("DB_TABLE_PREFIX must be set explicitly (blank allowed for none)")
+                raise RuntimeError(
+                    "DB_TABLE_PREFIX must be set explicitly (blank allowed for none)"
+                )
             self._table_prefix = os.environ.get("DB_TABLE_PREFIX", "")
         # Basic safety: allow only alnum + underscore in prefix & schema
         if not re.fullmatch(r"[A-Za-z0-9_]+", self._schema):
@@ -129,9 +132,7 @@ class ExecutionSource:
         wait=wait_exponential(multiplier=0.5, min=0.5, max=8),
         retry=retry_if_exception_type(Exception),
     )
-    async def _fetch_batch(
-        self, conn: Any, last_id: int, limit: int
-    ) -> List[Dict[str, Any]]:
+    async def _fetch_batch(self, conn: Any, last_id: int, limit: int) -> List[Dict[str, Any]]:
         """Fetch a single batch of execution records from the database.
 
         This method executes a SQL query to get the next batch of records after
@@ -163,11 +164,11 @@ class ExecutionSource:
                 f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
                 f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
                 f'd."workflowData" AS "workflowData", d."data" AS data '
-                f'FROM {entity_table} e '
+                f"FROM {entity_table} e "
                 f'JOIN {data_table} d ON e.id = d."executionId" '
                 f'WHERE e.id > %s AND EXISTS (SELECT 1 FROM {meta_table} m WHERE m."executionId" = e.id) '
-                'ORDER BY e.id ASC '
-                'LIMIT %s'
+                "ORDER BY e.id ASC "
+                "LIMIT %s"
             )
             params = (last_id, limit)
         else:
@@ -175,11 +176,11 @@ class ExecutionSource:
                 f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
                 f'e."startedAt" AS "startedAt", e."stoppedAt" AS "stoppedAt", '
                 f'd."workflowData" AS "workflowData", d."data" AS data '
-                f'FROM {entity_table} e '
+                f"FROM {entity_table} e "
                 f'JOIN {data_table} d ON e.id = d."executionId" '
-                'WHERE e.id > %s '
-                'ORDER BY e.id ASC '
-                'LIMIT %s'
+                "WHERE e.id > %s "
+                "ORDER BY e.id ASC "
+                "LIMIT %s"
             )
             params = (last_id, limit)
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -188,12 +189,16 @@ class ExecutionSource:
             except Exception as ex:  # noqa: BLE001 broad for friendly diagnostics then re-raise
                 # Rollback transaction if it's in failed state to allow subsequent attempts
                 try:
-                    if psycopg is not None and isinstance(ex, getattr(psycopg.errors, "InFailedSqlTransaction", tuple())):
+                    if psycopg is not None and isinstance(
+                        ex, getattr(psycopg.errors, "InFailedSqlTransaction", tuple())
+                    ):
                         await conn.rollback()
                 except Exception:  # pragma: no cover
                     pass
                 # Friendly message for missing tables (likely prefix mismatch)
-                if psycopg is not None and isinstance(ex, getattr(psycopg.errors, "UndefinedTable", tuple())):
+                if psycopg is not None and isinstance(
+                    ex, getattr(psycopg.errors, "UndefinedTable", tuple())
+                ):
                     logger.error(
                         "Table lookup failed. Attempted tables: %s, %s (schema=%s, prefix=%r). "
                         "If your n8n instance uses a different prefix set DB_TABLE_PREFIX accordingly or leave it unset for default 'n8n_'.",
@@ -246,7 +251,9 @@ class ExecutionSource:
                     try:
                         rows = await self._fetch_batch(conn, last_id, batch_limit)
                     except Exception as e:
-                        logger.error("Failed fetching batch after id %s: %s", last_id, e, exc_info=True)
+                        logger.error(
+                            "Failed fetching batch after id %s: %s", last_id, e, exc_info=True
+                        )
                         raise
 
                     if not rows:
@@ -265,8 +272,15 @@ class ExecutionSource:
                     await asyncio.sleep(0)
         except Exception as conn_err:  # pragma: no cover - integration environment dependent
             # Gracefully degrade when DB unreachable so tests without a live Postgres skip behaviorally.
-            logger.warning("Database connection/stream failed: %s (yielded=%d). Returning no rows.", conn_err, yielded)
+            logger.warning(
+                "Database connection/stream failed: %s (yielded=%d). Returning no rows.",
+                conn_err,
+                yielded,
+            )
             return
         logger.info(
-            "Stream completed: yielded=%d start_after_id=%s final_last_id=%d", yielded, start_after_id, last_id
+            "Stream completed: yielded=%d start_after_id=%s final_last_id=%d",
+            yielded,
+            start_after_id,
+            last_id,
         )

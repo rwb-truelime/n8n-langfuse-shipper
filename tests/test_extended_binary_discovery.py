@@ -1,18 +1,20 @@
-import json
 from datetime import datetime, timezone
 
 from src.mapper import map_execution_with_assets
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
-BASE64_IMG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Yl8m38AAAAASUVORK5CYII=" * 2
+BASE64_IMG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Yl8m38AAAAASUVORK5CYII="
+    * 2
+)
 DATA_URL = "data:image/png;base64," + BASE64_IMG
 
 
@@ -39,9 +41,7 @@ def _record(payload):
             connections={},
         ),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData={"NodeX": [run]})
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData={"NodeX": [run]}))
         ),
     )
 
@@ -64,7 +64,9 @@ def test_data_url_discovered():
 
 
 def test_file_like_dict_discovered():
-    rec = _record({"file": {"mimeType": "text/plain", "fileName": "a.txt", "data": ("aGVsbG8=" * 12)}})
+    rec = _record(
+        {"file": {"mimeType": "text/plain", "fileName": "a.txt", "data": ("aGVsbG8=" * 12)}}
+    )
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
     # Output is now a flattened dict (media placeholders stay nested)
@@ -76,13 +78,15 @@ def test_file_like_dict_discovered():
 
 
 def test_long_base64_with_context_keys():
-    rec = _record({
-        "foo": {
-            "mimeType": "application/octet-stream",
-            "fileName": "blob.bin",
-            "payload": ("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=" * 5),
+    rec = _record(
+        {
+            "foo": {
+                "mimeType": "application/octet-stream",
+                "fileName": "blob.bin",
+                "payload": ("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=" * 5),
+            }
         }
-    })
+    )
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
     # Output is now a flattened dict (media placeholders stay nested)

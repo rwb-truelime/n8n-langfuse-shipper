@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -24,9 +25,14 @@ def _base(now, run_data):
         workflowData=WorkflowData(
             id="wf-prop",
             name="Propagation WF",
-            nodes=[WorkflowNode(name="Parent", type="ToolWorkflow"), WorkflowNode(name="Child", type="ToolWorkflow")],
+            nodes=[
+                WorkflowNode(name="Parent", type="ToolWorkflow"),
+                WorkflowNode(name="Child", type="ToolWorkflow"),
+            ],
         ),
-        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=run_data))),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=run_data))
+        ),
     )
 
 
@@ -84,4 +90,3 @@ def test_input_propagation_size_guard_blocks_large_parent():
     child_span = next(s for s in trace.spans if s.name == "Child")
     # Input should be None or not contain inferredFrom due to size guard
     assert not child_span.input or "inferredFrom" not in child_span.input
-

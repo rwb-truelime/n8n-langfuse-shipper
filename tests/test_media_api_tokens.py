@@ -1,25 +1,24 @@
-import json
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
-from src.mapper import map_execution_with_assets, map_execution_to_langfuse
+from src.config import Settings
+from src.mapper import map_execution_to_langfuse, map_execution_with_assets
 from src.media_api import patch_and_upload_media
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.config import Settings
 
 
 def _sample_execution_with_binary() -> N8nExecutionRecord:
-    b64 = ("aGVsbG93b3JsZA==" * 20)  # ensure >100 length threshold
+    b64 = "aGVsbG93b3JsZA==" * 20  # ensure >100 length threshold
     run = NodeRun(
         startTime=1710000000000,
         executionTime=5,
@@ -50,9 +49,7 @@ def _sample_execution_with_binary() -> N8nExecutionRecord:
             connections={},
         ),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData={"BinNode": [run]})
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData={"BinNode": [run]}))
         ),
     )
 

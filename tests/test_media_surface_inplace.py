@@ -1,18 +1,19 @@
 import json
 from datetime import datetime, timezone
+
+from src.config import Settings
+from src.mapper import _map_execution  # type: ignore
+from src.media_api import MappedTraceWithAssets, patch_and_upload_media
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.mapper import _map_execution  # type: ignore
-from src.media_api import patch_and_upload_media, MappedTraceWithAssets
-from src.config import Settings
 
 
 def _build_simple_record(base64_payload: str) -> N8nExecutionRecord:
@@ -42,9 +43,7 @@ def _build_simple_record(base64_payload: str) -> N8nExecutionRecord:
         stoppedAt=datetime.now(tz=timezone.utc),
         workflowData=WorkflowData(id="wf1", name="wf", nodes=[node], connections={}),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData={"ImageNode": [run]})
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData={"ImageNode": [run]}))
         ),
     )
     return record
@@ -67,6 +66,7 @@ def test_inplace_surface_replaces_placeholder(monkeypatch):
             self._json = json_data
             self.status_code = status
             self.text = json.dumps(json_data)
+
         def json(self):
             return self._json
 

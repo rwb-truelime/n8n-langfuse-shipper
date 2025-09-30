@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.__main__ import _decode_compact_pointer_execution
-from src.models.n8n import ExecutionData, ExecutionDataDetails, ResultData, N8nExecutionRecord, WorkflowData, WorkflowNode, NodeRun
 from src.mapper import map_execution_to_langfuse
+from src.models.n8n import (
+    N8nExecutionRecord,
+    WorkflowData,
+    WorkflowNode,
+)
 
 
 def test_pointer_compact_decoding_basic():
@@ -19,10 +24,20 @@ def test_pointer_compact_decoding_basic():
         {"runData": "2"},
         {"NodeA": "3", "NodeB": "4"},
         [
-            {"startTime": now_ms, "executionTime": 10, "executionStatus": "success", "data": {"x":1}},
+            {
+                "startTime": now_ms,
+                "executionTime": 10,
+                "executionStatus": "success",
+                "data": {"x": 1},
+            },
         ],
         [
-            {"startTime": now_ms + 5, "executionTime": 5, "executionStatus": "success", "data": {"y":2}},
+            {
+                "startTime": now_ms + 5,
+                "executionTime": 5,
+                "executionStatus": "success",
+                "data": {"y": 2},
+            },
         ],
     ]
     decoded = _decode_compact_pointer_execution(pool, debug=True, execution_id=55)
@@ -36,10 +51,17 @@ def test_pointer_compact_decoding_basic():
         status="success",
         startedAt=datetime.now(timezone.utc),
         stoppedAt=datetime.now(timezone.utc),
-        workflowData=WorkflowData(id="wf-pointer", name="Pointer WF", nodes=[WorkflowNode(name="NodeA", type="ToolWorkflow"), WorkflowNode(name="NodeB", type="ToolWorkflow")], connections={}),
+        workflowData=WorkflowData(
+            id="wf-pointer",
+            name="Pointer WF",
+            nodes=[
+                WorkflowNode(name="NodeA", type="ToolWorkflow"),
+                WorkflowNode(name="NodeB", type="ToolWorkflow"),
+            ],
+            connections={},
+        ),
         data=decoded,
     )
     trace = map_execution_to_langfuse(record, truncate_limit=None)
     names = [s.name for s in trace.spans]
     assert "NodeA" in names and "NodeB" in names
-

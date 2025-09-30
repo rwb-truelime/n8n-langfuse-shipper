@@ -31,5 +31,3 @@ def test_trace_id_embedding_when_no_digits():
     assert hex_id.endswith("0")
     assert len(hex_id) == 32
     assert int(hex_id, 16) == int_id
-
-

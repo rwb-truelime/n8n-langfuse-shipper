@@ -1,7 +1,15 @@
-import pytest
-from src.mapper import map_execution_to_langfuse, map_execution_with_assets
-from src.models.n8n import N8nExecutionRecord, WorkflowData, WorkflowNode, ExecutionData, ExecutionDataDetails, ResultData, NodeRun
 from datetime import datetime, timezone
+
+from src.mapper import map_execution_to_langfuse, map_execution_with_assets
+from src.models.n8n import (
+    ExecutionData,
+    ExecutionDataDetails,
+    N8nExecutionRecord,
+    NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
+)
 
 
 def _sample_record():
@@ -30,9 +38,7 @@ def _sample_record():
             nodes=[WorkflowNode(name="MyNode", type="test.node")],
             connections={},
         ),
-        data=ExecutionData(
-            executionData=ExecutionDataDetails(resultData=ResultData(runData=rd))
-        ),
+        data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=rd))),
     )
 
 

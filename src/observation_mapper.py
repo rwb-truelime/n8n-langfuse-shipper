@@ -15,9 +15,10 @@ most appropriate classification:
 This logic is a direct port of the JavaScript implementation provided in the
 project's reference materials, with minor Pythonic adjustments.
 """
+
 from __future__ import annotations
 
-from typing import Optional, Dict, Set
+from typing import Dict, Optional, Set
 
 OBS_TYPES = [
     "agent",
@@ -86,7 +87,13 @@ EXACT_SETS: Dict[str, Set[str]] = {
         "VectorStoreZepInsert",
         "VectorStoreZepLoad",
     },
-    "evaluator": {"SentimentAnalysis", "TextClassifier", "InformationExtractor", "RerankerCohere", "OutputParserAutofixing"},
+    "evaluator": {
+        "SentimentAnalysis",
+        "TextClassifier",
+        "InformationExtractor",
+        "RerankerCohere",
+        "OutputParserAutofixing",
+    },
     "guardrail": {"GooglePerspective", "AwsRekognition"},
     "chain": {
         "ChainLlm",
@@ -168,7 +175,9 @@ def _category_fallback(node_type: str, category: Optional[str]) -> Optional[str]
             return None
 
 
-def map_node_to_observation_type(node_type: Optional[str], category: Optional[str]) -> Optional[str]:
+def map_node_to_observation_type(
+    node_type: Optional[str], category: Optional[str]
+) -> Optional[str]:
     """Map an n8n node to a Langfuse observation type using a fallback strategy.
 
     The function follows a specific precedence order to classify the node:

@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+from src.checkpoint import load_checkpoint, store_checkpoint
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.checkpoint import load_checkpoint, store_checkpoint
-import tempfile
-import os
 
 
 def _base_record(run_data):
@@ -33,9 +34,7 @@ def _base_record(run_data):
             ],
         ),
         data=ExecutionData(
-            executionData=ExecutionDataDetails(
-                resultData=ResultData(runData=run_data)
-            )
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=run_data))
         ),
     )
 
@@ -164,6 +163,7 @@ def test_graph_fallback_parent_inference():
 def _agent_hierarchy_execution():
     # Use timezone-aware UTC datetime (explicit timezone to avoid naive patterns).
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     # Connections (pattern-based): all ai_* types should parent to agent
     # Tool1 -> HAL9000 (ai_tool), LLM1 -> HAL9000 (ai_languageModel), Memory1 -> HAL9000 (ai_memory)
