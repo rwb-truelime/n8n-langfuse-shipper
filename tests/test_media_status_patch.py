@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import ClassVar
 
 from src.media_api import (
     BinaryAsset,
@@ -14,12 +15,12 @@ from src.models.langfuse import LangfuseTrace, LangfuseSpan
 
 
 class _Settings:
-    ENABLE_MEDIA_UPLOAD = True
-    LANGFUSE_HOST = "https://example.com"
-    LANGFUSE_PUBLIC_KEY = "pk"
-    LANGFUSE_SECRET_KEY = "sk"
-    OTEL_EXPORTER_OTLP_TIMEOUT = 5
-    MEDIA_MAX_BYTES = 1_000_000
+    ENABLE_MEDIA_UPLOAD: ClassVar[bool] = True
+    LANGFUSE_HOST: ClassVar[str] = "https://example.com"
+    LANGFUSE_PUBLIC_KEY: ClassVar[str] = "pk"
+    LANGFUSE_SECRET_KEY: ClassVar[str] = "sk"
+    OTEL_EXPORTER_OTLP_TIMEOUT: ClassVar[int] = 5
+    MEDIA_MAX_BYTES: ClassVar[int] = 1_000_000
 
 
 class _ClientOK:
@@ -59,7 +60,7 @@ def _build_span():
         start_time=datetime.now(timezone.utc),
         end_time=datetime.now(timezone.utc),
         observation_type="span",
-        output=json.dumps(output),
+        output=output,  # Now a dict, matching mapper behavior
         metadata={"n8n.node.run_index": 0},
     )
     trace = LangfuseTrace(

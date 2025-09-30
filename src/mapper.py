@@ -37,6 +37,103 @@ SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 logger = logging.getLogger(__name__)
 
 
+def _flatten_dict(
+    data: Any, parent_key: str = "", sep: str = "."
+) -> Any:
+    """Recursively flatten nested dicts/lists to single-level dict.
+
+    Transforms nested structures into flat key-value pairs using dot notation
+    for nested keys and numeric indices for list items. This makes data
+    immediately visible in Langfuse UI instead of requiring clicks through
+    collapsed nested objects.
+
+    Args:
+        data: The data structure to flatten (dict, list, or primitive).
+        parent_key: The accumulated key path (used in recursion).
+        sep: Separator for key components (default: ".").
+
+    Returns:
+        A flat dictionary with dot-notation keys, or the original value if
+        it's a primitive type.
+
+    Examples:
+        >>> _flatten_dict({"user": {"name": "Alice"}})
+        {"user.name": "Alice"}
+        >>> _flatten_dict({"items": [1, 2, 3]})
+        {"items.0": 1, "items.1": 2, "items.2": 3}
+        >>> _flatten_dict({"data": {"list": [{"id": 5}]}})
+        {"data.list.0.id": 5}
+    """
+    items: List[Tuple[str, Any]] = []
+
+    # Special case: media tokens should be treated as primitive strings
+    if isinstance(data, str) and data.startswith("@@@langfuseMedia:"):
+        return {parent_key: data} if parent_key else data
+
+    # Special case: media placeholders should be preserved as nested dicts
+    # (temporary internal structures replaced by media API before export)
+    if (
+        isinstance(data, dict)
+        and data.get("_media_pending") is True
+        and "sha256" in data
+    ):
+        return {parent_key: data} if parent_key else data
+
+    if isinstance(data, dict):
+        for k, v in data.items():
+            # Convert non-string keys to strings
+            key_str = str(k) if not isinstance(k, str) else k
+            new_key = f"{parent_key}{sep}{key_str}" if parent_key else key_str
+
+            # Edge case: truncate very long keys (>200 chars)
+            if len(new_key) > 200:
+                new_key = new_key[:197] + "..._truncated"
+
+            # Recursively flatten
+            if isinstance(v, dict):
+                items.extend(_flatten_dict(v, new_key, sep=sep).items())
+            elif isinstance(v, list):
+                # Flatten lists with numeric indices
+                for i, item in enumerate(v):
+                    # Cap large arrays at 1000 items
+                    if i >= 1000:
+                        items.append((f"{new_key}._length", len(v)))
+                        items.append((f"{new_key}._truncated", True))
+                        break
+                    list_key = f"{new_key}{sep}{i}"
+                    if isinstance(item, (dict, list)):
+                        items.extend(
+                            _flatten_dict(item, list_key, sep=sep).items()
+                        )
+                    else:
+                        items.append((list_key, item))
+                # Handle empty list
+                if len(v) == 0:
+                    items.append((new_key, "[]"))
+            else:
+                # Primitive value (including None, media tokens, etc.)
+                items.append((new_key, v))
+    elif isinstance(data, list):
+        # Top-level list
+        for i, item in enumerate(data):
+            if i >= 1000:
+                items.append((f"{parent_key}._length", len(data)))
+                items.append((f"{parent_key}._truncated", True))
+                break
+            list_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
+            if isinstance(item, (dict, list)):
+                items.extend(_flatten_dict(item, list_key, sep=sep).items())
+            else:
+                items.append((list_key, item))
+        if len(data) == 0:
+            return {parent_key: "[]"} if parent_key else {"_empty_list": "[]"}
+    else:
+        # Primitive type at root
+        return {parent_key: data} if parent_key else data
+
+    return dict(items)
+
+
 def _epoch_ms_to_dt(ms: int) -> datetime:
     """Convert an epoch timestamp (ms or s) to a timezone-aware UTC datetime.
 
@@ -914,26 +1011,30 @@ def _prepare_io_and_output(
     is_generation: bool,
     node_type: str,
     truncate_limit: Optional[int],
+    collect_binaries: bool = False,
 ) -> Tuple[
     Any,  # norm_input_obj
     Any,  # norm_output_obj
-    Optional[str],  # input_str
+    Any,  # input_flat (flattened dict or primitive)
     bool,  # input_trunc
-    Optional[str],  # output_str (possibly extracted text)
+    Any,  # output_flat (flattened dict, extracted string, or primitive)
     bool,  # output_trunc
     Dict[str, bool],  # input_flags
     Dict[str, bool],  # output_flags
 ]:
-    """Normalize and serialize input/output plus generation text extraction.
+    """Normalize, flatten input/output, and extract generation text.
 
-    This consolidates prior inline logic to reduce complexity in the main loop.
-    The behavior is intentionally identical to the pre-refactor implementation:
+    This consolidates I/O preparation logic:
       1. Normalize (unwrap AI channel then generic json) for input & output.
-      2. Serialize & truncate (with binary stripping) input first.
-      3. For generation spans attempt concise textual extraction (Gemini / Limescape
-         markdown / ai_ wrapper text) using the normalized output object.
-      4. If extraction succeeds, use extracted text (never truncated); else serialize
-         normalized output with truncation.
+      2. Strip binaries (unless collect_binaries=True for media upload phase).
+      3. Flatten normalized structures to single-level dicts (dot notation keys).
+      4. For generation spans, attempt concise textual extraction (Gemini /
+         Limescape markdown / ai_ wrapper text) using normalized output object.
+      4. If extraction succeeds, use extracted text string; else use flattened dict.
+      5. Track truncation flags for metadata (based on original serialized size).
+    
+    Returns flattened dictionaries (or primitives/strings) ready for LangfuseSpan,
+    NOT JSON strings. The shipper will serialize these when creating OTLP attributes.
     """
     norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
     norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
@@ -954,8 +1055,34 @@ def _prepare_io_and_output(
             output_flags["promoted_binary_wrapper"] = True
     except Exception:
         pass
-    input_str, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
-    output_str: Optional[str] = None
+    
+    # Binary stripping before flattening: Remove binary payloads UNLESS
+    # collect_binaries=True (media upload phase inserts placeholders instead)
+    if not collect_binaries:
+        if _contains_binary_marker(norm_input_obj):
+            norm_input_obj = _strip_binary_payload(norm_input_obj)
+        if _contains_binary_marker(norm_output_obj):
+            norm_output_obj = _strip_binary_payload(norm_output_obj)
+    
+    # Apply flattening to normalized I/O before passing to LangfuseSpan
+    # This ensures Langfuse UI renders data as flat key-value pairs instead of
+    # nested collapsed trees
+    input_flat = (
+        _flatten_dict(norm_input_obj)
+        if isinstance(norm_input_obj, (dict, list))
+        else norm_input_obj
+    )
+    output_flat = (
+        _flatten_dict(norm_output_obj)
+        if isinstance(norm_output_obj, (dict, list))
+        else norm_output_obj
+    )
+    
+    # Track if truncation WOULD have occurred (used for metadata flags)
+    # Note: binary already stripped above, so _serialize_and_truncate won't
+    # need to strip again (but it has safeguards anyway)
+    _, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
+    output_str_temp: Optional[str] = None
     output_trunc = False
     if is_generation:
         try:
@@ -1001,21 +1128,29 @@ def _prepare_io_and_output(
                         if extracted_text:
                             break
             if extracted_text is not None:
-                output_str = extracted_text
+                output_str_temp = extracted_text
                 output_trunc = False
         except Exception:
             # Best-effort; fall back to full serialization
             pass
-    if output_str is None:
-        output_str, output_trunc = _serialize_and_truncate(
-            norm_output_obj, truncate_limit
+    if output_str_temp is None:
+        output_flat = (
+            _flatten_dict(norm_output_obj)
+            if isinstance(norm_output_obj, (dict, list))
+            else norm_output_obj
         )
+        _, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
+    else:
+        # Extracted text (e.g., Gemini first generation text) - keep as string
+        output_flat = output_str_temp
+        output_trunc = False
+    
     return (
         norm_input_obj,
         norm_output_obj,
-        input_str,
+        input_flat,  # Flattened input (dict or primitive)
         input_trunc,
-        output_str,
+        output_flat,  # Flattened output (dict, string, or primitive)
         output_trunc,
         input_flags,
         output_flags,
@@ -1218,6 +1353,7 @@ class MappingContext:
     reverse_edges: Dict[str, List[str]]
     child_agent_map: Dict[str, Tuple[str, str]]
     truncate_limit: Optional[int]
+    collect_binaries: bool = False
     last_span_for_node: Dict[str, str] = field(default_factory=dict)
     last_output_data: Dict[str, Any] = field(default_factory=dict)
 
@@ -1293,6 +1429,7 @@ def _map_execution(
         reverse_edges=_build_reverse_edges(record.workflowData),
         child_agent_map=_build_child_agent_map(record.workflowData),
         truncate_limit=truncate_limit,
+        collect_binaries=collect_binaries,
     )
     run_data = record.data.executionData.resultData.runData
     flattened = _flatten_runs(run_data)
@@ -1371,6 +1508,7 @@ def _map_execution(
             is_generation=is_generation,
             node_type=node_type,
             truncate_limit=ctx.truncate_limit,
+            collect_binaries=ctx.collect_binaries,
         )
         if input_flags.get("unwrapped_ai_channel") or output_flags.get("unwrapped_ai_channel"):
             metadata["n8n.io.unwrapped_ai_channel"] = True

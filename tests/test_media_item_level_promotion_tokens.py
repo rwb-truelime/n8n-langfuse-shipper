@@ -104,7 +104,8 @@ def test_media_token_substitution_with_item_level_promotion(monkeypatch):
     assert span.metadata.get("n8n.io.promoted_item_binary") is True
     assert span.metadata.get("n8n.media.asset_count") == 2
     assert span.output is not None
-    parsed = json.loads(span.output)
+    # Output is now a dict (not JSON string)
+    assert isinstance(span.output, dict), "Output must be dict"
     # Walk to ensure tokens present replacing placeholders
     def _contains_token(o):
         if isinstance(o, str) and o.startswith("@@@langfuseMedia:"):
@@ -114,4 +115,4 @@ def test_media_token_substitution_with_item_level_promotion(monkeypatch):
         if isinstance(o, list):
             return any(_contains_token(v) for v in o)
         return False
-    assert _contains_token(parsed), "Expected media tokens in span output after patch phase"
+    assert _contains_token(span.output), "Expected media tokens in output after patch"

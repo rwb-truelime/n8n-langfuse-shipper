@@ -4,6 +4,7 @@ import json
 import base64
 import hashlib
 from datetime import datetime, timezone
+from typing import ClassVar
 
 from src.media_api import (
     BinaryAsset,
@@ -14,12 +15,12 @@ from src.models.langfuse import LangfuseTrace, LangfuseSpan
 
 
 class _Settings:
-    ENABLE_MEDIA_UPLOAD = True
-    LANGFUSE_HOST = "https://example.com"
-    LANGFUSE_PUBLIC_KEY = "pk"
-    LANGFUSE_SECRET_KEY = "sk"
-    OTEL_EXPORTER_OTLP_TIMEOUT = 5
-    MEDIA_MAX_BYTES = 1_000_000
+    ENABLE_MEDIA_UPLOAD: ClassVar[bool] = True
+    LANGFUSE_HOST: ClassVar[str] = "https://example.com"
+    LANGFUSE_PUBLIC_KEY: ClassVar[str] = "pk"
+    LANGFUSE_SECRET_KEY: ClassVar[str] = "sk"
+    OTEL_EXPORTER_OTLP_TIMEOUT: ClassVar[int] = 5
+    MEDIA_MAX_BYTES: ClassVar[int] = 1_000_000
 
 
 class _DummyClient:
@@ -61,7 +62,7 @@ def test_media_inplace_preview(monkeypatch):
         start_time=datetime.now(timezone.utc),
         end_time=datetime.now(timezone.utc),
         observation_type="span",
-        output=json.dumps(nested),
+        output=nested,  # Now a dict, matching mapper behavior
         metadata={"n8n.node.run_index": 0},
     )
     trace = LangfuseTrace(
@@ -85,15 +86,16 @@ def test_media_inplace_preview(monkeypatch):
     mapped = MappedTraceWithAssets(trace=trace, assets=[asset])
     patch_and_upload_media(mapped, _Settings)
     assert span.output is not None
-    parsed = json.loads(span.output)
+    # Output is now a dict (not JSON string)
+    assert isinstance(span.output, dict), "Output must be dict"
     # In-place surfacing removed hoist; ensure token present at original nested path.
-    assert "_media_preview" not in parsed, "Hoist key should not exist after simplification"
-    assert parsed["binary"]["data"]["data"].startswith(
+    assert "_media_preview" not in span.output, "Hoist key should not exist"
+    assert span.output["binary"]["data"]["data"].startswith(
         "@@@langfuseMedia:"
     ), "Nested token should be replaced in-place"
     # This path includes an 'output.' prefix in field_path so promotion condition
     # (asset.field_path.startswith("binary.")) is not met; no shallow key expected.
-    assert "data" not in parsed, "Did not expect shallow promotion for non-canonical field path"
+    assert "data" not in span.output, "Did not expect shallow promotion"
     # Metadata flags (preview_surface still set due to in-place replacement)
     assert span.metadata.get("n8n.media.preview_surface") is True
     assert span.metadata.get("n8n.media.promoted_from_binary") is not True

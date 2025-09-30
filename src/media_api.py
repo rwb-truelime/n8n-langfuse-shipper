@@ -296,11 +296,11 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
         span = span_index.get((asset.node_name, asset.run_index))
         if not span:
             continue
-        # Parse existing JSON output
-        try:
-            parsed = json.loads(span.output) if span.output else None
-        except Exception:
-            parsed = None
+        # span.output is now a flattened dict (or string for extracted text), not JSON
+        if isinstance(span.output, str):
+            # Extracted text (e.g., Gemini generation) - skip media patching
+            continue
+        parsed = span.output
         if not isinstance(parsed, (dict, list)):
             continue
         # Decode base64 with size guard
@@ -499,26 +499,12 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
             # a surface location suitable for preview heuristics.
             span.metadata["n8n.media.preview_surface"] = True
         if replacements > 0:
-            try:
-                span.output = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-                if span.metadata is not None:
-                    current = span.metadata.get("n8n.media.asset_count") or 0
-                    span.metadata["n8n.media.asset_count"] = int(current) + replacements
-                    # Surface mode constant (removed configurability) for observability.
-                    span.metadata["n8n.media.surface_mode"] = "inplace"
-            except Exception:
-                # If serialization fails we leave old output; mark failure
-                logger.warning(
-                    "media patch_failed asset=%s media_id=%s code=%s",
-                    asset.sha256,
-                    media_id,
-                    "serialization_error",
-                )
-                if span.metadata is not None:
-                    span.metadata["n8n.media.upload_failed"] = True
-                    span.metadata.setdefault("n8n.media.error_codes", []).append(
-                        "serialization_error"
-                    )
+            # span.output already contains the modified dict; no re-serialization needed
+            if span.metadata is not None:
+                current = span.metadata.get("n8n.media.asset_count") or 0
+                span.metadata["n8n.media.asset_count"] = int(current) + replacements
+                # Surface mode constant (removed configurability) for observability.
+                span.metadata["n8n.media.surface_mode"] = "inplace"
 
     # Legacy hoist pass removed – in-place surfacing ensures preview depth.
 

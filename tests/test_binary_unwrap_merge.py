@@ -61,16 +61,14 @@ def test_binary_preserved_after_unwrap_merge():
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = next(s for s in mapped.trace.spans if s.name == "NodeA")
     assert span.output is not None
-    parsed = json.loads(str(span.output))
-    # Assert unwrapped json content present
-    assert parsed.get("foo") == "bar" or (
-        isinstance(parsed, dict) and any(v.get("foo") == "bar" for v in parsed.values() if isinstance(v, dict))
-    )
-    # Assert binary placeholder (media pending) preserved
-    bin_section = parsed.get("binary")
-    assert isinstance(bin_section, dict) and "file" in bin_section
-    file_entry = bin_section["file"]
-    assert isinstance(file_entry, dict)
-    # Placeholder inserted by _collect_binary_assets
-    assert isinstance(file_entry.get("data"), dict) and file_entry["data"].get("_media_pending") is True
-    assert "base64_len" in file_entry["data"] and isinstance(file_entry["data"]["base64_len"], int)
+    # Output is now a flattened dict (not JSON string)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    # Assert unwrapped json content present in flattened form
+    assert span.output.get("foo") == "bar", "Expected foo key in flattened output"
+    # Assert binary placeholder (media pending) preserved as nested dict
+    # Media placeholders are kept nested (not flattened) for media API patching
+    data_val = span.output.get("binary.file.data")
+    assert isinstance(data_val, dict), "Expected nested placeholder dict"
+    assert data_val.get("_media_pending") is True, "Expected _media_pending flag"
+    assert "sha256" in data_val, "Expected sha256 in placeholder"
+    assert "base64_len" in data_val, "Expected base64_len in placeholder"

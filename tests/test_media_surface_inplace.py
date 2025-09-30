@@ -91,11 +91,16 @@ def test_inplace_surface_replaces_placeholder(monkeypatch):
     patch_and_upload_media(mapped, settings)
     span = [s for s in mapped.trace.spans if s.name == "ImageNode"][0]
     assert span.output is not None
-    parsed = json.loads(span.output)
-    # Token must have replaced original placeholder in-place under binary.image.data
-    assert parsed.get("binary", {}).get("image", {}).get("data", "").startswith("@@@langfuseMedia:")
+    # Output is now a dict (not JSON string)
+    assert isinstance(span.output, dict), "Output must be dict"
+    # Token must have replaced original placeholder at flattened key binary.image.data
+    assert span.output.get("binary.image.data", "").startswith(
+        "@@@langfuseMedia:"
+    ), "Expected media token at binary.image.data"
     # A shallow promotion adds key 'image'
-    assert parsed.get("image", "").startswith("@@@langfuseMedia:")
+    assert span.output.get("image", "").startswith(
+        "@@@langfuseMedia:"
+    ), "Expected promoted media token at 'image'"
     assert span.metadata.get("n8n.media.surface_mode") == "inplace"
     assert span.metadata.get("n8n.media.preview_surface") is True
     assert span.metadata.get("n8n.media.promoted_from_binary") is True

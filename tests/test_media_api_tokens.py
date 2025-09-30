@@ -119,9 +119,12 @@ def test_media_api_token_patch():
     patch_and_upload_media(mapped, settings)
     span = next(s for s in mapped.trace.spans if s.name == "BinNode")
     assert span.output is not None
-    assert span.output is not None
-    parsed = json.loads(str(span.output))
-    token = parsed["binary"]["file"]["data"]
+    # Output is now a flattened dict
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    # Check for media token in flattened keys: binary.file.data
+    token_key = "binary.file.data"
+    assert token_key in span.output, f"Expected {token_key} in flattened output"
+    token = span.output[token_key]
     assert isinstance(token, str) and token.startswith("@@@langfuseMedia:")
     # Ensure asset count metadata present
     assert span.metadata.get("n8n.media.asset_count") == 1
@@ -157,8 +160,11 @@ def test_media_api_token_patch_deduplicated(monkeypatch):
     span = next(s for s in mapped.trace.spans if s.name == "BinNode")
     # Ensure non-None then cast to string for static type checkers (span.output: Any|None)
     assert span.output is not None
-    parsed = json.loads(str(span.output))
-    token = parsed["binary"]["file"]["data"]
+    # Output is now a flattened dict
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    token_key = "binary.file.data"
+    assert token_key in span.output, f"Expected {token_key} in flattened output"
+    token = span.output[token_key]
     # Token should reference deduplicated id from fake_post response OR follow m_* pattern
     assert token.startswith("@@@langfuseMedia:")
     assert ("dedupe_1" in token) or ("|id=m_" in token)

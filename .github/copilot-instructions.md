@@ -14,15 +14,16 @@ Use these exact meanings in code comments, docs, and tests. Adding a new term? U
 
 * **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent.
 * **Backpressure:** Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) triggering exporter flush + sleep.
-* **Binary Stripping:** Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
+* **Binary Stripping:** Phase 1 of binary handling (always active). Unconditional replacement of binary/base64-like payloads with redaction placeholders during mapping. Prevents large blobs from bloating exports. Independent of truncation setting.
 * **Checkpoint:** Persistent last processed execution id stored on successful export; guarantees idempotent resume.
 * **Deterministic IDs:** Stable UUIDv5 span ids and raw execution id as logical trace id; re-processing identical input yields identical structure.
 * **Execution:** Single joined `execution_entity` + `execution_data` record; maps to exactly one Langfuse trace.
 * **Execution id:** Raw integer primary key; appears only once as root span metadata `n8n.execution.id`.
+* **Flattening:** Recursive transformation of nested dictionaries/lists into single-level dictionaries using dot notation for keys (e.g., `parent.child.0.field`). Applied unconditionally to ALL span inputs and outputs before export.
 * **Generation:** Span classified as LLM call via heuristics (`tokenUsage` presence OR provider substring) optionally with token usage and model metadata.
 * **Human-readable Trace ID (OTLP):** 32-hex trace id produced by `_build_human_trace_id` embedding zero-padded execution id digits as suffix.
 * **Input Propagation:** Injecting parent span raw output as child logical input when `inputOverride` absent.
-* **Multimodality / Media Upload:** Feature-flag gated Langfuse Media API token flow. Mapper collects binary assets inserting temporary placeholders; post-map phase exchanges each for stable Langfuse media token string. Fail-open: on error or oversize, original redaction placeholder stays.
+* **Multimodality / Media Upload:** Phase 2 of binary handling (optional, feature-flag gated). Post-map phase attempts to upload collected binary assets to Langfuse Media API, exchanging redaction placeholders for stable media token strings. Fail-open: on error or oversize, leaves original redaction placeholder. When disabled (`ENABLE_MEDIA_UPLOAD=false`), Phase 1 redaction placeholders remain in exported spans.
 * **NodeRun:** Runtime execution instance of a workflow node (timing, status, source chain, outputs, error).
 * **Observation Type:** Semantic classification (agent/tool/chain/etc.) via fallback chain: exact → regex → category → default span.
 * **Parent Resolution Precedence:** Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
@@ -68,6 +69,80 @@ graph TD
 10. **Checkpoint:** Persist last successful execution id.
 
 **Root-only fallback:** Malformed/missing `runData` still produces trace with execution root span; never drop execution silently.
+
+---
+
+## Data Flattening (Mandatory for Langfuse UI)
+
+**Problem:** Nested JSON structures in Langfuse input/output fields render as unreadable collapsed trees in the UI, requiring excessive clicking to explore data.
+
+**Solution:** ALL span input and output dictionaries MUST be flattened to single-level key-value pairs before export.
+
+### Flattening Rules
+
+1. **Nested dicts:** Use dot notation. `{"user": {"name": "Alice"}}` → `{"user.name": "Alice"}`
+2. **Lists/arrays:** Use numeric indices. `{"items": [1, 2, 3]}` → `{"items.0": 1, "items.1": 2, "items.2": 3}`
+3. **Mixed nesting:** Combine both. `{"data": {"items": [{"id": 5}]}}` → `{"data.items.0.id": 5}`
+4. **Primitives:** Remain unchanged. `{"count": 42}` → `{"count": 42}`
+5. **Null values:** Preserved. `{"missing": null}` → `{"missing": null}`
+6. **Empty containers:** Represented. `{"empty": []}` → `{"empty": "[]"}` or `{"empty._length": 0}`
+
+### Scope
+
+* **ALWAYS flattened:** `LangfuseSpan.input`, `LangfuseSpan.output`
+* **NEVER flattened:** `LangfuseSpan.metadata` (metadata keys already flat by design; values may be primitives or small JSON strings)
+* **Special cases:** 
+  - Media token strings (`@@@langfuseMedia:...@@@`) treated as primitive strings during flattening (not decomposed)
+  - Media placeholder dicts (`{"_media_pending": True, "sha256": "...", ...}`) preserved as nested objects (temporary internal structures replaced by media API before export)
+
+### Implementation Location
+
+Flattening occurs in `mapper.py` immediately before constructing `LangfuseSpan` objects. Helper function: `_flatten_dict(data: Any, parent_key: str = "", sep: str = ".") -> Dict[str, Any]`.
+
+### Example Transformation
+
+**Before (nested):**
+```json
+{
+  "input": {
+    "query": "hello",
+    "config": {
+      "model": "gpt-4",
+      "params": {"temp": 0.7}
+    },
+    "history": [
+      {"role": "user", "content": "hi"}
+    ]
+  }
+}
+```
+
+**After (flattened):**
+```json
+{
+  "input.query": "hello",
+  "input.config.model": "gpt-4",
+  "input.config.params.temp": 0.7,
+  "input.history.0.role": "user",
+  "input.history.0.content": "hi"
+}
+```
+
+### Edge Cases
+
+* **Very deep nesting (>10 levels):** Allowed but monitor key length; truncate key if exceeds reasonable limit (e.g., 200 chars) and append `..._truncated`.
+* **Large arrays (>1000 items):** Flatten up to limit, add synthetic key `<path>._length` with total count, `<path>._truncated` = true.
+* **Non-string dict keys:** Convert to string (`str(key)`).
+* **Circular references:** Should not occur post binary-stripping; if detected, replace with `"<circular_reference>"` string.
+
+### Testing
+
+* `test_flattening.py`: Assert nested inputs/outputs converted to flat dicts; verify dot notation; check array indexing; validate edge cases.
+* Existing tests (`test_mapper.py`, `test_generation_heuristic.py`) MUST be updated to expect flattened outputs.
+
+### Rationale
+
+Langfuse UI displays each top-level key as a separate row. Nested objects collapse into unreadable widgets. Flattening makes all data immediately visible and searchable, dramatically improving trace inspection UX.
 
 ---
 
@@ -179,10 +254,11 @@ class LangfuseTrace(BaseModel):
 4. All timestamps are timezone-aware UTC. Naive datetimes normalized to UTC. Never use `datetime.utcnow()`.
 5. Spans emitted strictly in chronological order (NodeRun `startTime`) so parents precede children.
 6. Binary/base64 stripping ALWAYS applies. Truncation is opt-in (`TRUNCATE_FIELD_LEN=0` disables truncation but not binary stripping).
-7. Parsing failures still yield a root span; never drop execution silently.
-8. All internal data structures defined with Pydantic models (validation + type safety mandatory).
-9. Database access is read-only (SELECTs only); respects dynamic table prefix logic.
-10. Determinism: identical input rows yield identical span/trace ids & structures.
+7. **Flattened input/output MANDATORY:** ALL span input and output fields MUST be flattened to single-level dictionaries. NO nested objects allowed. Use dot notation for key names (e.g., `user.name`, `data.items.0.value`). Nested structures make Langfuse UI unreadable.
+8. Parsing failures still yield a root span; never drop execution silently.
+9. All internal data structures defined with Pydantic models (validation + type safety mandatory).
+10. Database access is read-only (SELECTs only); respects dynamic table prefix logic.
+11. Determinism: identical input rows yield identical span/trace ids & structures.
 
 ---
 
@@ -477,6 +553,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Deterministic IDs | Same input → identical trace & span ids | `test_deterministic_ids.py` |
 | Parent Resolution | Precedence order enforced | `test_parent_resolution_*` |
 | Binary Stripping | All large/base64 & binary objects redacted | `test_binary_stripping.py` |
+| **Flattening** | **All span input/output flattened; no nested objects** | **`test_flattening.py`** |
 | Truncation & Propagation | Size guard only active when >0; propagation always | `test_truncation_propagation.py` |
 | Generation Detection | Only spans meeting heuristics classified | `test_generation_detection.py` |
 | Pointer Decoding | Pointer-compressed arrays reconstructed | `test_pointer_decoding.py` |
@@ -546,8 +623,11 @@ Add/update tests when:
 3. Modifying generation detection or usage extraction.
 4. Updating pointer-compressed decoding.
 5. Changing truncation/propagation coupling.
+6. **Modifying flattening logic or adding edge cases.**
 
 Each new metadata key must appear in at least one assertion. Forbidden duplications (e.g., execution id outside root span) asserted negative.
+
+**Flattening requirement:** ALL existing and new tests that assert on span `input` or `output` fields MUST expect flattened single-level dictionaries with dot-notation keys. No test should pass with nested objects in these fields.
 
 ---
 
@@ -659,6 +739,7 @@ Before merging changes:
 8. New env vars documented & tested.
 9. No mapper network calls added.
 10. Metadata key additions/removals reflected in tests + README.
+11. **Flattening applied to ALL span inputs/outputs; no nested objects exported (`test_flattening.py` green).**
 
 ---
 

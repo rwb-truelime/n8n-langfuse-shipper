@@ -68,11 +68,12 @@ def test_extended_scan_limit_triggers_error_code(monkeypatch):
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
     # We expect at least one placeholder inserted on first asset and second ignored due to cap.
-    parsed = json.loads(str(span.output))
-    file_obj = parsed.get("file")
-    assert isinstance(file_obj, dict)
-    assert isinstance(file_obj.get("data"), dict) and file_obj["data"].get("_media_pending") is True
-    assert "base64_len" in file_obj["data"] and isinstance(file_obj["data"]["base64_len"], int)
+    # Output is now a flattened dict (media placeholders stay nested)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    data_val = span.output.get("file.data")
+    assert isinstance(data_val, dict), "Expected nested placeholder"
+    assert data_val.get("_media_pending") is True
+    assert "base64_len" in data_val
     # Metadata should reflect scan_asset_limit error code.
     codes = span.metadata.get("n8n.media.error_codes") if span.metadata else None
     assert codes and "scan_asset_limit" in codes

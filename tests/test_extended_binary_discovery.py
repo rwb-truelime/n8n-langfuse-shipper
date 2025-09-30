@@ -54,23 +54,25 @@ def test_data_url_discovered():
     rec = _record({"image": {"data": DATA_URL, "mimeType": "image/png", "fileName": "x.png"}})
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
-    parsed = json.loads(str(span.output))
-    image_obj = parsed.get("image")
-    assert isinstance(image_obj, dict)
-    # Placeholder should be inserted for image.data
-    assert isinstance(image_obj.get("data"), dict) and image_obj["data"].get("_media_pending") is True
-    assert "base64_len" in image_obj["data"] and isinstance(image_obj["data"]["base64_len"], int)
+    # Output is now a flattened dict (media placeholders stay nested)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    # Placeholder should be inserted for image.data as nested dict
+    data_val = span.output.get("image.data")
+    assert isinstance(data_val, dict), "Expected nested placeholder"
+    assert data_val.get("_media_pending") is True
+    assert "base64_len" in data_val
 
 
 def test_file_like_dict_discovered():
     rec = _record({"file": {"mimeType": "text/plain", "fileName": "a.txt", "data": ("aGVsbG8=" * 12)}})
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
-    parsed = json.loads(str(span.output))
-    file_obj = parsed.get("file")
-    assert isinstance(file_obj, dict)
-    assert isinstance(file_obj.get("data"), dict) and file_obj["data"].get("_media_pending") is True
-    assert "base64_len" in file_obj["data"] and isinstance(file_obj["data"]["base64_len"], int)
+    # Output is now a flattened dict (media placeholders stay nested)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    data_val = span.output.get("file.data")
+    assert isinstance(data_val, dict), "Expected nested placeholder"
+    assert data_val.get("_media_pending") is True
+    assert "base64_len" in data_val
 
 
 def test_long_base64_with_context_keys():
@@ -83,8 +85,9 @@ def test_long_base64_with_context_keys():
     })
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = _extract_output_span(mapped.trace)
-    parsed = json.loads(str(span.output))
-    foo = parsed.get("foo")
-    assert isinstance(foo, dict)
-    assert isinstance(foo.get("payload"), dict) and foo["payload"].get("_media_pending") is True
-    assert "base64_len" in foo["payload"] and isinstance(foo["payload"]["base64_len"], int)
+    # Output is now a flattened dict (media placeholders stay nested)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    payload_val = span.output.get("foo.payload")
+    assert isinstance(payload_val, dict), "Expected nested placeholder"
+    assert payload_val.get("_media_pending") is True
+    assert "base64_len" in payload_val

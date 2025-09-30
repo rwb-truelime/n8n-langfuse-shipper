@@ -80,27 +80,24 @@ def test_item_level_binary_promoted():
     mapped = map_execution_with_assets(rec, collect_binaries=True)
     span = next(s for s in mapped.trace.spans if s.name == "NodeY")
     assert span.output is not None
-    parsed = json.loads(str(span.output))
-    # Normalization may unwrap to list root (e.g. merged json objects); when list, search
-    # for dict element containing promoted binary section.
-    if isinstance(parsed, list):
-        cand = None
-        for elem in parsed:
-            if isinstance(elem, dict) and isinstance(elem.get("binary"), dict):
-                cand = elem
-                break
-        assert cand is not None, "Promoted binary section not found in list root"
-        bin_section = cand.get("binary")
-    else:
-        bin_section = parsed.get("binary")
-    assert isinstance(bin_section, dict) and "img" in bin_section and "img2" in bin_section
-    # Placeholders inserted
-    img_entry = bin_section["img"].get("data") if isinstance(bin_section.get("img"), dict) else None
-    img2_entry = bin_section["img2"].get("data") if isinstance(bin_section.get("img2"), dict) else None
-    assert isinstance(img_entry, dict) and img_entry.get("_media_pending") is True
-    assert isinstance(img2_entry, dict) and img2_entry.get("_media_pending") is True
+    # Output is now a flattened dict
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    # Check for promoted binary keys in flattened form: binary.img, binary.img2
+    assert any(
+        "binary.img." in k for k in span.output.keys()
+    ), "Expected binary.img in flattened output"
+    assert any(
+        "binary.img2." in k for k in span.output.keys()
+    ), "Expected binary.img2 in flattened output"
+    # Placeholders inserted - media placeholders stay nested
+    img_data = span.output.get("binary.img.data")
+    img2_data = span.output.get("binary.img2.data")
+    assert isinstance(img_data, dict), "Expected nested placeholder for img"
+    assert img_data.get("_media_pending") is True
+    assert isinstance(img2_data, dict), "Expected nested placeholder for img2"
+    assert img2_data.get("_media_pending") is True
     # Metadata flag present
     assert span.metadata.get("n8n.io.promoted_item_binary") is True
     # Ensure base64_len recorded
-    assert "base64_len" in img_entry and isinstance(img_entry["base64_len"], int)
-    assert "base64_len" in img2_entry and isinstance(img2_entry["base64_len"], int)
+    assert "base64_len" in img_data
+    assert "base64_len" in img2_data

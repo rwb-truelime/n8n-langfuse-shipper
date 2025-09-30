@@ -63,9 +63,12 @@ def test_binary_stripping_always_on_when_truncation_disabled():
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)  # None -> no truncation
     span = trace.spans[1]  # index 0 is root
-    # Output is serialized JSON string
-    assert "binary omitted" in (span.output or ""), "Expected binary placeholder text"
-    assert BASE64_LONG not in (span.output or ""), "Original base64 should be stripped"
+    # Output is now a flattened dict (not JSON string)
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    # Check for binary redaction in flattened keys
+    output_str = str(span.output)
+    assert "binary omitted" in output_str, "Expected binary placeholder text"
+    assert BASE64_LONG not in output_str, "Original base64 should be stripped"
     # Ensure no truncation flags set since truncation disabled
     assert "n8n.truncated.output" not in span.metadata
 

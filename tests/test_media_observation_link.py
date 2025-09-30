@@ -97,7 +97,10 @@ def test_media_observation_id_included(monkeypatch):
     assert payload.get("observationId") == span.id
     # Ensure token replacement occurred
     assert span.output is not None
-    parsed = json.loads(str(span.output))
-    token = parsed["binary"]["img"]["data"]
+    # Output is now a flattened dict
+    assert isinstance(span.output, dict), "Output must be flattened dict"
+    token_key = "binary.img.data"
+    assert token_key in span.output, f"Expected {token_key} in flattened output"
+    token = span.output[token_key]
     assert token.startswith("@@@langfuseMedia:") and "id=mid123" in token
     assert span.metadata.get("n8n.media.asset_count") == 1
