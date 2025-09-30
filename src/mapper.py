@@ -1064,36 +1064,61 @@ def _prepare_io_and_output(
         if _contains_binary_marker(norm_output_obj):
             norm_output_obj = _strip_binary_payload(norm_output_obj)
     
-    # Apply flattening to normalized I/O before passing to LangfuseSpan
-    # This ensures Langfuse UI renders data as flat key-value pairs instead of
-    # nested collapsed trees
-    input_flat = (
-        _flatten_dict(norm_input_obj)
-        if isinstance(norm_input_obj, (dict, list))
-        else norm_input_obj
-    )
-    output_flat = (
-        _flatten_dict(norm_output_obj)
-        if isinstance(norm_output_obj, (dict, list))
-        else norm_output_obj
-    )
+    # Smart input/output handling: preserve natural content form
+    # - Plain strings → keep as string (markdown renders in Langfuse)
+    # - Single-key dicts with string value → extract string
+    # - Flat dicts (no nesting) → keep as dict (JSON viewer)
+    # - Complex nested structures → flatten to single-level dict
+    def _process_io_field(obj: Any) -> Any:
+        """Process input/output field intelligently."""
+        # Already a primitive? Keep it
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+        
+        # List with single dict element? Unwrap one level first
+        if isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], dict):
+            obj = obj[0]
+        
+        # Dictionary processing
+        if isinstance(obj, dict):
+            # Single-key dict with string value? Extract the string
+            if len(obj) == 1:
+                k, v = next(iter(obj.items()))
+                if isinstance(v, str):
+                    # Return string directly for markdown rendering in Langfuse
+                    return v
+            
+            # Check for nesting
+            has_nesting = any(isinstance(v, (dict, list)) for v in obj.values())
+            
+            if has_nesting:
+                # Nested structure → flatten with dot notation
+                return _flatten_dict(obj)
+            else:
+                # Flat dict (no nesting) → keep as-is for JSON viewer
+                return obj
+        
+        # Lists or other complex cases → flatten
+        if isinstance(obj, (list, dict)):
+            return _flatten_dict(obj)
+        
+        return obj
     
-    # Track if truncation WOULD have occurred (used for metadata flags)
-    # Note: binary already stripped above, so _serialize_and_truncate won't
-    # need to strip again (but it has safeguards anyway)
-    _, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
-    output_str_temp: Optional[str] = None
-    output_trunc = False
+    # Process input (always use smart logic)
+    input_flat = _process_io_field(norm_input_obj)
+    
+    # Process output (with optional generation-specific extraction)
+    output_flat = norm_output_obj
     if is_generation:
+        # Try generation-specific extraction first
         try:
-            candidate = norm_output_obj
             extracted_text: Optional[str] = None
             # Gemini / Vertex structure
-            if isinstance(candidate, dict):
+            if isinstance(norm_output_obj, dict):
                 resp = (
-                    candidate.get("response")
-                    if isinstance(candidate.get("response"), dict)
-                    else candidate
+                    norm_output_obj.get("response")
+                    if isinstance(norm_output_obj.get("response"), dict)
+                    else norm_output_obj
                 )
                 gens = resp.get("generations") if isinstance(resp, dict) else None
                 if isinstance(gens, list) and gens:
@@ -1107,15 +1132,15 @@ def _prepare_io_and_output(
             # Limescape Docs markdown preference
             if (
                 extracted_text is None
-                and isinstance(candidate, dict)
+                and isinstance(norm_output_obj, dict)
                 and "limescape" in node_type.lower()
             ):
-                md_val = candidate.get("markdown")
+                md_val = norm_output_obj.get("markdown")
                 if isinstance(md_val, str) and md_val.strip():
                     extracted_text = md_val
             # Fallback nested ai_* channel text search
-            if extracted_text is None and isinstance(candidate, dict):
-                for k, v in candidate.items():
+            if extracted_text is None and isinstance(norm_output_obj, dict):
+                for k, v in norm_output_obj.items():
                     if k.startswith("ai_") and isinstance(v, list) and v:
                         for layer in v[:3]:
                             if isinstance(layer, list) and layer:
@@ -1127,23 +1152,23 @@ def _prepare_io_and_output(
                                         break
                         if extracted_text:
                             break
+            
+            # Use extracted text if found, else fall through to smart processing
             if extracted_text is not None:
-                output_str_temp = extracted_text
-                output_trunc = False
+                output_flat = extracted_text
         except Exception:
-            # Best-effort; fall back to full serialization
+            # Best-effort; fall back to smart processing
             pass
-    if output_str_temp is None:
-        output_flat = (
-            _flatten_dict(norm_output_obj)
-            if isinstance(norm_output_obj, (dict, list))
-            else norm_output_obj
-        )
-        _, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
-    else:
-        # Extracted text (e.g., Gemini first generation text) - keep as string
-        output_flat = output_str_temp
-        output_trunc = False
+    
+    # If no generation extraction occurred, use smart processing
+    if output_flat is norm_output_obj:
+        output_flat = _process_io_field(norm_output_obj)
+    
+    # Track if truncation WOULD have occurred (used for metadata flags)
+    # Note: binary already stripped above, so _serialize_and_truncate won't
+    # need to strip again (but it has safeguards anyway)
+    _, input_trunc = _serialize_and_truncate(norm_input_obj, truncate_limit)
+    _, output_trunc = _serialize_and_truncate(norm_output_obj, truncate_limit)
     
     return (
         norm_input_obj,

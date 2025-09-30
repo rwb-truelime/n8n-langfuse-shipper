@@ -328,22 +328,32 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         _apply_span_attributes(span_ot, child)
         if child.input is not None:
             import json as _json
-            try:
-                span_ot.set_attribute(
-                    "langfuse.observation.input",
-                    _json.dumps(child.input, separators=(",", ":"), ensure_ascii=False)
-                )
-            except Exception:
-                span_ot.set_attribute("langfuse.observation.input", str(child.input))
+            # If input is already a plain string (e.g., extracted generation text),
+            # use it directly without JSON serialization to preserve formatting
+            if isinstance(child.input, str):
+                span_ot.set_attribute("langfuse.observation.input", child.input)
+            else:
+                try:
+                    span_ot.set_attribute(
+                        "langfuse.observation.input",
+                        _json.dumps(child.input, separators=(",", ":"), ensure_ascii=False)
+                    )
+                except Exception:
+                    span_ot.set_attribute("langfuse.observation.input", str(child.input))
         if child.output is not None:
             import json as _json
-            try:
-                span_ot.set_attribute(
-                    "langfuse.observation.output",
-                    _json.dumps(child.output, separators=(",", ":"), ensure_ascii=False)
-                )
-            except Exception:
-                span_ot.set_attribute("langfuse.observation.output", str(child.output))
+            # If output is already a plain string (e.g., extracted generation text),
+            # use it directly without JSON serialization to preserve formatting
+            if isinstance(child.output, str):
+                span_ot.set_attribute("langfuse.observation.output", child.output)
+            else:
+                try:
+                    span_ot.set_attribute(
+                        "langfuse.observation.output",
+                        _json.dumps(child.output, separators=(",", ":"), ensure_ascii=False)
+                    )
+                except Exception:
+                    span_ot.set_attribute("langfuse.observation.output", str(child.output))
         span_ot.end(end_time=end_ns)
         ctx_lookup[child.id] = span_ot.get_span_context()
 

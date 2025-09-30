@@ -159,15 +159,20 @@ def test_empty_containers_preserved():
 
 
 def test_media_tokens_treated_as_primitives():
-    """Media token strings should not be decomposed during flattening."""
+    """Media token strings should not be decomposed during flattening.
+    
+    Note: Single-key dicts with string values are extracted to plain strings
+    by smart processing (for markdown rendering), so the media token becomes
+    the direct output value rather than nested in a dict.
+    """
     media_token = "@@@langfuseMedia:type=image/jpeg|id=m123|source=base64_data_uri@@@"
     rec = _build_record({"image": media_token})
     trace = map_execution_to_langfuse(rec)
     span = [s for s in trace.spans if s.name == "FlatNode"][0]
     
-    assert isinstance(span.output, dict)
-    assert "image" in span.output
-    assert span.output["image"] == media_token, "Media token should be preserved as primitive string"
+    # Smart processing extracts single string values from single-key dicts
+    assert isinstance(span.output, str)
+    assert span.output == media_token, "Media token preserved as primitive string"
 
 
 def test_deep_nesting_flattened():
