@@ -1315,9 +1315,6 @@ def _detect_gemini_empty_output_anomaly(
     return None, meta
 
 
-# --------------------------- Stage 4 Refactor: MappingContext ---------------------------
-
-
 @dataclass
 class MappingContext:
     """Aggregate shared mapping state (static + mutable) for clarity.
