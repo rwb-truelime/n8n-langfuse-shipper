@@ -70,6 +70,7 @@ Need more? Expand the detailed sections below.
 			- Gemini empty-output anomaly detection: flags spans where `text==""`, `completionTokens==0`, `promptTokens>0`, `totalTokens>=promptTokens` (and optional empty `generationInfo {}`) with metadata (`n8n.gen.empty_output_bug`, `n8n.gen.empty_generation_info`, token counters) and forces status=error.
 			- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`, `limescape` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` & `model` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
             - Concise generation span output extraction: Gemini/Vertex responses extract first non-empty `generations[0][0].text`; Limescape Docs node extracts the `markdown` field (when present) instead of full JSON wrapper.
+            - LangChain LMChat System Prompt Stripping: Automatically strips System prompts from `@n8n/n8n-nodes-langchain.lmChat*` generation inputs. Searches recursively (up to 25 levels deep) for `messages` arrays containing the split marker `\n\n## START PROCESSING\n\nHuman: ##`, keeping only the User prompt portion. Handles both string arrays and dict-with-content formats. Applied before normalization to preserve structure.
 - OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.internal.as_root`, optional trace identity fields `user.id|session.id|langfuse.trace.tags|langfuse.trace.input|langfuse.trace.output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
@@ -309,7 +310,7 @@ set -x DB_POSTGRESDB_PASSWORD n8n
 set -x DB_POSTGRESDB_SCHEMA public
 set -x DB_TABLE_PREFIX n8n_
 set -x LANGFUSE_HOST https://cloud.langfuse.com
-set -x LANGFUSE_PUBLIC_KEY lf_pk_... 
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
 set -x LANGFUSE_SECRET_KEY lf_sk_...
 ```
 
@@ -496,6 +497,7 @@ This project treats the mapping & export invariants as a contract. Each invarian
 | `tests/test_pointer_decoding.py` | Pointer‑compressed array decoding | Resilient decoding of compact execution format |
 | `tests/test_trace_and_metadata.py` | Root metadata + deterministic IDs across truncation settings | Root-only `n8n.execution.id`; span ID stability irrespective of truncation |
 | `tests/test_generation_heuristic.py` | Provider substring heuristic | Generation detection across provider matrix & exclusion for embeddings |
+| `tests/test_lmchat_system_prompt_strip.py` | LangChain LMChat system prompt stripping | Strips System prompts from lmChat generation inputs; handles dict/string messages, deep nesting, graceful fallback |
 | `tests/test_error_status_and_observation.py` | Error normalization | Span status becomes `error` when `NodeRun.error` set |
 | `tests/test_trace_id_embedding.py` | Human-readable trace id embedding | 32-hex trace id suffix matches execution id digits; non-digit fallback |
 | `tests/test_observation_mapping.py` | Observation type classification breadth | Exact sets, regex fallbacks, category fallback semantics |
@@ -801,5 +803,3 @@ header_search_chars = 250
 ## License
 
 Apache License 2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
-
-

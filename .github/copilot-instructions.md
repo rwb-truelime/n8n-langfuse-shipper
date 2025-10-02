@@ -261,6 +261,21 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 * Never infer generation purely from output length or text presence.
 * Embedding/reranker nodes intentionally excluded unless explicit `tokenUsage`.
 
+**LangChain LMChat System Prompt Stripping:**
+
+LangChain LMChat nodes (`@n8n/n8n-nodes-langchain.lmChat*`) combine System and User prompts into single message blobs. The split marker `\n\n## START PROCESSING\n\nHuman: ##` separates them (System ends after `## START PROCESSING\n\n`, User starts at `Human: ##`).
+
+Function `_strip_system_prompt_from_langchain_lmchat()` strips System prompts:
+* Called in `_prepare_io_and_output()` **BEFORE** `_normalize_node_io()` (preserves structure).
+* Only processes generation spans with "lmchat" in node type (case-insensitive).
+* **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
+* Handles both message formats: list of strings `["System: ... Human: ## ..."]` and list of dicts `[{"content": "System: ... Human: ## ..."}]`.
+* Strips everything before `Human: ##` marker when found.
+* Fail-open: returns original input on any error.
+* Logs depth and characters removed when stripping occurs.
+
+Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, string format, deeply nested, missing marker, non-lmChat, multiple messages).
+
 ### Binary & Multimodality
 
 **Binary Stripping (Unconditional):**
@@ -703,6 +718,52 @@ n8n-langfuse-shipper/
 ├── pyproject.toml
 └── README.md
 ```
+
+---
+
+## Documentation Policy (MANDATORY)
+
+**CRITICAL: All documentation MUST go in EXACTLY TWO files ONLY:**
+
+1. **`.github/copilot-instructions.md`** - Technical implementation details, architecture, invariants, contracts, testing requirements
+2. **`README.md`** - User-facing documentation, configuration, examples, troubleshooting
+
+**FORBIDDEN:**
+* ❌ NEVER create separate markdown files like `FEATURE_NAME.md`, `IMPLEMENTATION_SUMMARY.md`, `CHANGES.md`, etc.
+* ❌ NEVER create standalone documentation files in the project root or any subdirectory
+* ❌ NEVER split documentation across multiple files
+
+**REQUIRED Process for ANY code change:**
+1. Implement the feature with tests
+2. Update **copilot-instructions.md** with technical details (algorithms, invariants, test requirements)
+3. Update **README.md** with user-facing information (configuration, usage, examples)
+4. ALL changes MUST happen in the SAME PR
+
+**Rationale:**
+* Single source of truth prevents documentation drift
+* Easy to find information (only two places to look)
+* Forces documentation discipline
+* Reduces maintenance burden
+
+**Examples of what goes where:**
+
+`copilot-instructions.md`:
+- Implementation algorithms and data structures
+- Parent resolution precedence logic
+- Binary stripping heuristics
+- Test coverage requirements
+- Metadata key definitions
+- Reserved keyword contracts
+
+`README.md`:
+- Environment variable tables
+- CLI command examples
+- Configuration examples
+- Troubleshooting guides
+- Feature descriptions for users
+- Installation and quick start
+
+**Violation = Breaking Invariant:** Creating additional documentation files is considered a critical error. If you create extra docs, you MUST consolidate them into the two canonical files and delete the extra file in the same PR.
 
 ---
 
