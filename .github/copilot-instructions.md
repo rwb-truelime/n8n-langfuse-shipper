@@ -4,7 +4,7 @@
 Python-based microservice for high-throughput backfill of historical n8n execution data from PostgreSQL to Langfuse via OpenTelemetry (OTLP) endpoint. Focus: correctness, performance, robustness for large-scale data migration.
 
 ## Document Sync & Version Policy
-This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift. Last major sync: 2025-09-23.
+This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift.
 
 ---
 
@@ -305,6 +305,7 @@ When normalizing node I/O, unwrap channel/list/json wrappers while merging back 
 7. Per-span replacement count aggregated into metadata `n8n.media.asset_count` (only successful tokens).
 8. Fail-open: oversize, decode errors, API/upload failures leave placeholder + set `n8n.media.upload_failed=true`. Processing continues; export never aborted.
 9. Determinism: same binary input (SHA256) yields idempotent create semantics on Langfuse side.
+ 10. Multi-provider header injection: If presigned upload URL host contains `blob.core.windows.net` (Azure Blob) we MUST send `x-ms-blob-type: BlockBlob` in addition to existing S3-style headers. Absence previously produced 400 `MissingRequiredHeader` (HeaderName `x-ms-blob-type`). S3 paths ignore this extra header (fail-open). Detection is substring-based and documented here; any change requires test + README update.
 
 **Extended Binary Discovery:**
 In addition to canonical `run.data.binary` blocks, mapper scans for:
@@ -537,6 +538,7 @@ POST `/api/public/media` keys:
 | field | Derived from placeholder path | First segment → `input`/`output`/`metadata` |
 
 Presigned upload required headers: `Content-Type`, `x-amz-checksum-sha256`.
+ Azure Blob variant additionally requires: `x-ms-blob-type: BlockBlob` (auto-added when URL contains `blob.core.windows.net`).
 
 **Observation Linking Invariant:** Every successful media create from a span MUST include `observationId=<otel_span_id>` or UI preview pane will remain empty. Tests: `test_media_observation_link.py`.
 
@@ -642,7 +644,7 @@ Violation = breaking invariant; submit corrective patch.
 * Do NOT move execution id outside root span or duplicate it (breaks single-source invariant).
 * Never introduce `datetime.utcnow()` (timezone invariant). All timestamps must be UTC-aware.
 * Backwards compatibility: breaking changes allowed (early development) but must be documented in release notes. Never implement backwards compatibility; not required at this stage.
-* Update README + this file for new env vars / CLI flags / behavior changes in same PR.
+* Update `README.md` + `copilot-instructions.md` for new env vars / CLI flags / behavior changes in same PR.
 * NOTICE & LICENSE untouched aside from annual year updates.
 * New metadata keys: add tests asserting presence & absence where appropriate.
 
