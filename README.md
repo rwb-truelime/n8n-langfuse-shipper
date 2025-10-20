@@ -139,6 +139,142 @@ pytest -q
 
 ---
 
+## Containerization & Deployment (Docker / Azure Container Apps)
+
+You can run the shipper fully containerized. A production‑lean Dockerfile and a
+`docker-compose.yml` are included. The container defaults to a safe dry‑run
+(`--limit 50 --dry-run`). Override the command for real exporting.
+
+### Build Image Locally
+```fish
+docker build -t n8n-langfuse-shipper:local .
+```
+
+### Dry Run (no export)
+```fish
+docker run --rm \
+	-e PG_DSN=$PG_DSN \
+	-e LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+	-e LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+	-e DB_TABLE_PREFIX=n8n_ \
+	-v shipper_checkpoint:/data \
+	n8n-langfuse-shipper:local --limit 25 --dry-run
+```
+
+### Real Export
+```fish
+docker run --rm \
+	-e PG_DSN=$PG_DSN \
+	-e LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+	-e LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+	-e DB_TABLE_PREFIX=n8n_ \
+	-v shipper_checkpoint:/data \
+	n8n-langfuse-shipper:local --limit 500 --no-dry-run
+```
+
+The named volume `shipper_checkpoint` persists the checkpoint file so restarts
+resume where they left off.
+
+### Using docker-compose
+Edit environment values (or export them in your shell) then:
+```fish
+docker compose up --build shipper
+```
+Compose mounts a persistent volume for `/data/.backfill_checkpoint`. Adjust the
+`command` field to change limits, enable dry‑run, etc.
+
+### Minimal Required Environment Variables
+Provide either `PG_DSN` OR the component variables (`DB_POSTGRESDB_HOST`, etc.),
+plus Langfuse credentials and the table prefix:
+```fish
+set -x PG_DSN postgresql://n8n:n8n@postgres:5432/n8n
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
+set -x LANGFUSE_SECRET_KEY lf_sk_...
+set -x DB_TABLE_PREFIX n8n_
+```
+
+Optional: `LANGFUSE_HOST` if self‑hosted; `ENABLE_MEDIA_UPLOAD=true` to enable
+media token flow.
+
+### Azure Container Registry (ACR) Build & Push
+Assuming you already created an Azure Container Registry and are logged in with
+`az` CLI:
+```fish
+set -x ACR_NAME myregistry   # your ACR name (without domain)
+set -x IMAGE_TAG (git rev-parse --short HEAD)
+docker build -t $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG .
+az acr login --name $ACR_NAME
+docker push $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG
+```
+
+Optionally add `:latest` tag as well:
+```fish
+docker tag $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG \
+	$ACR_NAME.azurecr.io/n8n-langfuse-shipper:latest
+docker push $ACR_NAME.azurecr.io/n8n-langfuse-shipper:latest
+```
+
+### Deploy to Azure Container Apps
+You already have a Container Apps Environment; supply its name and resource
+group. Example (single revision performing continuous backfill):
+```fish
+set -x ACR_NAME myregistry
+set -x RG_NAME my-resource-group
+set -x ENV_NAME my-container-app-env
+set -x APP_NAME n8n-langfuse-shipper
+set -x IMAGE_TAG latest  # or specific commit tag
+
+az containerapp create \
+	--name $APP_NAME \
+	--resource-group $RG_NAME \
+	--environment $ENV_NAME \
+	--image $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG \
+	--registry-server $ACR_NAME.azurecr.io \
+	--ingress disabled \
+	--cpu 0.5 --memory 1Gi \
+	--args "--limit" "500" "--no-dry-run" \
+	--env-vars \
+		PG_DSN=$PG_DSN \
+		LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+		LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+		LANGFUSE_HOST=$LANGFUSE_HOST \
+		DB_TABLE_PREFIX=n8n_ \
+		LOG_LEVEL=INFO
+```
+
+Add media upload (optional):
+```fish
+az containerapp update \
+	--name $APP_NAME --resource-group $RG_NAME \
+	--set-env-vars ENABLE_MEDIA_UPLOAD=true MEDIA_MAX_BYTES=25000000
+```
+
+### Updating Image in Azure
+Push a new image (new tag) then:
+```fish
+az containerapp update \
+	--name $APP_NAME --resource-group $RG_NAME \
+	--image $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG
+```
+
+### Operational Notes
+| Topic | Guidance |
+|-------|----------|
+| Scaling | Start single replica; increase only if DB & Langfuse throughput allow. |
+| Checkpoint | Persisted at `/data/.backfill_checkpoint`; mount Azure File Share for durability. |
+| Dry Runs | Always test config with `--dry-run` before a large migration. |
+| Logs | Set `LOG_LEVEL=DEBUG` for detailed mapping & media debug info. |
+| Safe Re-run | Deterministic IDs prevent duplication; re-processing yields identical spans. |
+| Media Upload | Ensure network egress to Langfuse host and object storage endpoints. |
+
+If you need a one-shot batch run, deploy with an argument like `--limit 5000`.
+The container will exit when finished (Container Apps will mark it as stopped).
+For continuous ingestion, omit `--limit` so it processes batches indefinitely.
+
+---
+
+---
+
 <details>
 <summary><strong>Configuration Overview</strong></summary>
 

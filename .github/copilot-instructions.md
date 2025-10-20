@@ -725,14 +725,15 @@ n8n-langfuse-shipper/
 
 ## Documentation Policy (MANDATORY)
 
-**CRITICAL: All documentation MUST go in EXACTLY TWO files ONLY:**
+**CRITICAL: All documentation MUST go in EXACTLY these files ONLY:**
 
 1. **`.github/copilot-instructions.md`** - Technical implementation details, architecture, invariants, contracts, testing requirements
 2. **`README.md`** - User-facing documentation, configuration, examples, troubleshooting
+3. **`./infra/README.md`** - Azure resource deployment instructions using Bicep
 
 **FORBIDDEN:**
-* ❌ NEVER create separate markdown files like `FEATURE_NAME.md`, `IMPLEMENTATION_SUMMARY.md`, `CHANGES.md`, etc.
-* ❌ NEVER create standalone documentation files in the project root or any subdirectory
+* ❌ NEVER create separate markdown files like `FEATURE_NAME.md`, `IMPLEMENTATION_SUMMARY.md`, `CHANGES.md` UNLESS THE USER REQUESTS IT EXPLICITLY!
+* ❌ NEVER create standalone documentation files in the project root or any subdirectory UNLESS THE USER REQUESTS IT EXPLICITLY!
 * ❌ NEVER split documentation across multiple files
 
 **REQUIRED Process for ANY code change:**
