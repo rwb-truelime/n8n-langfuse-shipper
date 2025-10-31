@@ -225,9 +225,19 @@ class _MediaClient:
         """
         headers = {
             "Content-Type": content_type,
-            # S3 expects raw base64 encoded SHA256 (not hex) in this header.
+            # S3 path: raw base64 encoded SHA256 (not hex) required.
             "x-amz-checksum-sha256": sha256_b64,
         }
+        # Azure Blob presigned URLs (observed format: https://<acct>.blob.core.windows.net/...)
+        # reject PUT without mandatory header x-ms-blob-type. Langfuse multi-provider
+        # deployments may issue either S3 or Azure style URLs. We detect Azure by host
+        # substring 'blob.core.windows.net' (scheme‑agnostic) and inject the header.
+        # Block blobs are the standard type for arbitrary binary uploads.
+        try:
+            if "blob.core.windows.net" in upload_url:
+                headers.setdefault("x-ms-blob-type", "BlockBlob")
+        except Exception:  # pragma: no cover - defensive
+            pass
         try:
             resp = httpx.put(upload_url, content=data, headers=headers, timeout=self.timeout)
         except Exception as e:  # pragma: no cover - network error

@@ -1,0 +1,60 @@
+version: "3.9"
+services:
+  shipper:
+    build: .
+    image: n8n-langfuse-shipper:local
+    environment:
+      # Provide either PG_DSN or the component variables below (PG_DSN takes precedence)
+      PG_DSN: ${PG_DSN:-}
+      DB_POSTGRESDB_HOST: ${DB_POSTGRESDB_HOST:-}
+      DB_POSTGRESDB_PORT: ${DB_POSTGRESDB_PORT:-5432}
+      DB_POSTGRESDB_DATABASE: ${DB_POSTGRESDB_DATABASE:-}
+      DB_POSTGRESDB_USER: ${DB_POSTGRESDB_USER:-postgres}
+      DB_POSTGRESDB_PASSWORD: ${DB_POSTGRESDB_PASSWORD:-}
+      DB_POSTGRESDB_SCHEMA: ${DB_POSTGRESDB_SCHEMA:-public}
+      DB_TABLE_PREFIX: ${DB_TABLE_PREFIX:-n8n_}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      FETCH_BATCH_SIZE: ${FETCH_BATCH_SIZE:-100}
+      TRUNCATE_FIELD_LEN: ${TRUNCATE_FIELD_LEN:-0}
+      ENABLE_MEDIA_UPLOAD: ${ENABLE_MEDIA_UPLOAD:-false}
+      MEDIA_MAX_BYTES: ${MEDIA_MAX_BYTES:-25000000}
+      EXTENDED_MEDIA_SCAN_MAX_ASSETS: ${EXTENDED_MEDIA_SCAN_MAX_ASSETS:-250}
+      REQUIRE_EXECUTION_METADATA: ${REQUIRE_EXECUTION_METADATA:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      FLUSH_EVERY_N_TRACES: ${FLUSH_EVERY_N_TRACES:-1}
+      OTEL_MAX_QUEUE_SIZE: ${OTEL_MAX_QUEUE_SIZE:-10000}
+      OTEL_MAX_EXPORT_BATCH_SIZE: ${OTEL_MAX_EXPORT_BATCH_SIZE:-512}
+      OTEL_SCHEDULED_DELAY_MILLIS: ${OTEL_SCHEDULED_DELAY_MILLIS:-200}
+      EXPORT_QUEUE_SOFT_LIMIT: ${EXPORT_QUEUE_SOFT_LIMIT:-5000}
+      EXPORT_SLEEP_MS: ${EXPORT_SLEEP_MS:-75}
+      CHECKPOINT_FILE: /data/.backfill_checkpoint
+    volumes:
+      - shipper-checkpoint:/data
+    # Override default dry-run to perform real export (remove --no-dry-run for dry runs)
+    command: ["--limit", "200", "--no-dry-run"]
+    restart: unless-stopped
+    # Uncomment to join an existing external network where Postgres & Langfuse live
+    # networks:
+    #   - existing
+
+  # Optional local Postgres for experimentation (NOT for production backfill scale)
+  # postgres:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_USER: n8n
+  #     POSTGRES_PASSWORD: n8n
+  #     POSTGRES_DB: n8n
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+
+volumes:
+  shipper-checkpoint:
+  # pgdata:
+
+# networks:
+#   existing:
+#     external: true

@@ -1,0 +1,30 @@
+# Python / build artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# VCS & editor
+.git
+.gitignore
+.github
+.vscode
+
+# Local env / virtualenvs
+venv/
+.venv/
+
+# Tests & debug assets (not needed in runtime image)
+tests/
+debug_dumps/
+
+# Misc
+Dockerfile
+docker-compose.yml
+NOTICE
+LICENSE
+notice_check.toml
+scripts/
