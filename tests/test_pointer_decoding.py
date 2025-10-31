@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.__main__ import _decode_compact_pointer_execution
-from src.models.n8n import ExecutionData, ExecutionDataDetails, ResultData, N8nExecutionRecord, WorkflowData, WorkflowNode, NodeRun
 from src.mapper import map_execution_to_langfuse
+from src.models.n8n import (
+    N8nExecutionRecord,
+    WorkflowData,
+    WorkflowNode,
+)
 
 
 def test_pointer_compact_decoding_basic():
@@ -42,4 +47,3 @@ def test_pointer_compact_decoding_basic():
     trace = map_execution_to_langfuse(record, truncate_limit=None)
     names = [s.name for s in trace.spans]
     assert "NodeA" in names and "NodeB" in names
-

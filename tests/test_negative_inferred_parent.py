@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 

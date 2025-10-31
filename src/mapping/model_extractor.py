@@ -3,9 +3,10 @@
 Pure functions; no side effects besides deterministic logging.
 """
 from __future__ import annotations
-from typing import Any, Dict, Deque, Tuple, Optional
-from collections import deque
+
 import logging
+from collections import deque
+from typing import Any, Deque, Dict, Optional, Tuple
 
 from ..models.n8n import WorkflowNode
 

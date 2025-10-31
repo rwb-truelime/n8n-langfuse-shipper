@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
-from src.models.langfuse import LangfuseTrace, LangfuseSpan, LangfuseUsage
+from src.models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from src.shipper import _apply_span_attributes
 
 

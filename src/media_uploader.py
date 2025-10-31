@@ -29,11 +29,10 @@ legacy redaction form and span metadata gets `n8n.media.upload_failed=true`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Any, Dict, Optional
-import logging
 import base64
-import hashlib
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from .models.langfuse import LangfuseTrace
 

@@ -8,14 +8,14 @@ exponential backoff.
 """
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional, List, Dict, Any, Iterable, TYPE_CHECKING
 import asyncio
 import logging
-from contextlib import asynccontextmanager
-
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import os
 import re
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
+
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 psycopg: Any | None
 dict_row: Any | None

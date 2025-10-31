@@ -10,7 +10,7 @@ from src.media_api import (
     MappedTraceWithAssets,
     patch_and_upload_media,
 )
-from src.models.langfuse import LangfuseTrace, LangfuseSpan
+from src.models.langfuse import LangfuseSpan, LangfuseTrace
 
 
 class _Settings:

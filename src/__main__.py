@@ -12,21 +12,28 @@ process. It orchestrates the entire ETL pipeline:
 """
 from __future__ import annotations
 
-import typer
-from typing import Optional, Any, List, Dict
-from datetime import datetime
-import logging
 import asyncio
-from pydantic import ValidationError
+import logging
 import os
+from datetime import datetime
+from typing import Any, List, Optional
 
+import typer
+from pydantic import ValidationError
+
+from .checkpoint import load_checkpoint, store_checkpoint
 from .config import get_settings
 from .db import ExecutionSource
-from .models.n8n import N8nExecutionRecord, WorkflowData, ExecutionData, ExecutionDataDetails, ResultData
 from .mapper import map_execution_to_langfuse, map_execution_with_assets
-from .shipper import export_trace, shutdown_exporter
-from .checkpoint import load_checkpoint, store_checkpoint
 from .media_api import patch_and_upload_media
+from .models.n8n import (
+    ExecutionData,
+    ExecutionDataDetails,
+    N8nExecutionRecord,
+    ResultData,
+    WorkflowData,
+)
+from .shipper import export_trace, shutdown_exporter
 
 app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
 
@@ -242,7 +249,7 @@ def _decode_compact_pointer_execution(
         return None
 
     # Collect NodeRun compatible structures
-    from .models.n8n import NodeRun, NodeRunSource, ExecutionData, ExecutionDataDetails, ResultData
+    from .models.n8n import ExecutionData, ExecutionDataDetails, NodeRun, NodeRunSource, ResultData
     node_run_map: dict[str, list[NodeRun]] = {}
 
     def collect_runs(val: Any) -> List[dict[str, Any]]:
@@ -404,9 +411,9 @@ def backfill(
     # Apply optional runtime overrides for export backpressure tuning
     if export_queue_soft_limit is not None:
         # Runtime override of settings attribute (present on Settings model)
-        setattr(settings, "EXPORT_QUEUE_SOFT_LIMIT", int(export_queue_soft_limit))
+        settings.EXPORT_QUEUE_SOFT_LIMIT = int(export_queue_soft_limit)
     if export_sleep_ms is not None:
-        setattr(settings, "EXPORT_SLEEP_MS", int(export_sleep_ms))
+        settings.EXPORT_SLEEP_MS = int(export_sleep_ms)
     # Determine AI-only filtering flag (CLI has precedence over env/settings)
     effective_filter_ai_only = (
         filter_ai_only if filter_ai_only is not None else settings.FILTER_AI_ONLY

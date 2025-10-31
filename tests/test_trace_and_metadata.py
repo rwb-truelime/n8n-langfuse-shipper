@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -61,4 +62,3 @@ def test_deterministic_across_truncation_modes():
     ids_a = [s.id for s in trace_a.spans]
     ids_b = [s.id for s in trace_b.spans]
     assert ids_a == ids_b, "Span IDs changed between truncation settings"
-

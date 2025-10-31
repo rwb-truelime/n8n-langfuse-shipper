@@ -1,5 +1,6 @@
-from langfuse import Langfuse
 import os
+
+from langfuse import Langfuse
 
 # Use env vars (fall back to dummy values for local/dev); avoid hard-coding real secrets in tests.
 langfuse = Langfuse(

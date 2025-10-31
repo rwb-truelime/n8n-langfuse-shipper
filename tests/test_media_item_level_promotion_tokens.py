@@ -1,19 +1,18 @@
 import json
 from datetime import datetime, timezone
-import base64
 
 from src.mapper import map_execution_with_assets
 from src.media_api import patch_and_upload_media  # type: ignore
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.models.langfuse import LangfuseTrace
+
 
 class DummyMediaClient:
     def __init__(self, *args, **kwargs):

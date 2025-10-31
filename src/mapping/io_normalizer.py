@@ -4,8 +4,9 @@ Extracted from mapper.py. Behavior MUST remain identical to legacy inline
 implementation (tests assert parity). Pure functions only.
 """
 from __future__ import annotations
-from typing import Any, Dict, List
+
 import logging
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 

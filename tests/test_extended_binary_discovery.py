@@ -3,13 +3,13 @@ from datetime import datetime, timezone
 
 from src.mapper import map_execution_with_assets
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 BASE64_IMG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Yl8m38AAAAASUVORK5CYII=" * 2

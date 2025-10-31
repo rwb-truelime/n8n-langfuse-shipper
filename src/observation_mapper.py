@@ -17,7 +17,7 @@ project's reference materials, with minor Pythonic adjustments.
 """
 from __future__ import annotations
 
-from typing import Optional, Dict, Set
+from typing import Dict, Optional, Set
 
 OBS_TYPES = [
     "agent",

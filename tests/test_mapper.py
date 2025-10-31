@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+from src.checkpoint import load_checkpoint, store_checkpoint
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.checkpoint import load_checkpoint, store_checkpoint
-import tempfile
-import os
 
 
 def _base_record(run_data):

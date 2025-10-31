@@ -3,13 +3,13 @@ from datetime import datetime, timezone
 
 from src.mapper import map_execution_with_assets
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 # Two discoverable assets so that with cap=1 we trigger scan_asset_limit.

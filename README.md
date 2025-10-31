@@ -131,7 +131,9 @@ Refactor Note: The internal mapper is undergoing a phased decomposition into
 `src/mapping/` submodules (`time_utils`, `id_utils`, `binary_sanitizer`, etc.).
 Public functions `map_execution_to_langfuse` and `map_execution_with_assets`
 remain in `mapper.py` and will not change signature; tests enforce behavioral
-parity. No user‑visible configuration changes are introduced by this refactor.
+parity. The full mapping loop now resides in `mapping/orchestrator.py` with
+`mapper.py` acting as a thin facade re-exporting selected private helpers for
+test parity. No user‑visible configuration changes are introduced by this refactor.
 
 ---
 

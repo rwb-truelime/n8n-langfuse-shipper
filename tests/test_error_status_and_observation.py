@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -39,4 +40,3 @@ def test_error_status_normalization():
     span = next(s for s in trace.spans if s.name == "ErrNode")
     assert span.status == "error", "Error status not normalized"
     assert span.error is not None
-

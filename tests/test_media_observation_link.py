@@ -1,18 +1,18 @@
 import json
 from datetime import datetime, timezone
 
+from src.config import Settings
 from src.mapper import map_execution_with_assets
 from src.media_api import patch_and_upload_media
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.config import Settings
 
 
 def _sample_exec() -> N8nExecutionRecord:

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 
@@ -377,4 +378,3 @@ def test_model_extraction_ai_languageModel_options_path():
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "Google Gemini Chat Model")
     assert span.model == "gemini-2.5-pro"
-

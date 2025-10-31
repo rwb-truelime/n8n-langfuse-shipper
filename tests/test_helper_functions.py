@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import uuid5
 
 from src.mapper import (
-    _resolve_parent,
-    _extract_model_and_metadata,
-    _detect_gemini_empty_output_anomaly,
     SPAN_NAMESPACE,
+    _detect_gemini_empty_output_anomaly,
+    _extract_model_and_metadata,
+    _resolve_parent,
 )
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from uuid import uuid5
 
 
 def _simple_record(nodes: list[WorkflowNode], run_data_map):
@@ -122,4 +121,3 @@ def test_gemini_empty_output_anomaly_detection():
     assert meta.get("n8n.gen.empty_output_bug") is True
     # synthetic error inserted
     assert run.error and "Gemini empty output" in run.error.get("message", "")
-

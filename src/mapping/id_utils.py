@@ -1,6 +1,7 @@
 """Deterministic ID utilities (UUIDv5 span namespace extraction)."""
 from __future__ import annotations
-from uuid import NAMESPACE_DNS, uuid5, UUID
+
+from uuid import NAMESPACE_DNS, uuid5
 
 SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 

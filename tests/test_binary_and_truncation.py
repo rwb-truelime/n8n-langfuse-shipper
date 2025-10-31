@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
+
 from src.mapper import map_execution_to_langfuse
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
 
 BASE64_LONG = "A" * 300  # length >=200 triggers base64 heuristic (all 'A's still valid base64 padding-wise)
@@ -76,4 +76,3 @@ def test_truncation_flag_and_placeholder_coexist():
     span = trace.spans[1]
     assert BASE64_LONG not in (span.output or "")
     assert span.metadata.get("n8n.truncated.output") is True
-

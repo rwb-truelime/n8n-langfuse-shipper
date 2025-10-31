@@ -43,12 +43,12 @@ required presigned upload headers must update README + instructions + tests.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, cast, Protocol
-import logging
 import base64
-import json
 import binascii
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, cast
 
 import httpx
 

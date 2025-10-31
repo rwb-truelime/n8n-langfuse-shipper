@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from importlib import reload
+
 from src import config as config_module
 
 
@@ -58,4 +59,3 @@ def test_required_prefix(monkeypatch):
         "DB_TABLE_PREFIX": "custom_",
     })
     assert s.DB_TABLE_PREFIX == "custom_"
-

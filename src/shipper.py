@@ -18,25 +18,25 @@ Key responsibilities include:
 from __future__ import annotations
 
 import base64
-import time
 import logging
-from typing import Dict, Any
+import time
+from typing import Any, Dict
 
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import (
     NonRecordingSpan,
-    set_span_in_context,
     SpanContext,
     TraceFlags,
     TraceState,
+    set_span_in_context,
 )
 
-from .models.langfuse import LangfuseTrace, LangfuseSpan
 from .config import Settings
+from .models.langfuse import LangfuseSpan, LangfuseTrace
 
 _initialized = False
 logger = logging.getLogger(__name__)

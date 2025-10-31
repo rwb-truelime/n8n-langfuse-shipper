@@ -3,9 +3,11 @@
 Implements precedence: agent hierarchy -> runtime exact -> runtime last -> static reverse graph -> root.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+
 import logging
+from typing import Any, Dict, List, Tuple
 from uuid import uuid5
+
 from .id_utils import SPAN_NAMESPACE
 
 logger = logging.getLogger(__name__)

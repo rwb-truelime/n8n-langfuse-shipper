@@ -63,7 +63,10 @@ graph TD
     * `mapping.time_utils` – epoch millisecond → UTC conversion helpers.
     * `mapping.id_utils` – deterministic UUIDv5 span id helpers (`SPAN_NAMESPACE`)
       – ID format MUST remain unchanged; tests assert stability.
-    * `mapping.binary_sanitizer` – binary/base64 detection & redaction utilities.
+        * `mapping.binary_sanitizer` – binary/base64 detection & redaction utilities.
+        * `mapping.orchestrator` – procedural mapping loop (execution → spans), AI filtering
+            window logic, binary asset collection, IO prep, model & anomaly helpers; keeps
+            `mapper.py` as thin facade. No behavior drift allowed.
 
     Refactor Rules:
     1. Public API (`map_execution_to_langfuse`, `map_execution_with_assets`) stays in

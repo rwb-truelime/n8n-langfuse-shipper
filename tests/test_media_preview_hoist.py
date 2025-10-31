@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import base64
 import hashlib
+import json
 from datetime import datetime, timezone
 
 from src.media_api import (
@@ -10,7 +10,7 @@ from src.media_api import (
     MappedTraceWithAssets,
     patch_and_upload_media,
 )
-from src.models.langfuse import LangfuseTrace, LangfuseSpan
+from src.models.langfuse import LangfuseSpan, LangfuseTrace
 
 
 class _Settings:

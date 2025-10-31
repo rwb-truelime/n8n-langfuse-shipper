@@ -24,17 +24,17 @@ from datetime import datetime, timezone
 import pytest
 
 from src.mapper import map_execution_to_langfuse
-from src.observation_mapper import is_ai_node
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
+from src.observation_mapper import is_ai_node
 
 
 def _base_record(nodes, run_map, exec_id=999) -> N8nExecutionRecord:

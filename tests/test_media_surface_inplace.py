@@ -1,18 +1,19 @@
 import json
 from datetime import datetime, timezone
+
+from src.config import Settings
+from src.mapper import _map_execution  # type: ignore
+from src.media_api import MappedTraceWithAssets, patch_and_upload_media
 from src.models.n8n import (
-    N8nExecutionRecord,
-    WorkflowData,
-    WorkflowNode,
     ExecutionData,
     ExecutionDataDetails,
-    ResultData,
+    N8nExecutionRecord,
     NodeRun,
     NodeRunSource,
+    ResultData,
+    WorkflowData,
+    WorkflowNode,
 )
-from src.mapper import _map_execution  # type: ignore
-from src.media_api import patch_and_upload_media, MappedTraceWithAssets
-from src.config import Settings
 
 
 def _build_simple_record(base64_payload: str) -> N8nExecutionRecord:

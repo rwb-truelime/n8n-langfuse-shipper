@@ -3,8 +3,10 @@
 Holds mutable state during execution mapping.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
 from ..models.n8n import WorkflowNode
 
 __all__ = ["MappingContext"]

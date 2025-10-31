@@ -9,9 +9,10 @@ Rules:
 This is intentionally lightweight (no strict hashing) to allow appending third-party notices.
 """
 from __future__ import annotations
+
 import sys
-from pathlib import Path
 import traceback
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NOTICE_PATH = REPO_ROOT / "NOTICE"

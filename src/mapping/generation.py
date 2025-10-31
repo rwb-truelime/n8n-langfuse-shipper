@@ -4,9 +4,9 @@ All logic copied from legacy mapper.py sections to preserve behavior.
 Any change requires test + docs updates.
 """
 from __future__ import annotations
-from typing import Any, Dict, Optional, Tuple
+
 import logging
-from collections import deque
+from typing import Any, Dict, Optional, Tuple
 
 from ..models.langfuse import LangfuseUsage
 from ..models.n8n import NodeRun
