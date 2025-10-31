@@ -1,3 +1,4 @@
 {
-    "remote.autoForwardPortsFallback": 0
+    "remote.autoForwardPortsFallback": 0,
+    "postman.settings.dotenv-detection-notification-visibility": false
 }
