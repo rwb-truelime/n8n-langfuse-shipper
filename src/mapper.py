@@ -62,6 +62,12 @@ from .mapping.io_normalizer import (
     normalize_node_io as _normalize_node_io,
     strip_system_prompt_from_langchain_lmchat as _strip_system_prompt_from_langchain_lmchat,
 )
+from .mapping.parent_resolution import (
+    build_reverse_edges as _build_reverse_edges,
+    build_child_agent_map as _build_child_agent_map,
+    resolve_parent as _resolve_parent,
+)
+from .mapping.mapping_context import MappingContext
  # Binary helper functions now sourced from mapping.binary_sanitizer. Original
  # inline definitions removed to reduce mapper.py size; imports above preserve
  # previous names for callers inside this module.
@@ -930,23 +936,6 @@ def _detect_gemini_empty_output_anomaly(
     return None, meta
 
 
-# --------------------------- Stage 4 Refactor: MappingContext ---------------------------
-
-@dataclass
-class MappingContext:
-    """Aggregate shared mapping state (static + mutable) for clarity.
-
-    Pure organizational refactor; behavior must remain unchanged.
-    """
-    trace_id: str
-    root_span_id: str
-    wf_node_lookup: Dict[str, Dict[str, Optional[str]]]
-    wf_node_obj: Dict[str, WorkflowNode]
-    reverse_edges: Dict[str, List[str]]
-    child_agent_map: Dict[str, Tuple[str, str]]
-    truncate_limit: Optional[int]
-    last_span_for_node: Dict[str, str] = field(default_factory=dict)
-    last_output_data: Dict[str, Any] = field(default_factory=dict)
 
 
 def _map_execution(
