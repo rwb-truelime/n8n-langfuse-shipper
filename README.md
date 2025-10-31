@@ -206,8 +206,4 @@ Contributions are welcome. Please follow these steps to set up your development 
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the `LICENSE` and `NOTICE` files for details.
-
-## License
-
 Apache License 2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
