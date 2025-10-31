@@ -11,6 +11,8 @@
 High‑throughput backfill service that reads historical n8n execution data from PostgreSQL and ships it to Langfuse via the OpenTelemetry (OTLP/HTTP) endpoint.
 
 Current focus: optional Langfuse media token upload (feature‑flag gated) alongside hierarchical Agent/Tool/LLM parenting, pointer‑compressed execution decoding, and stable OTLP exporting.
+New capability: AI-only span filtering (`--filter-ai-only` flag or `FILTER_AI_ONLY=true` env) to export
+only AI-related node spans (plus ancestor context) for focused GenAI analytics.
 
 Note (Removal): The legacy Azure‑Blob specific module `media_uploader.py` has been fully removed.
 Media handling now exclusively uses the Langfuse Media API token flow implemented in `src/media_api.py`.
@@ -62,6 +64,10 @@ Need more? Expand the detailed sections below.
 - Observation type inference ported from JS mapper (`src/observation_mapper.py`).
 - Deterministic trace & span IDs (trace id = raw `<executionId>` string, span IDs via UUIDv5). Trace name equals the workflow name (fallback: `execution`). Execution id exposed as span metadata key `n8n.execution.id` only (not duplicated in trace metadata). This shipper assumes exactly ONE n8n instance per Langfuse project—use separate Langfuse projects (keys) for additional instances to avoid execution id collisions.
 - Hierarchical AI Agent parenting using any `ai_*` connection type in `workflowData.connections` (metadata: `n8n.agent.parent`, `n8n.agent.link_type`).
+- Optional AI-only filtering retaining only AI node spans (nodes from
+	`@n8n/n8n-nodes-langchain` or category `AI/LangChain Nodes`) plus non-AI ancestors; root span
+	always kept. Metadata: `n8n.filter.ai_only=true`, `n8n.filter.excluded_node_count`, and
+	`n8n.filter.no_ai_spans=true` when no AI spans exist.
 - Chronological span emission to guarantee agent span exists before children.
 - Sequential + graph fallback parent inference (runtime `source.previousNodeRun` > last seen node span > static graph > root).
 - Pointer‑compressed execution data decoding (list/pointer array format) seamlessly reconstructed into standard `runData` (`_decode_compact_pointer_execution`).
@@ -306,6 +312,7 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | `MEDIA_MAX_BYTES` | `25000000` | (none) | Max decoded size per asset; larger assets remain redaction placeholders. |
 | `EXTENDED_MEDIA_SCAN_MAX_ASSETS` | `250` | (none) | Cap on number of non-canonical discovered binary assets per node run (data URL / file-like dict / contextual base64). <=0 disables. |
 | `REQUIRE_EXECUTION_METADATA` | `false` | `--require-execution-metadata / --no-require-execution-metadata` | Only include executions having at least one row in `<prefix>execution_metadata` with matching id. |
+| `FILTER_AI_ONLY` | `false` | `--filter-ai-only / --no-filter-ai-only` | Export only AI-related spans (plus ancestor chain); root span always retained. |
 | `LOG_LEVEL` | `INFO` | (none) | Python logging level (`DEBUG`, `INFO`, etc.). |
 
 ### Langfuse / OTLP Export
@@ -335,6 +342,7 @@ The shipper is configured by environment variables (loaded via `pydantic-setting
 | DSN Construction | If `PG_DSN` empty and host+db present, DSN auto-built. |
 | Prefix Logic | Unset prefix ⇒ `n8n_`; explicit empty string ⇒ no prefix. |
 | Binary Redaction | Always on (independent of truncation). Large/base64-like payloads replaced with placeholders. |
+| AI-only Filtering | When enabled: keep root, AI spans, ancestor chain; attach filtering metadata keys. |
 | Root Span ID Strategy | Deterministic (UUIDv5 seed) with root span ended *after* children for reliability. |
 | Flush Strategy | Forced every `FLUSH_EVERY_N_TRACES`. Backpressure sleep if backlog > soft limit. |
 
@@ -364,6 +372,7 @@ If you want to temporarily throttle without changing env:
 python -m src backfill --limit 500 --no-dry-run \
 	--export-queue-soft-limit 2000 \
 	--export-sleep-ms 120
+	--filter-ai-only
 ```
 
 ### Truncation, Binary & Media Clarifications
@@ -375,6 +384,8 @@ python -m src backfill --limit 500 --no-dry-run \
 | Long base64-looking string | Replaced with structured placeholder object. |
 | Media upload enabled + eligible asset | Placeholder with `_media_pending=true` replaced by Langfuse media token string `@@@langfuseMedia:type=<mime>|id=<mediaId>|source=base64_data_uri@@@`. |
 | Media upload failure / size over cap | Placeholder stays (legacy redaction), `n8n.media.upload_failed=true` metadata added. |
+| AI-only filtering enabled | Non-AI node spans excluded unless ancestor of an AI span; root span kept. |
+| AI-only filtering enabled, no AI spans | Only root span exported; root has `n8n.filter.no_ai_spans=true`. |
 | Media create deduplicated (no uploadUrl) | Token substituted (counts toward asset_count); no failure flags or error codes. |
 | Extended discovery asset (data URL / file-like / contextual base64) | Treated like canonical asset: placeholder then token (or redaction if upload disabled). Capped by EXTENDED_MEDIA_SCAN_MAX_ASSETS. |
 
@@ -383,6 +394,7 @@ python -m src backfill --limit 500 --no-dry-run \
 | Symptom | Likely Cause | Expected Behavior / Action |
 |---------|--------------|----------------------------|
 | Placeholder dict with `_media_pending` remains instead of token | API create/upload failure or feature disabled | Span metadata `n8n.media.upload_failed=true` when failure; verify host/keys & logs. |
+| Missing expected non-AI spans | AI-only filtering enabled | Disable `FILTER_AI_ONLY` or pass `--no-filter-ai-only` to restore full span set. |
 | Placeholder remains for large file | Asset exceeded `MEDIA_MAX_BYTES` | Flag `n8n.media.upload_failed=true`; increase limit if acceptable. |
 | `n8n.media.asset_count` missing | No successful token substitutions | Normal when all assets failed or feature disabled. |
 | Token present but media not visible in UI | (Rare) UI lag or later deletion | Token is opaque; confirm in Langfuse project media list. |
@@ -446,8 +458,9 @@ set -x DB_POSTGRESDB_PASSWORD n8n
 set -x DB_POSTGRESDB_SCHEMA public
 set -x DB_TABLE_PREFIX n8n_
 set -x LANGFUSE_HOST https://cloud.langfuse.com
-set -x LANGFUSE_PUBLIC_KEY lf_pk_... 
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
 set -x LANGFUSE_SECRET_KEY lf_sk_...
+set -x FILTER_AI_ONLY true  # optional: export only AI spans
 ```
 
 If both component vars and `PG_DSN` are set, `PG_DSN` takes precedence.
@@ -712,6 +725,47 @@ We prioritize behavior regression detection over line coverage metrics. Each inv
 
 ---
 
+### AI-Only Filtering
+
+Enable focused GenAI span export by filtering out non-AI workflow logic.
+
+Activation (CLI):
+```fish
+python -m src backfill --limit 100 --no-dry-run --filter-ai-only
+```
+Environment alternative:
+```fish
+set -x FILTER_AI_ONLY true
+python -m src backfill --limit 100 --no-dry-run
+```
+
+AI Node Detection:
+1. Category equals `AI/LangChain Nodes` (fast path)
+2. Node type present in authoritative set from `@n8n/n8n-nodes-langchain` (see `observation_mapper.py`)
+
+Retention Rules:
+* Always keep root span.
+* Keep AI spans.
+* Keep non-AI ancestors along parent chain to each AI span.
+* Remove other non-AI spans.
+* If no AI spans exist: export only root (metadata `n8n.filter.no_ai_spans=true`).
+
+Metadata (root span):
+* `n8n.filter.ai_only=true`
+* `n8n.filter.excluded_node_count=<int>`
+* `n8n.filter.no_ai_spans=true` (only when no AI spans remain)
+
+Use Cases:
+* Reduce payload volume in large historical backfills.
+* Focus dashboards on LLM / embedding performance.
+* Exclude control-flow noise (Set/If/Wait nodes) when analyzing model quality.
+
+Disable via `--no-filter-ai-only` or `set -x FILTER_AI_ONLY false`.
+
+Test Coverage: `tests/test_ai_filtering.py` asserts classification, ancestor retention, exclusion counts, and empty-AI execution behavior.
+
+---
+
 
 ### Pre-commit Hooks
 
@@ -787,6 +841,7 @@ set -x ENABLE_MEDIA_UPLOAD true
 set -x LANGFUSE_HOST https://cloud.langfuse.com
 set -x LANGFUSE_PUBLIC_KEY lf_pk_...
 set -x LANGFUSE_SECRET_KEY lf_sk_...
+set -x FILTER_AI_ONLY false  # explicitly disable AI filtering
 python -m src backfill --limit 10 --dry-run
 ```
 If correctly configured you will see patched span outputs containing `@@@langfuseMedia:` tokens and metadata `n8n.media.asset_count`.
@@ -939,5 +994,3 @@ header_search_chars = 250
 ## License
 
 Apache License 2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
-
-

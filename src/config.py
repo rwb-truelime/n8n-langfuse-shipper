@@ -144,6 +144,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------------- Filtering (AI-only spans) -----------------
+    FILTER_AI_ONLY: bool = Field(
+        default=False,
+        description=(
+            "If true, only export spans for AI-related nodes (nodes from the "
+            "@n8n/n8n-nodes-langchain package). Root span always included; "
+            "non-AI parents on path to AI nodes preserved. Executions with no "
+            "AI nodes export root only with n8n.filter.no_ai_spans=true."
+        ),
+    )
+
     # Media surfacing: always in-place replacement (legacy/mirror modes removed
     # for simplicity per project policy of no backward compatibility). Tokens
     # are inserted exactly where base64 strings were, with shallow promotion of

@@ -203,3 +203,187 @@ def map_node_to_observation_type(node_type: Optional[str], category: Optional[st
 
 
 __all__ = ["map_node_to_observation_type", "OBS_TYPES"]
+
+# ---------------------------------------------------------------------------
+# AI Node Classification (Authoritative LangChain Package Mapping)
+# ---------------------------------------------------------------------------
+# All node *types* shipped inside the @n8n/n8n-nodes-langchain package are
+# considered "AI" for the purposes of optional span filtering. The list below
+# is derived from that package's package.json (nodes array). Keep the list
+# synchronized if upstream adds or removes nodes. Sorting is alphabetical for
+# deterministic diffs and easier visual scanning.
+#
+# NOTE: Some names (e.g. Code) also exist in Core categories; only the
+# combination of type membership OR category "AI/LangChain Nodes" qualifies a
+# node as AI. Category check provides a future‑proof fast path when present.
+#
+# Invariants (documented in copilot-instructions.md):
+# * Adding / removing a type here requires test updates.
+# * Helper function `is_ai_node` is pure and side‑effect free.
+# * This module does NOT perform filtering; mapping layer consumes helper.
+AI_NODE_TYPES: Set[str] = {
+    # Agents & tools (agent ecosystem)
+    "Agent",
+    "AgentTool",
+    "OpenAiAssistant",
+    # Vendors / direct model wrappers
+    "Anthropic",
+    "GoogleGemini",
+    "Ollama",
+    "OpenAi",
+    # Chain / higher-level orchestration
+    "ChainLlm",
+    "ChainRetrievalQa",
+    "ChainSummarization",
+    "SentimentAnalysis",
+    "InformationExtractor",
+    "TextClassifier",
+    # Code execution scoped to AI pipelines
+    "Code",
+    # Document loaders
+    "DocumentBinaryInputLoader",
+    "DocumentDefaultDataLoader",
+    "DocumentGithubLoader",
+    "DocumentJsonInputLoader",
+    # Embeddings
+    "EmbeddingsAwsBedrock",
+    "EmbeddingsAzureOpenAi",
+    "EmbeddingsCohere",
+    "EmbeddingsGoogleGemini",
+    "EmbeddingsGoogleVertex",
+    "EmbeddingsHuggingFaceInference",
+    "EmbeddingsLemonade",
+    "EmbeddingsMistralCloud",
+    "EmbeddingsOllama",
+    "EmbeddingsOpenAi",
+    # LLM Chat variants
+    "LmChatAnthropic",
+    "LmChatAzureOpenAi",
+    "LmChatAwsBedrock",
+    "LmChatCohere",
+    "LmChatDeepSeek",
+    "LmChatGoogleGemini",
+    "LmChatGoogleVertex",
+    "LmChatGroq",
+    "LmChatLemonade",
+    "LmChatMistralCloud",
+    "LmChatOllama",
+    "LmChatOpenAi",
+    "LmChatOpenRouter",
+    "LmChatVercelAiGateway",
+    "LmChatXAiGrok",
+    # LLM Completion / other model wrappers
+    "LmCohere",
+    "LmLemonade",
+    "LmOllama",
+    "LmOpenAi",
+    "LmOpenHuggingFaceInference",
+    # MCP (Model Context Protocol tooling / triggers)
+    "McpClientTool",
+    "McpTrigger",
+    # Memory nodes
+    "MemoryBufferWindow",
+    "MemoryChatRetriever",
+    "MemoryManager",
+    "MemoryMongoDbChat",
+    "MemoryMotorhead",
+    "MemoryPostgresChat",
+    "MemoryRedisChat",
+    "MemoryXata",
+    "MemoryZep",
+    # Output parsers
+    "OutputParserAutofixing",
+    "OutputParserItemList",
+    "OutputParserStructured",
+    # Rerankers / evaluators
+    "RerankerCohere",
+    # Retrievers & composite retrieval helpers
+    "RetrieverContextualCompression",
+    "RetrieverMultiQuery",
+    "RetrieverVectorStore",
+    "RetrieverWorkflow",
+    # Text splitters
+    "TextSplitterCharacterTextSplitter",
+    "TextSplitterRecursiveCharacterTextSplitter",
+    "TextSplitterTokenSplitter",
+    # Tool nodes (invocable capabilities)
+    "ToolCalculator",
+    "ToolCode",
+    "ToolHttpRequest",
+    "ToolSearXng",
+    "ToolSerpApi",
+    "ToolThink",
+    "ToolVectorStore",
+    "ToolWikipedia",
+    "ToolWolframAlpha",
+    "ToolWorkflow",
+    # Triggers / chat initiators
+    "Chat",
+    "ChatTrigger",
+    "ManualChatTrigger",
+    # Vector store management operations
+    "VectorStoreInMemory",
+    "VectorStoreInMemoryInsert",
+    "VectorStoreInMemoryLoad",
+    "VectorStoreMilvus",
+    "VectorStoreMongoDBAtlas",
+    "VectorStorePGVector",
+    "VectorStorePinecone",
+    "VectorStorePineconeInsert",
+    "VectorStorePineconeLoad",
+    "VectorStoreQdrant",
+    "VectorStoreRedis",
+    "VectorStoreSupabase",
+    "VectorStoreSupabaseInsert",
+    "VectorStoreSupabaseLoad",
+    "VectorStoreWeaviate",
+    "VectorStoreZep",
+    "VectorStoreZepInsert",
+    "VectorStoreZepLoad",
+    # Utility orchestration
+    "ToolExecutor",
+    "ModelSelector",
+    "Guardrails",
+    # Custom extension already treated as generation
+    "limescapeDocs",
+}
+
+
+_AI_NODE_TYPES_LOWER: Set[str] = {t.lower() for t in AI_NODE_TYPES}
+_NAMESPACE_PREFIXES: tuple[str, ...] = (
+    "@n8n/n8n-nodes-langchain.",
+    "n8n-nodes-langchain.",
+)
+
+
+def _normalize_node_type(raw: str) -> str:
+    """Normalize a raw node type for AI membership comparison.
+
+    Steps:
+    * Strip known namespace prefixes (JS package style).
+    * Return lowercase for case-insensitive matching.
+    * Preserve internal camel casing only for debugging purposes.
+    """
+    for p in _NAMESPACE_PREFIXES:
+        if raw.startswith(p):  # exact prefix match
+            raw = raw[len(p) :]
+            break
+    return raw.lower()
+
+
+def is_ai_node(node_type: Optional[str], category: Optional[str]) -> bool:
+    """Return True if the node is classified as an AI node.
+
+    Detection precedence:
+    1. Category equals "AI/LangChain Nodes" (fast path, future proof).
+    2. Case-insensitive node type membership in `AI_NODE_TYPES`, allowing optional
+       namespace prefixes (e.g. @n8n/n8n-nodes-langchain.OpenAi -> OpenAi).
+    """
+    if not node_type:
+        return False
+    if category == "AI/LangChain Nodes":
+        return True
+    return _normalize_node_type(node_type) in _AI_NODE_TYPES_LOWER
+
+
+__all__.extend(["is_ai_node", "AI_NODE_TYPES"])

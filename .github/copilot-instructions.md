@@ -183,6 +183,9 @@ class LangfuseTrace(BaseModel):
 8. All internal data structures defined with Pydantic models (validation + type safety mandatory).
 9. Database access is read-only (SELECTs only); respects dynamic table prefix logic.
 10. Determinism: identical input rows yield identical span/trace ids & structures.
+11. AI-only filtering (when enabled) must preserve root span, retain all AI node spans, and include
+    ancestor chain context; executions with no AI nodes produce root-only trace flagged via
+    `n8n.filter.no_ai_spans=true`.
 
 ---
 
@@ -263,14 +266,24 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 
 **LangChain LMChat System Prompt Stripping:**
 
-LangChain LMChat nodes (`@n8n/n8n-nodes-langchain.lmChat*`) combine System and User prompts into single message blobs. The split marker `\n\n## START PROCESSING\n\nHuman: ##` separates them (System ends after `## START PROCESSING\n\n`, User starts at `Human: ##`).
+LangChain LMChat nodes (@n8n/n8n-nodes-langchain.lmChat*) combine System and User prompts in one message blob.
+Split marker sequence (literal token sequence):
 
-Function `_strip_system_prompt_from_langchain_lmchat()` strips System prompts:
+```text
+\n\n## START PROCESSING\n\nHuman: ##
+```
+
+For clarity: the System segment ends just before the line containing ## START PROCESSING; the User
+segment begins at the line starting with Human: ## (hash symbols are part of the literal delimiter
+and are not Markdown headings). This explicit code block avoids editor diagnostics that might
+interpret the double-hash sequences as tool directives.
+
+Function _strip_system_prompt_from_langchain_lmchat() strips System prompts:
 * Called in `_prepare_io_and_output()` **BEFORE** `_normalize_node_io()` (preserves structure).
 * Only processes generation spans with "lmchat" in node type (case-insensitive).
 * **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
 * Handles both message formats: list of strings `["System: ... Human: ## ..."]` and list of dicts `[{"content": "System: ... Human: ## ..."}]`.
-* Strips everything before `Human: ##` marker when found.
+* Strips everything before the Human: ## marker when found.
 * Fail-open: returns original input on any error.
 * Logs depth and characters removed when stripping occurs.
 
@@ -404,6 +417,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `CHECKPOINT_FILE` | `.backfill_checkpoint` | Path for last processed execution id. |
 | `TRUNCATE_FIELD_LEN` | `0` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
+| `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
 
 ### Media Upload (Token Flow)
@@ -445,6 +459,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.graph.inferred_parent`
 * `n8n.agent.parent`, `n8n.agent.link_type`
 * `n8n.truncated.input`, `n8n.truncated.output`
+* `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
 
 **Gemini empty-output anomaly (Gemini/Vertex chat bug):**
 * `n8n.gen.empty_output_bug` (bool)
@@ -498,6 +513,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Pointer Decoding | Pointer-compressed arrays reconstructed | `test_pointer_decoding.py` |
 | Timezone Enforcement | No naive datetimes; normalization to UTC | `test_timezone_awareness.py` |
 | Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
+| AI-only Filtering | Root retention, ancestor preservation, metadata flags | `test_ai_filtering.py` |
 
 ### Parent Resolution Precedence (Authoritative Table)
 
@@ -563,6 +579,7 @@ Add/update tests when:
 3. Modifying generation detection or usage extraction.
 4. Updating pointer-compressed decoding.
 5. Changing truncation/propagation coupling.
+6. Always open `FISH` terminal and use `pytest` or `pytest -q` for test runs!
 
 Each new metadata key must appear in at least one assertion. Forbidden duplications (e.g., execution id outside root span) asserted negative.
 
@@ -676,6 +693,7 @@ Before merging changes:
 8. New env vars documented & tested.
 9. No mapper network calls added.
 10. Metadata key additions/removals reflected in tests + README.
+11. AI-only filtering logic unchanged (root span retained, exclusion counts correct) unless tests & docs updated.
 
 ---
 

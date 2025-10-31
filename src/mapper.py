@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .media_api import BinaryAsset, MappedTraceWithAssets
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
-from .observation_mapper import map_node_to_observation_type
+from .observation_mapper import map_node_to_observation_type, is_ai_node
 
 SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 logger = logging.getLogger(__name__)
@@ -888,8 +888,6 @@ def _extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, st
     return result
 
 
-# --------------------------- Stage 1 Refactor Helpers ---------------------------
-
 def _build_reverse_edges(workflow_data: Any) -> Dict[str, List[str]]:
     """Construct a reverse edge map: node -> list of predecessor node names.
 
@@ -1572,10 +1570,14 @@ def _map_execution(
 def map_execution_to_langfuse(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
+    *,
+    filter_ai_only: bool = False,
 ) -> LangfuseTrace:
     trace, _assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=False
     )
+    if filter_ai_only:
+        _apply_ai_filter(trace, record)
     return trace
 
 
@@ -1845,12 +1847,127 @@ def map_execution_with_assets(
     record: N8nExecutionRecord,
     truncate_limit: Optional[int] = 4000,
     collect_binaries: bool = False,
+    *,
+    filter_ai_only: bool = False,
 ) -> MappedTraceWithAssets:
     # collect_binaries kept for backwards compatibility in case external code
     # passed False explicitly.
     trace, assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=collect_binaries
     )
+    if filter_ai_only:
+        _apply_ai_filter(trace, record)
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])
 
-__all__ = ["map_execution_to_langfuse", "map_execution_with_assets"]
+
+def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
+    """Apply windowed AI filtering (lean context retention).
+
+    Steps:
+      1. Identify AI spans.
+      2. If none → root-only fallback.
+            3. Include root, all AI spans, strictly up to 2 immediate chronological
+                 spans preceding earliest AI (excluding root which is always kept),
+                 logical in-between spans whose ancestor chain touches an AI span,
+                 and strictly up to 2 immediate chronological spans after latest AI.
+      4. Record window start/end metadata.
+    """
+    try:
+        if not trace.spans:
+            return
+        root_span = next(
+            (s for s in trace.spans if s.parent_id is None or "n8n.execution.id" in s.metadata),
+            trace.spans[0],
+        )
+        wf_lookup: Dict[str, Tuple[Optional[str], Optional[str]]] = {
+            n.name: (n.type, n.category) for n in record.workflowData.nodes
+        }
+        original_order = list(trace.spans)
+        spans_by_id: Dict[str, LangfuseSpan] = {s.id: s for s in original_order}
+        ai_span_ids: set[str] = set()
+        ai_indices: List[int] = []
+        for idx, span in enumerate(original_order):
+            if span is root_span:
+                continue
+            n_type, n_cat = wf_lookup.get(span.name, (None, None))
+            if is_ai_node(n_type, n_cat):
+                ai_span_ids.add(span.id)
+                ai_indices.append(idx)
+        keep_ids: set[str] = {root_span.id}
+        if not ai_indices:
+            root_span.metadata["n8n.filter.ai_only"] = True
+            root_span.metadata["n8n.filter.excluded_node_count"] = len(original_order) - 1
+            root_span.metadata["n8n.filter.no_ai_spans"] = True
+            trace.spans = [root_span]
+            return
+        first_ai_idx = ai_indices[0]
+        last_ai_idx = ai_indices[-1]
+        keep_ids.update(ai_span_ids)
+        # Pre-context: two spans immediately before first AI (indices first_ai_idx-1, first_ai_idx-2)
+        pre_context_count = 0
+        if first_ai_idx - 1 >= 1:  # index 0 is root already included
+            keep_ids.add(original_order[first_ai_idx - 1].id)
+            pre_context_count += 1
+        if first_ai_idx - 2 >= 1:
+            keep_ids.add(original_order[first_ai_idx - 2].id)
+            pre_context_count += 1
+        index_by_id = {s.id: i for i, s in enumerate(original_order)}
+
+        def _is_on_chain(span: LangfuseSpan) -> bool:
+            idx = index_by_id.get(span.id, -1)
+            if idx < first_ai_idx or idx > last_ai_idx:
+                return False
+            guard = 0
+            cur = span
+            while cur and guard < 1000 and cur.parent_id:
+                guard += 1
+                if cur.parent_id in ai_span_ids:
+                    return True
+                cur = spans_by_id.get(cur.parent_id)
+            return False
+
+        chain_context_count = 0
+        for i in range(first_ai_idx + 1, last_ai_idx):
+            span = original_order[i]
+            if span.id in keep_ids:
+                continue
+            if _is_on_chain(span):
+                keep_ids.add(span.id)
+                chain_context_count += 1
+        # Post-context: two spans immediately after last AI (indices last_ai_idx+1, last_ai_idx+2)
+        post_context_count = 0
+        if last_ai_idx + 1 < len(original_order):
+            keep_ids.add(original_order[last_ai_idx + 1].id)
+            post_context_count += 1
+        if last_ai_idx + 2 < len(original_order):
+            keep_ids.add(original_order[last_ai_idx + 2].id)
+            post_context_count += 1
+        filtered_spans = [s for s in original_order if s.id in keep_ids]
+        excluded_count = len(original_order) - len(filtered_spans)
+        root_span.metadata["n8n.filter.window_start_span"] = original_order[first_ai_idx].name
+        root_span.metadata["n8n.filter.window_end_span"] = original_order[last_ai_idx].name
+        root_span.metadata["n8n.filter.ai_only"] = True
+        root_span.metadata["n8n.filter.excluded_node_count"] = excluded_count
+        root_span.metadata["n8n.filter.pre_context_count"] = pre_context_count
+        root_span.metadata["n8n.filter.post_context_count"] = post_context_count
+        root_span.metadata["n8n.filter.chain_context_count"] = chain_context_count
+        trace.spans = filtered_spans
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                (
+                    "AI window filter summary: execution_id=%s total_spans=%d kept=%d excluded=%d "
+                    "ai_spans=%d pre_context=%d chain_context=%d post_context=%d window_start=%s window_end=%s"
+                ),
+                record.id,
+                len(original_order),
+                len(filtered_spans),
+                excluded_count,
+                len(ai_span_ids),
+                pre_context_count,
+                chain_context_count,
+                post_context_count,
+                original_order[first_ai_idx].name,
+                original_order[last_ai_idx].name,
+            )
+    except Exception as e:  # pragma: no cover
+        logger.warning("AI filtering failed (fail-open): %s", e)

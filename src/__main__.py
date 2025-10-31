@@ -379,6 +379,14 @@ def backfill(
         None,
         help="Override EXPORT_SLEEP_MS (sleep duration in ms when backlog exceeds soft limit)",
     ),
+    filter_ai_only: Optional[bool] = typer.Option(
+        None,
+        help=(
+            "Only export spans for AI-related nodes (LangChain package). Root span always "
+            "included; non-AI parents of AI nodes preserved. Executions with no AI nodes "
+            "export root span only with n8n.filter.no_ai_spans=true."
+        ),
+    ),
 ) -> None:
     """Run a backfill cycle to process and export n8n executions.
 
@@ -399,6 +407,10 @@ def backfill(
         setattr(settings, "EXPORT_QUEUE_SOFT_LIMIT", int(export_queue_soft_limit))
     if export_sleep_ms is not None:
         setattr(settings, "EXPORT_SLEEP_MS", int(export_sleep_ms))
+    # Determine AI-only filtering flag (CLI has precedence over env/settings)
+    effective_filter_ai_only = (
+        filter_ai_only if filter_ai_only is not None else settings.FILTER_AI_ONLY
+    )
     # Determine metadata filter flag: CLI overrides env/settings
     require_meta_flag = (
         require_execution_metadata
@@ -469,15 +481,21 @@ def backfill(
             # assets to observations. Tokens patched locally after export; the
             # OTLP-exported span output may not include tokens (contract
             # update documented in instructions & README).
+            mapped = None  # for media upload path later
             if settings.ENABLE_MEDIA_UPLOAD:
                 mapped = map_execution_with_assets(
                     record,
                     truncate_limit=effective_trunc,
                     collect_binaries=True,
+                    filter_ai_only=effective_filter_ai_only,
                 )
                 trace = mapped.trace
             else:
-                trace = map_execution_to_langfuse(record, truncate_limit=effective_trunc)
+                trace = map_execution_to_langfuse(
+                    record,
+                    truncate_limit=effective_trunc,
+                    filter_ai_only=effective_filter_ai_only,
+                )
             span_count = len(trace.spans)
             if span_count <= 1:
                 logging.getLogger(__name__).warning(
@@ -488,7 +506,7 @@ def backfill(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
             export_trace(trace, settings, dry_run=dry_run)
-            if settings.ENABLE_MEDIA_UPLOAD and 'mapped' in locals():
+            if settings.ENABLE_MEDIA_UPLOAD and mapped is not None:
                 # Now that OTLP span ids are populated, perform media create + upload.
                 try:
                     patch_and_upload_media(mapped, settings)
