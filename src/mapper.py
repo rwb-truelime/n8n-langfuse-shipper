@@ -39,6 +39,18 @@ from .models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
 from .media_api import BinaryAsset, MappedTraceWithAssets
 from .models.n8n import N8nExecutionRecord, NodeRun, WorkflowNode
 from .observation_mapper import map_node_to_observation_type, is_ai_node
+from .mapping.generation import (
+    GENERATION_PROVIDER_MARKERS as _GENERATION_PROVIDER_MARKERS,
+    detect_generation as _detect_generation,
+    extract_usage as _extract_usage,
+    extract_concise_output as _extract_concise_output,
+    detect_gemini_empty_output_anomaly as _detect_gemini_empty_output_anomaly,
+)
+from .mapping.model_extractor import (
+    extract_model_value as _extract_model_value,
+    looks_like_model_param_key as _looks_like_model_param_key,
+    extract_model_from_parameters as _extract_model_from_parameters,
+)
 
 SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 logger = logging.getLogger(__name__)
@@ -339,184 +351,9 @@ def _normalize_node_io(obj: Any) -> Tuple[Any, Dict[str, bool]]:
     return base, flags
 
 
-_GENERATION_PROVIDER_MARKERS = [
-    # Core providers
-    "openai", "anthropic", "gemini", "mistral", "groq",
-    # Chat wrappers / legacy internal labels
-    "lmchat", "lmopenai",
-    # Newly added / upstream supported vendors
-    "cohere", "deepseek", "ollama", "openrouter", "bedrock", "vertex", "huggingface", "xai",
-    # Custom provider marker for Limescape Docs node
-    "limescape",
-]
 
 
-def _detect_generation(node_type: str, node_run: NodeRun) -> bool:
-    """Determine if a node run should be classified as a 'generation'.
-
-    A node run is considered a generation if it meets one of the following
-    criteria, in order:
-    1.  A `tokenUsage` object is found anywhere in its `run.data`.
-    2.  The `node_type` contains a known LLM provider marker (e.g., 'openai')
-        and does not contain an exclusion marker (e.g., 'embedding').
-
-    Args:
-        node_type: The static type of the n8n node.
-        node_run: The runtime data for the node execution.
-
-    Returns:
-        True if the node run is classified as a generation, False otherwise.
-    """
-    # Fast path: top-level tokenUsage
-    if node_run.data and any(k in node_run.data for k in ("tokenUsage", "tokenUsageEstimate")):
-        return True
-    # Nested search (common n8n shape: {"ai_languageModel": [[{"json": {"tokenUsage": {...}}}]]})
-    if any(
-        _find_nested_key(node_run.data, k) is not None
-        for k in ("tokenUsage", "tokenUsageEstimate")
-    ):
-        return True
-    lowered = node_type.lower()
-    if any(excl in lowered for excl in ("embedding", "embeddings", "reranker")):
-        return False
-    return any(marker in lowered for marker in _GENERATION_PROVIDER_MARKERS)
-
-
-def _extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
-    """Extract and normalize token usage data from a node run.
-
-    Supports both 'tokenUsage' and 'tokenUsageEstimate' (precedence: tokenUsage).
-    Normalizes various key formats (promptTokens, completion, etc.) into
-    LangfuseUsage(input, output, total). Synthesizes total when possible.
-    """
-    data = node_run.data or {}
-    tu: Any = None
-
-    # 1. Top-level fast path (precedence order)
-    for key in ("tokenUsage", "tokenUsageEstimate"):
-        if isinstance(data, dict) and isinstance(data.get(key), dict):
-            tu = data.get(key)
-            break
-
-    # 2. Nested search if not found top-level
-    if tu is None:
-        for key in ("tokenUsage", "tokenUsageEstimate"):
-            container = _find_nested_key(data, key)
-            if container and isinstance(container.get(key), dict):
-                tu = container[key]
-                break
-
-    if not isinstance(tu, dict):
-        # Limescape Docs custom usage keys may live directly in flattened data structure.
-        # Look for totalInputTokens / totalOutputTokens / totalTokens at any nesting level.
-        # We'll search top-level first, then one nested level to keep cost low.
-        def _scan_custom(obj: Any, depth: int = 25) -> Optional[Dict[str, Any]]:
-            if depth < 0:
-                return None
-            if isinstance(obj, dict):
-                keys = obj.keys()
-                if any(k in keys for k in ("totalInputTokens", "totalOutputTokens", "totalTokens")):
-                    return obj
-                for v in list(obj.values())[:150]:  # shallow guard
-                    found = _scan_custom(v, depth - 1)
-                    if found:
-                        return found
-            elif isinstance(obj, list):
-                for item in obj[:150]:
-                    found = _scan_custom(item, depth - 1)
-                    if found:
-                        return found
-            return None
-        tu = _scan_custom(data)
-        if not isinstance(tu, dict):
-            return None
-
-    # Gather candidates
-    input_val = tu.get("input")
-    output_val = tu.get("output")
-    total_val = tu.get("total")
-
-    # Legacy verbose keys
-    p_tokens = tu.get("promptTokens")
-    c_tokens = tu.get("completionTokens")
-    t_tokens = (
-        tu.get("totalTokens")
-        or tu.get("totalInputTokens")
-        or tu.get("totalOutputTokens")
-    )
-    # Limescape custom flattened keys (treat totalInputTokens /
-    # totalOutputTokens as input/output if canonical missing)
-    if input_val is None:
-        input_val = tu.get("totalInputTokens", input_val)
-    if output_val is None:
-        output_val = tu.get("totalOutputTokens", output_val)
-
-    # Alternate short legacy keys
-    p_short = tu.get("prompt")
-    c_short = tu.get("completion")
-    # total already in total_val (or t_tokens)
-
-    # Reconcile precedence
-    if input_val is None:
-        if p_tokens is not None:
-            input_val = p_tokens
-        elif p_short is not None:
-            input_val = p_short
-    if output_val is None:
-        if c_tokens is not None:
-            output_val = c_tokens
-        elif c_short is not None:
-            output_val = c_short
-    if total_val is None:
-        if t_tokens is not None:
-            total_val = t_tokens
-        elif input_val is not None and output_val is not None:
-            try:
-                total_val = int(input_val) + int(output_val)
-            except Exception:
-                pass
-
-    if input_val is None and output_val is None and total_val is None:
-        return None
-
-    return LangfuseUsage(input=input_val, output=output_val, total=total_val)
-
-
-def _find_nested_key(
-    data: Any, target: str, max_depth: int = 150
-) -> Optional[Dict[str, Any]]:
-    """Perform a depth-limited search for a dictionary containing a specific key.
-
-    This helper traverses a nested structure of dictionaries and lists to find
-    the first dictionary that has `target` as a key. It is used to locate
-    data like `tokenUsage`, `tokenUsageEstimate`, or `model` which may be deeply nested.
-
-    Args:
-        data: The object to search.
-        target: The dictionary key to find.
-        max_depth: The maximum recursion depth.
-
-    Returns:
-        The first dictionary found containing the target key, or None.
-    """
-    try:
-        if max_depth < 0:
-            return None
-        if isinstance(data, dict):
-            if target in data:
-                return data
-            for v in data.values():
-                found = _find_nested_key(v, target, max_depth - 1)
-                if found is not None:
-                    return found
-        elif isinstance(data, list):
-            for item in data[:150]:  # guard large lists
-                found = _find_nested_key(item, target, max_depth - 1)
-                if found is not None:
-                    return found
-    except Exception:
-        return None
-    return None
+ # Nested key search moved to mapping.generation module.
 
 
 def _extract_model_value(data: Any) -> Optional[str]:
@@ -892,54 +729,10 @@ def _prepare_io_and_output(
     output_str: Optional[str] = None
     output_trunc = False
     if is_generation:
-        try:
-            candidate = norm_output_obj
-            extracted_text: Optional[str] = None
-            # Gemini / Vertex structure
-            if isinstance(candidate, dict):
-                resp = (
-                    candidate.get("response")
-                    if isinstance(candidate.get("response"), dict)
-                    else candidate
-                )
-                gens = resp.get("generations") if isinstance(resp, dict) else None
-                if isinstance(gens, list) and gens:
-                    first_layer = gens[0]
-                    if isinstance(first_layer, list) and first_layer:
-                        inner = first_layer[0]
-                        if isinstance(inner, dict):
-                            txt = inner.get("text")
-                            if isinstance(txt, str) and txt.strip():
-                                extracted_text = txt
-            # Limescape Docs markdown preference
-            if (
-                extracted_text is None
-                and isinstance(candidate, dict)
-                and "limescape" in node_type.lower()
-            ):
-                md_val = candidate.get("markdown")
-                if isinstance(md_val, str) and md_val.strip():
-                    extracted_text = md_val
-            # Fallback nested ai_* channel text search
-            if extracted_text is None and isinstance(candidate, dict):
-                for k, v in candidate.items():
-                    if k.startswith("ai_") and isinstance(v, list) and v:
-                        for layer in v[:3]:
-                            if isinstance(layer, list) and layer:
-                                first = layer[0]
-                                if isinstance(first, dict):
-                                    txt = first.get("text")
-                                    if isinstance(txt, str) and txt.strip():
-                                        extracted_text = txt
-                                        break
-                        if extracted_text:
-                            break
-            if extracted_text is not None:
-                output_str = extracted_text
-                output_trunc = False
-        except Exception:
-            # Best-effort; fall back to full serialization
-            pass
+        extracted_text = _extract_concise_output(norm_output_obj, node_type)
+        if extracted_text is not None:
+            output_str = extracted_text
+            output_trunc = False
     if output_str is None:
         output_str, output_trunc = _serialize_and_truncate(
             norm_output_obj, truncate_limit
