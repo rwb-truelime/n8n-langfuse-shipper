@@ -674,6 +674,7 @@ def _resolve_parent(
 
     # 4. Root fallback
     return parent_id, prev_node, prev_node_run
+    return parent_id, prev_node, prev_node_run
 
 
 def _prepare_io_and_output(
