@@ -4,7 +4,7 @@
 Python-based microservice for high-throughput backfill of historical n8n execution data from PostgreSQL to Langfuse via OpenTelemetry (OTLP) endpoint. Focus: correctness, performance, robustness for large-scale data migration.
 
 ## Document Sync & Version Policy
-This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift. Last major sync: 2025-09-23.
+This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift.
 
 ---
 
@@ -261,6 +261,21 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 * Never infer generation purely from output length or text presence.
 * Embedding/reranker nodes intentionally excluded unless explicit `tokenUsage`.
 
+**LangChain LMChat System Prompt Stripping:**
+
+LangChain LMChat nodes (`@n8n/n8n-nodes-langchain.lmChat*`) combine System and User prompts into single message blobs. The split marker `\n\n## START PROCESSING\n\nHuman: ##` separates them (System ends after `## START PROCESSING\n\n`, User starts at `Human: ##`).
+
+Function `_strip_system_prompt_from_langchain_lmchat()` strips System prompts:
+* Called in `_prepare_io_and_output()` **BEFORE** `_normalize_node_io()` (preserves structure).
+* Only processes generation spans with "lmchat" in node type (case-insensitive).
+* **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
+* Handles both message formats: list of strings `["System: ... Human: ## ..."]` and list of dicts `[{"content": "System: ... Human: ## ..."}]`.
+* Strips everything before `Human: ##` marker when found.
+* Fail-open: returns original input on any error.
+* Logs depth and characters removed when stripping occurs.
+
+Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, string format, deeply nested, missing marker, non-lmChat, multiple messages).
+
 ### Binary & Multimodality
 
 **Binary Stripping (Unconditional):**
@@ -290,6 +305,7 @@ When normalizing node I/O, unwrap channel/list/json wrappers while merging back 
 7. Per-span replacement count aggregated into metadata `n8n.media.asset_count` (only successful tokens).
 8. Fail-open: oversize, decode errors, API/upload failures leave placeholder + set `n8n.media.upload_failed=true`. Processing continues; export never aborted.
 9. Determinism: same binary input (SHA256) yields idempotent create semantics on Langfuse side.
+ 10. Multi-provider header injection: If presigned upload URL host contains `blob.core.windows.net` (Azure Blob) we MUST send `x-ms-blob-type: BlockBlob` in addition to existing S3-style headers. Absence previously produced 400 `MissingRequiredHeader` (HeaderName `x-ms-blob-type`). S3 paths ignore this extra header (fail-open). Detection is substring-based and documented here; any change requires test + README update.
 
 **Extended Binary Discovery:**
 In addition to canonical `run.data.binary` blocks, mapper scans for:
@@ -522,6 +538,7 @@ POST `/api/public/media` keys:
 | field | Derived from placeholder path | First segment → `input`/`output`/`metadata` |
 
 Presigned upload required headers: `Content-Type`, `x-amz-checksum-sha256`.
+ Azure Blob variant additionally requires: `x-ms-blob-type: BlockBlob` (auto-added when URL contains `blob.core.windows.net`).
 
 **Observation Linking Invariant:** Every successful media create from a span MUST include `observationId=<otel_span_id>` or UI preview pane will remain empty. Tests: `test_media_observation_link.py`.
 
@@ -627,7 +644,7 @@ Violation = breaking invariant; submit corrective patch.
 * Do NOT move execution id outside root span or duplicate it (breaks single-source invariant).
 * Never introduce `datetime.utcnow()` (timezone invariant). All timestamps must be UTC-aware.
 * Backwards compatibility: breaking changes allowed (early development) but must be documented in release notes. Never implement backwards compatibility; not required at this stage.
-* Update README + this file for new env vars / CLI flags / behavior changes in same PR.
+* Update `README.md` + `copilot-instructions.md` for new env vars / CLI flags / behavior changes in same PR.
 * NOTICE & LICENSE untouched aside from annual year updates.
 * New metadata keys: add tests asserting presence & absence where appropriate.
 
@@ -703,6 +720,53 @@ n8n-langfuse-shipper/
 ├── pyproject.toml
 └── README.md
 ```
+
+---
+
+## Documentation Policy (MANDATORY)
+
+**CRITICAL: All documentation MUST go in EXACTLY these files ONLY:**
+
+1. **`.github/copilot-instructions.md`** - Technical implementation details, architecture, invariants, contracts, testing requirements
+2. **`README.md`** - User-facing documentation, configuration, examples, troubleshooting
+3. **`./infra/README.md`** - Azure resource deployment instructions using Bicep
+
+**FORBIDDEN:**
+* ❌ NEVER create separate markdown files like `FEATURE_NAME.md`, `IMPLEMENTATION_SUMMARY.md`, `CHANGES.md` UNLESS THE USER REQUESTS IT EXPLICITLY!
+* ❌ NEVER create standalone documentation files in the project root or any subdirectory UNLESS THE USER REQUESTS IT EXPLICITLY!
+* ❌ NEVER split documentation across multiple files
+
+**REQUIRED Process for ANY code change:**
+1. Implement the feature with tests
+2. Update **copilot-instructions.md** with technical details (algorithms, invariants, test requirements)
+3. Update **README.md** with user-facing information (configuration, usage, examples)
+4. ALL changes MUST happen in the SAME PR
+
+**Rationale:**
+* Single source of truth prevents documentation drift
+* Easy to find information (only two places to look)
+* Forces documentation discipline
+* Reduces maintenance burden
+
+**Examples of what goes where:**
+
+`copilot-instructions.md`:
+- Implementation algorithms and data structures
+- Parent resolution precedence logic
+- Binary stripping heuristics
+- Test coverage requirements
+- Metadata key definitions
+- Reserved keyword contracts
+
+`README.md`:
+- Environment variable tables
+- CLI command examples
+- Configuration examples
+- Troubleshooting guides
+- Feature descriptions for users
+- Installation and quick start
+
+**Violation = Breaking Invariant:** Creating additional documentation files is considered a critical error. If you create extra docs, you MUST consolidate them into the two canonical files and delete the extra file in the same PR.
 
 ---
 

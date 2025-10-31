@@ -237,6 +237,116 @@ def _strip_binary_payload(obj: Any) -> Any:
     return obj
 
 
+def _strip_system_prompt_from_langchain_lmchat(
+    input_obj: Any, node_type: str
+) -> Any:
+    """Strip System prompt from LangChain LMChat node inputs.
+
+    LangChain LMChat nodes (@n8n/n8n-nodes-langchain.lmChat*) often combine
+    System and User prompts into one large message blob. This function detects
+    the split marker between them and strips everything before the User part.
+
+    Split marker: '\\n\\n## START PROCESSING\\n\\nHuman: ##'
+    - System part ends after: '## START PROCESSING\\n\\n'
+    - User part starts at: 'Human: ##'
+
+    Args:
+        input_obj: The raw input object (can be deeply nested structure).
+        node_type: The node type string to check for lmChat pattern.
+
+    Returns:
+        Modified input object with System prompt stripped if applicable,
+        otherwise original input_obj (fail-open).
+    """
+    # Only process lmChat nodes
+    if not isinstance(node_type, str):
+        return input_obj
+    node_type_lower = node_type.lower()
+    if "lmchat" not in node_type_lower:
+        return input_obj
+
+    # Split marker pattern
+    split_marker = "\n\n## START PROCESSING\n\nHuman: ##"
+    user_start = "Human: ##"
+
+    try:
+        # Work on a deep copy to avoid mutating original
+        import copy
+
+        modified = copy.deepcopy(input_obj)
+        modified_any = False
+
+        # Recursively search for 'messages' arrays at any depth
+        def _process_messages_recursive(
+            obj: Any, depth: int = 0
+        ) -> bool:
+            """Recursively find and process messages arrays.
+
+            Returns True if any modification was made.
+            """
+            nonlocal modified_any
+
+            if depth > 25:  # Safety limit
+                return False
+
+            if isinstance(obj, dict):
+                # Check if this dict has a 'messages' key
+                if "messages" in obj and isinstance(obj["messages"], list):
+                    messages = obj["messages"]
+                    for i, msg in enumerate(messages):
+                        # Case 1: message is a dict with string values
+                        if isinstance(msg, dict):
+                            for key, value in list(msg.items()):
+                                if (
+                                    isinstance(value, str)
+                                    and split_marker in value
+                                ):
+                                    split_idx = value.find(user_start)
+                                    if split_idx != -1:
+                                        msg[key] = value[split_idx:]
+                                        modified_any = True
+                                        logger.debug(
+                                            "Stripped system prompt "
+                                            f"(dict depth={depth}); "
+                                            f"node_type={node_type}, "
+                                            f"removed_chars={split_idx}"
+                                        )
+                        # Case 2: message is a string directly
+                        elif isinstance(msg, str) and split_marker in msg:
+                            split_idx = msg.find(user_start)
+                            if split_idx != -1:
+                                messages[i] = msg[split_idx:]
+                                modified_any = True
+                                logger.debug(
+                                    "Stripped system prompt "
+                                    f"(str depth={depth}); "
+                                    f"node_type={node_type}, "
+                                    f"removed_chars={split_idx}"
+                                )
+
+                # Recurse into all dict values
+                for value in obj.values():
+                    _process_messages_recursive(value, depth + 1)
+
+            elif isinstance(obj, list):
+                # Recurse into all list items
+                for item in obj[:100]:  # Limit list traversal
+                    _process_messages_recursive(item, depth + 1)
+
+            return modified_any
+
+        _process_messages_recursive(modified)
+        return modified if modified_any else input_obj
+
+    except Exception as e:
+        # Fail-open: log and return original
+        logger.debug(
+            f"Failed to strip system prompt from lmChat input: {e}",
+            exc_info=True,
+        )
+        return input_obj
+
+
 def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[str], bool]:
     """Serialize an object to a compact JSON string and optionally truncate it.
 
@@ -935,8 +1045,16 @@ def _prepare_io_and_output(
       4. If extraction succeeds, use extracted text (never truncated); else serialize
          normalized output with truncation.
     """
+    # Strip System prompt from LangChain LMChat generation inputs BEFORE normalization
+    # to preserve the original structure with messages array
+    if is_generation:
+        raw_input_obj = _strip_system_prompt_from_langchain_lmchat(
+            raw_input_obj, node_type
+        )
+
     norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
     norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
+
     # Reattach promoted top-level binary if normalization unwrapped list root,
     # ensuring binary slots persist. This occurs when earlier promotion added
     # run.data['binary'] and _normalize_node_io unwrapped list content.
@@ -1655,6 +1773,12 @@ def _discover_additional_binary_assets(
             if h in seen_sha:
                 return
             seen_sha.add(h)
+            # Compute path segments without array indices
+            clean_path = re.sub(r"\[[0-9]+\]", "", path)
+            path_segments = [
+                seg for seg in clean_path.split(".")
+                if seg and seg != "<root>"
+            ]
             found.append(
                 BinaryAsset(
                     execution_id=execution_id,

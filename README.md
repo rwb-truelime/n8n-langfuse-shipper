@@ -70,6 +70,7 @@ Need more? Expand the detailed sections below.
 			- Gemini empty-output anomaly detection: flags spans where `text==""`, `completionTokens==0`, `promptTokens>0`, `totalTokens>=promptTokens` (and optional empty `generationInfo {}`) with metadata (`n8n.gen.empty_output_bug`, `n8n.gen.empty_generation_info`, token counters) and forces status=error.
 			- Provider markers: `openai`, `anthropic`, `gemini`, `mistral`, `groq`, `lmchat`, `lmopenai`, `cohere`, `deepseek`, `ollama`, `openrouter`, `bedrock`, `vertex`, `huggingface`, `xai`, `limescape` (excludes embeddings/rerankers unless `tokenUsage` present; nested `tokenUsage` & `model` discovered via depth-limited search inside node output channel wrappers like `ai_languageModel`).
             - Concise generation span output extraction: Gemini/Vertex responses extract first non-empty `generations[0][0].text`; Limescape Docs node extracts the `markdown` field (when present) instead of full JSON wrapper.
+            - LangChain LMChat System Prompt Stripping: Automatically strips System prompts from `@n8n/n8n-nodes-langchain.lmChat*` generation inputs. Searches recursively (up to 25 levels deep) for `messages` arrays containing the split marker `\n\n## START PROCESSING\n\nHuman: ##`, keeping only the User prompt portion. Handles both string arrays and dict-with-content formats. Applied before normalization to preserve structure.
 - OTLP exporter with correct parent context handling (no orphan traces) and attribute mapping (`langfuse.observation.*`, `model`, `gen_ai.usage.*`, consolidated `langfuse.observation.usage_details`, root marker `langfuse.internal.as_root`, optional trace identity fields `user.id|session.id|langfuse.trace.tags|langfuse.trace.input|langfuse.trace.output`).
 - Real PostgreSQL streaming with batching, retry & schema/prefix awareness (`src/db.py`).
 - CLI (`backfill`) with `--start-after-id`, `--limit`, `--dry-run`, plus deterministic resume via checkpoint.
@@ -135,6 +136,142 @@ Run tests (optional):
 ```bash
 pytest -q
 ```
+
+---
+
+## Containerization & Deployment (Docker / Azure Container Apps)
+
+You can run the shipper fully containerized. A production‑lean Dockerfile and a
+`docker-compose.yml` are included. The container defaults to a safe dry‑run
+(`--limit 50 --dry-run`). Override the command for real exporting.
+
+### Build Image Locally
+```fish
+docker build -t n8n-langfuse-shipper:local .
+```
+
+### Dry Run (no export)
+```fish
+docker run --rm \
+	-e PG_DSN=$PG_DSN \
+	-e LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+	-e LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+	-e DB_TABLE_PREFIX=n8n_ \
+	-v shipper_checkpoint:/data \
+	n8n-langfuse-shipper:local --limit 25 --dry-run
+```
+
+### Real Export
+```fish
+docker run --rm \
+	-e PG_DSN=$PG_DSN \
+	-e LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+	-e LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+	-e DB_TABLE_PREFIX=n8n_ \
+	-v shipper_checkpoint:/data \
+	n8n-langfuse-shipper:local --limit 500 --no-dry-run
+```
+
+The named volume `shipper_checkpoint` persists the checkpoint file so restarts
+resume where they left off.
+
+### Using docker-compose
+Edit environment values (or export them in your shell) then:
+```fish
+docker compose up --build shipper
+```
+Compose mounts a persistent volume for `/data/.backfill_checkpoint`. Adjust the
+`command` field to change limits, enable dry‑run, etc.
+
+### Minimal Required Environment Variables
+Provide either `PG_DSN` OR the component variables (`DB_POSTGRESDB_HOST`, etc.),
+plus Langfuse credentials and the table prefix:
+```fish
+set -x PG_DSN postgresql://n8n:n8n@postgres:5432/n8n
+set -x LANGFUSE_PUBLIC_KEY lf_pk_...
+set -x LANGFUSE_SECRET_KEY lf_sk_...
+set -x DB_TABLE_PREFIX n8n_
+```
+
+Optional: `LANGFUSE_HOST` if self‑hosted; `ENABLE_MEDIA_UPLOAD=true` to enable
+media token flow.
+
+### Azure Container Registry (ACR) Build & Push
+Assuming you already created an Azure Container Registry and are logged in with
+`az` CLI:
+```fish
+set -x ACR_NAME myregistry   # your ACR name (without domain)
+set -x IMAGE_TAG (git rev-parse --short HEAD)
+docker build -t $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG .
+az acr login --name $ACR_NAME
+docker push $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG
+```
+
+Optionally add `:latest` tag as well:
+```fish
+docker tag $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG \
+	$ACR_NAME.azurecr.io/n8n-langfuse-shipper:latest
+docker push $ACR_NAME.azurecr.io/n8n-langfuse-shipper:latest
+```
+
+### Deploy to Azure Container Apps
+You already have a Container Apps Environment; supply its name and resource
+group. Example (single revision performing continuous backfill):
+```fish
+set -x ACR_NAME myregistry
+set -x RG_NAME my-resource-group
+set -x ENV_NAME my-container-app-env
+set -x APP_NAME n8n-langfuse-shipper
+set -x IMAGE_TAG latest  # or specific commit tag
+
+az containerapp create \
+	--name $APP_NAME \
+	--resource-group $RG_NAME \
+	--environment $ENV_NAME \
+	--image $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG \
+	--registry-server $ACR_NAME.azurecr.io \
+	--ingress disabled \
+	--cpu 0.5 --memory 1Gi \
+	--args "--limit" "500" "--no-dry-run" \
+	--env-vars \
+		PG_DSN=$PG_DSN \
+		LANGFUSE_PUBLIC_KEY=$LANGFUSE_PUBLIC_KEY \
+		LANGFUSE_SECRET_KEY=$LANGFUSE_SECRET_KEY \
+		LANGFUSE_HOST=$LANGFUSE_HOST \
+		DB_TABLE_PREFIX=n8n_ \
+		LOG_LEVEL=INFO
+```
+
+Add media upload (optional):
+```fish
+az containerapp update \
+	--name $APP_NAME --resource-group $RG_NAME \
+	--set-env-vars ENABLE_MEDIA_UPLOAD=true MEDIA_MAX_BYTES=25000000
+```
+
+### Updating Image in Azure
+Push a new image (new tag) then:
+```fish
+az containerapp update \
+	--name $APP_NAME --resource-group $RG_NAME \
+	--image $ACR_NAME.azurecr.io/n8n-langfuse-shipper:$IMAGE_TAG
+```
+
+### Operational Notes
+| Topic | Guidance |
+|-------|----------|
+| Scaling | Start single replica; increase only if DB & Langfuse throughput allow. |
+| Checkpoint | Persisted at `/data/.backfill_checkpoint`; mount Azure File Share for durability. |
+| Dry Runs | Always test config with `--dry-run` before a large migration. |
+| Logs | Set `LOG_LEVEL=DEBUG` for detailed mapping & media debug info. |
+| Safe Re-run | Deterministic IDs prevent duplication; re-processing yields identical spans. |
+| Media Upload | Ensure network egress to Langfuse host and object storage endpoints. |
+
+If you need a one-shot batch run, deploy with an argument like `--limit 5000`.
+The container will exit when finished (Container Apps will mark it as stopped).
+For continuous ingestion, omit `--limit` so it processes batches indefinitely.
+
+---
 
 ---
 
@@ -496,6 +633,7 @@ This project treats the mapping & export invariants as a contract. Each invarian
 | `tests/test_pointer_decoding.py` | Pointer‑compressed array decoding | Resilient decoding of compact execution format |
 | `tests/test_trace_and_metadata.py` | Root metadata + deterministic IDs across truncation settings | Root-only `n8n.execution.id`; span ID stability irrespective of truncation |
 | `tests/test_generation_heuristic.py` | Provider substring heuristic | Generation detection across provider matrix & exclusion for embeddings |
+| `tests/test_lmchat_system_prompt_strip.py` | LangChain LMChat system prompt stripping | Strips System prompts from lmChat generation inputs; handles dict/string messages, deep nesting, graceful fallback |
 | `tests/test_error_status_and_observation.py` | Error normalization | Span status becomes `error` when `NodeRun.error` set |
 | `tests/test_trace_id_embedding.py` | Human-readable trace id embedding | 32-hex trace id suffix matches execution id digits; non-digit fallback |
 | `tests/test_observation_mapping.py` | Observation type classification breadth | Exact sets, regex fallbacks, category fallback semantics |
