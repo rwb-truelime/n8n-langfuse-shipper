@@ -174,6 +174,7 @@ def _detect_gemini_empty_output_anomaly(
     norm_output_obj: Any,
     run: NodeRun,
     node_name: str,
+    next_observation_type: Optional[str] = None,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
     if not is_generation:
         return None, {}
@@ -240,6 +241,18 @@ def _detect_gemini_empty_output_anomaly(
             and (completion_tokens in (0, None))
         )
         if anomaly:
+            # Suppress error status when immediately followed by a tool span.
+            # This represents an intentional "tool_calls" transition (similar
+            # to Azure OpenAI finish_reason=tool_calls) rather than an empty
+            # output bug. Metadata indicates suppression for downstream
+            # analytics while preserving token context.
+            if next_observation_type == "tool":
+                meta["n8n.gen.tool_calls_pending"] = True
+                meta["n8n.gen.prompt_tokens"] = prompt_tokens
+                if total_tokens is not None:
+                    meta["n8n.gen.total_tokens"] = total_tokens
+                meta["n8n.gen.completion_tokens"] = completion_tokens or 0
+                return None, meta
             meta["n8n.gen.empty_output_bug"] = True
             meta["n8n.gen.prompt_tokens"] = prompt_tokens
             if total_tokens is not None:
@@ -772,11 +785,45 @@ def _map_execution(
         )
         if model_meta:
             metadata.update(model_meta)
+        # Look ahead to next run's observation type for tool_calls suppression.
+        next_observation_type: Optional[str] = None
+        try:
+            # Flattened list iteration order preserved; we can peek ahead using
+            # Python list semantics without additional passes.
+            # (Performance: O(1) per iteration.)
+            # Determine index of current tuple by simple search of parent span
+            # id mapping not yet stored; we reuse loop variables.
+            # We rely on 'flattened' scope; safe inside same function.
+            # Acquire next tuple if available.
+            # Note: using enumerate at top would require structural change; we
+            # keep local search for minimal diff & clarity (list sizes are
+            # small enough for backfill throughput constraints).
+            # Optimize early exit when first element mismatch.
+            # This light linear scan stays bounded by node count (< few
+            # hundred) and only executes for generation spans.
+            if is_generation:
+                for pos, tup in enumerate(flattened):
+                    if tup[1] == node_name and tup[2] == idx and tup[3] is run:
+                        if pos + 1 < len(flattened):
+                            _nxt_ts, nxt_name, _nxt_idx, nxt_run = flattened[pos + 1]
+                            nxt_meta = ctx.wf_node_lookup.get(nxt_name, {})
+                            nxt_type = nxt_meta.get("type") or nxt_name
+                            nxt_cat = nxt_meta.get("category")
+                            nxt_guess = map_node_to_observation_type(
+                                nxt_type, nxt_cat
+                            )
+                            # Generation detection applies only for classification
+                            # fallback; we preserve explicit tool classification.
+                            next_observation_type = nxt_guess
+                        break
+        except Exception:
+            next_observation_type = None
         status_override, anomaly_meta = _detect_gemini_empty_output_anomaly(
             is_generation=is_generation,
             norm_output_obj=norm_output_obj,
             run=run,
             node_name=node_name,
+            next_observation_type=next_observation_type,
         )
         if anomaly_meta:
             metadata.update(anomaly_meta)

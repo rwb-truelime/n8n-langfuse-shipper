@@ -121,3 +121,36 @@ def test_gemini_empty_output_anomaly_detection():
     assert meta.get("n8n.gen.empty_output_bug") is True
     # synthetic error inserted
     assert run.error and "Gemini empty output" in run.error.get("message", "")
+
+
+def test_gemini_empty_output_tool_call_suppression():
+    # Generation span followed by tool span; should suppress error and add
+    # tool_calls metadata instead of anomaly error markers.
+    gen_run = NodeRun(
+        startTime=1,
+        executionTime=1,
+        executionStatus="success",
+        data={
+            "response": {
+                "generations": [[{"text": "", "generationInfo": {}}]],
+                "tokenUsage": {
+                    "promptTokens": 7,
+                    "completionTokens": 0,
+                    "totalTokens": 7,
+                },
+            }
+        },
+    )
+    # We pass next_observation_type manually simulating lookahead classification
+    status_override, meta = _detect_gemini_empty_output_anomaly(
+        is_generation=True,
+        norm_output_obj=gen_run.data.get("response"),
+        run=gen_run,
+        node_name="GeminiNode",
+        next_observation_type="tool",
+    )
+    assert status_override is None  # no error status override
+    assert "n8n.gen.empty_output_bug" not in meta
+    assert meta.get("n8n.gen.tool_calls_pending") is True
+    # Ensure no synthetic error injected on run
+    assert gen_run.error is None

@@ -1,73 +1,38 @@
-"""Core mapping logic from n8n execution records to Langfuse internal models.
+"""Public mapping facade (kept intentionally small).
 
-This module is the "T" (Transform) in the ETL pipeline. It takes raw n8n
-execution records fetched from PostgreSQL and converts them into a structured
-LangfuseTrace object, which is a serializable representation of a Langfuse trace
-and its nested spans.
-
-Key responsibilities include:
-- Mapping one n8n execution to one Langfuse trace.
-- Mapping each n8n node run to a Langfuse span.
-- Resolving parent-child relationships between spans using a multi-tiered
-  precedence logic (agent hierarchy, runtime pointers, static graph analysis).
-- Detecting and classifying "generation" spans (LLM calls).
-- Extracting and normalizing token usage and model names for generations.
-- Sanitizing and preparing I/O data by stripping binary content and applying
-  optional truncation.
-- Propagating outputs from parent spans as inputs to child spans when no
-  explicit input override is present.
-- Generating deterministic, repeatable IDs for traces and spans.
+All substantive logic lives in ``mapping.orchestrator`` and helper modules
+under ``src/mapping/``. This file provides a stable import path for external
+callers and tests: ``from mapper import map_execution_to_langfuse``.
 """
+
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from .mapping.orchestrator import (
     _apply_ai_filter,
     _map_execution,
+    _extract_model_and_metadata,
+    _detect_gemini_empty_output_anomaly,
+    _flatten_runs,
+    _resolve_parent,  # re-export for tests relying on direct import
 )
+from .mapping.id_utils import SPAN_NAMESPACE  # deterministic UUIDv5 namespace
 from .media_api import MappedTraceWithAssets
-from .models.langfuse import LangfuseTrace  # needed for facade return types
+from .models.langfuse import LangfuseTrace
 from .models.n8n import N8nExecutionRecord
 
-logger = logging.getLogger(__name__)
-
-
-# Helper imports moved entirely into orchestrator & submodules. Mapper remains
-# a thin facade re-exporting selected private helpers for test parity.
-
-
-## System prompt stripping & IO normalization now reside in
-## mapping.io_normalizer; legacy local copies removed.
-
-
-
-
- # Nested key search moved to mapping.generation module.
-
-
-## Model extraction helpers relocated to mapping.model_extractor.
-
-
-
-## Flatten + parent resolution helpers now sourced from orchestrator & submodules.
-
-
-## IO preparation now provided by orchestrator._prepare_io_and_output.
-
-
-# --------------------------- Stage 3 Refactor Helpers ---------------------------
-
-## Model metadata extraction now provided by orchestrator._extract_model_and_metadata.
-
-
-## Gemini anomaly detection now provided by orchestrator._detect_gemini_empty_output_anomaly.
-
-
-
-
-## Mapping core now provided by orchestrator._map_execution.
+__all__ = [
+    "map_execution_to_langfuse",
+    "map_execution_with_assets",
+    "MappedTraceWithAssets",
+    # Helper re-exports (test-only / internal use)
+    "_extract_model_and_metadata",
+    "_detect_gemini_empty_output_anomaly",
+    "_flatten_runs",
+    "_resolve_parent",
+    "SPAN_NAMESPACE",  # stable namespace export (tests depend on this)
+]
 
 
 def map_execution_to_langfuse(
@@ -76,18 +41,20 @@ def map_execution_to_langfuse(
     *,
     filter_ai_only: bool = False,
 ) -> LangfuseTrace:
+    """Map an execution record to a LangfuseTrace.
+
+    Args:
+        record: Parsed n8n execution entity+data record.
+        truncate_limit: Max chars for input/output text (0 disables truncation;
+            binary stripping always on).
+        filter_ai_only: Retain only AI spans plus context window when True.
+    """
     trace, _assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=False
     )
     if filter_ai_only:
         _apply_ai_filter(trace, record)
     return trace
-
-
-## Binary asset collection & discovery now in orchestrator.
-
-
-## Extended binary discovery now provided by orchestrator._discover_additional_binary_assets.
 
 
 def map_execution_with_assets(
@@ -97,14 +64,15 @@ def map_execution_with_assets(
     *,
     filter_ai_only: bool = False,
 ) -> MappedTraceWithAssets:
-    # collect_binaries kept for backwards compatibility in case external code
-    # passed False explicitly.
+    """Map an execution and optionally collect binary asset placeholders.
+
+    When `collect_binaries` is True, a list of stripped binary/base64 placeholder
+    objects is returned for later media token exchange. Otherwise the list is
+    empty (even though mapping ran the same core logic).
+    """
     trace, assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=collect_binaries
     )
     if filter_ai_only:
         _apply_ai_filter(trace, record)
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])
-
-
-## AI filter now provided by orchestrator._apply_ai_filter.

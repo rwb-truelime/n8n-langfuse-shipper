@@ -495,9 +495,10 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.truncated.input`, `n8n.truncated.output`
 * `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
 
-**Gemini empty-output anomaly (Gemini/Vertex chat bug):**
-* `n8n.gen.empty_output_bug` (bool)
+**Gemini empty-output anomaly (Gemini/Vertex chat bug) & tool-calls suppression:**
+* `n8n.gen.empty_output_bug` (bool) – true only when classified as anomaly
 * `n8n.gen.empty_generation_info` (bool, if `generationInfo` object present but empty)
+* `n8n.gen.tool_calls_pending` (bool) – empty output immediately followed by a `tool` span; suppression path
 * `n8n.gen.prompt_tokens`, `n8n.gen.total_tokens`, `n8n.gen.completion_tokens`
 
 **Condition (all true unless noted):**
@@ -508,9 +509,8 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 5. (Optional) `generationInfo == {}` ⇒ sets `n8n.gen.empty_generation_info`
 
 **Effect:**
-* Span `status` forced to `error`.
-* Synthetic `error.message = "Gemini empty output anomaly detected"` inserted when original `run.error` missing.
-* Structured log line emitted.
+* When NOT followed by a tool span: span `status` forced to `error`; synthetic `error.message = "Gemini empty output anomaly detected"` inserted when original `run.error` missing; structured log line emitted.
+* When immediately followed by a tool span ("tool_calls" transition): error suppression; span retains original status; metadata `n8n.gen.tool_calls_pending=true` emitted with token counters; no synthetic error message.
 
 **Span status normalization:** `LangfuseSpan.status` derived from logical success/error outcome; distinct from raw `n8n.node.execution_status` metadata.
 
