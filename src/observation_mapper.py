@@ -353,6 +353,9 @@ _AI_NODE_TYPES_LOWER: Set[str] = {t.lower() for t in AI_NODE_TYPES}
 _NAMESPACE_PREFIXES: tuple[str, ...] = (
     "@n8n/n8n-nodes-langchain.",
     "n8n-nodes-langchain.",
+    # Custom Limescape Docs package prefixes (ensure AI membership normalization)
+    "@n8n/n8n-nodes-limescape-docs.",
+    "n8n-nodes-limescape-docs.",
 )
 
 

@@ -68,6 +68,12 @@ def test_is_ai_node_type_match():
     assert is_ai_node("Agent", None) is True
 
 
+def test_is_ai_node_limescape_docs_prefixed():
+    # Prefixed custom docs node types should normalize to AI membership
+    assert is_ai_node("n8n-nodes-limescape-docs.limescapeDocs", None) is True
+    assert is_ai_node("@n8n/n8n-nodes-limescape-docs.limescapeDocs", None) is True
+
+
 def test_is_ai_node_negative():
     assert is_ai_node("Set", "Core Nodes") is False
     assert is_ai_node("If", "Core Nodes") is False
