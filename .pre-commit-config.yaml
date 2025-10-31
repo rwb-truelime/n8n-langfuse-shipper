@@ -7,24 +7,6 @@ repos:
       - id: trailing-whitespace
       - id: check-added-large-files
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
-    hooks:
-      # Run the linter
-      - id: ruff
-        args: [--fix]
-      # Run the formatter
-      - id: ruff-format
-
-  # Mypy temporarily disabled - needs extensive type annotation work
-  # Run manually with: mypy src/
-  # - repo: https://github.com/pre-commit/mirrors-mypy
-  #   rev: v1.13.0
-  #   hooks:
-  #     - id: mypy
-  #       additional_dependencies: [pydantic>=2.7.0, types-all]
-  #       args: [--strict, --ignore-missing-imports]
-
   - repo: local
     hooks:
       - id: ensure-notice-present
