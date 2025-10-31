@@ -55,6 +55,37 @@ graph TD
     CK -.-> A
 ```
 
+    ### Module Boundaries (Refactor Phase)
+
+    Mapper logic is being decomposed into a `src/mapping/` subpackage. Purity and
+    determinism MUST be preserved. New modules (initial tranche):
+
+    * `mapping.time_utils` – epoch millisecond → UTC conversion helpers.
+    * `mapping.id_utils` – deterministic UUIDv5 span id helpers (`SPAN_NAMESPACE`)
+      – ID format MUST remain unchanged; tests assert stability.
+    * `mapping.binary_sanitizer` – binary/base64 detection & redaction utilities.
+
+    Refactor Rules:
+    1. Public API (`map_execution_to_langfuse`, `map_execution_with_assets`) stays in
+        `mapper.py` (facade pattern) to avoid import breakage in tests & external
+        integrations.
+    2. No behavioral drift: any change to detection / stripping / ID generation
+        requires test updates and documentation adjustments in this file + README.
+    3. Subpackage modules MUST remain pure (no network / DB writes) and side-effect
+        free apart from deterministic logging.
+    4. Deterministic ID namespace/seeds unchanged; `SPAN_NAMESPACE` exported from
+        `mapping.id_utils` and re-imported into facade to keep existing tests green.
+    5. Binary stripping invariants unchanged: unconditional redaction prior to (optional)
+        truncation.
+    6. Future planned extractions: IO normalization (`io_normalizer.py`), generation
+        classification (`generation.py`), model extraction (`model_extractor.py`), parent
+        resolution (`parent_resolution.py`), mapping context state holder (`mapping_context.py`).
+    7. Each extraction phase MUST run full test suite; snapshot (golden) comparison ensures
+        structural parity of spans & metadata.
+
+    Violation of these rules (silent drift, dependency cycles, network calls) is a
+    contract breach.
+
 **Pipeline Stages:**
 1. **Extract:** Stream execution records from PostgreSQL (`execution_entity` + `execution_data`).
 2. **Pointer Decode:** Reconstruct `runData` when compact list format detected.

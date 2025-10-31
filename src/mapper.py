@@ -22,6 +22,13 @@ from __future__ import annotations
 
 import logging
 import re
+from .mapping.time_utils import epoch_ms_to_dt as _epoch_ms_to_dt
+from .mapping.id_utils import SPAN_NAMESPACE
+from .mapping.binary_sanitizer import (
+    likely_binary_b64 as _likely_binary_b64,
+    contains_binary_marker as _contains_binary_marker,
+    strip_binary_payload as _strip_binary_payload,
+)
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -37,204 +44,15 @@ SPAN_NAMESPACE = uuid5(NAMESPACE_DNS, "n8n-langfuse-shipper-span")
 logger = logging.getLogger(__name__)
 
 
-def _epoch_ms_to_dt(ms: int) -> datetime:
-    """Convert an epoch timestamp (ms or s) to a timezone-aware UTC datetime.
-
-    n8n can produce timestamps in either milliseconds or seconds. This function
-    uses a heuristic to guess the unit: values less than 10^12 are assumed to be
-    seconds.
-
-    Args:
-        ms: The epoch timestamp.
-
-    Returns:
-        A timezone-aware datetime object in UTC.
-    """
-    # Some n8n exports may already be seconds; if value looks like seconds
-    # (10 digits) treat accordingly.
-    # Heuristic: if ms < 10^12 assume seconds.
-    if ms < 1_000_000_000_000:  # seconds
-        return datetime.fromtimestamp(ms, tz=timezone.utc)
-    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
-
-
-_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")  # long pure base64 chunk
-
-
-def _likely_binary_b64(
-    s: str,
-    *,
-    context_key: str | None = None,
-    in_binary_block: bool = False,
-) -> bool:
-    """Heuristically detect if a string is likely a base64-encoded binary.
-
-    This function aims to avoid false positives on long text fields that happen
-    to be valid base64. It requires a minimum length, character diversity, and
-    can use contextual hints like the dictionary key it's associated with.
-
-    Args:
-        s: The string to check.
-        context_key: The dictionary key associated with the string, if any.
-        in_binary_block: Flag indicating if we are already inside a known
-            binary data structure.
-
-    Returns:
-        True if the string is likely a base64-encoded binary, False otherwise.
-    """
-    if len(s) < 200:
-        return False
-    if not _BASE64_RE.match(s) and not s.startswith("/9j/"):  # jpeg magic check retained
-        return False
-    # Uniform strings (e.g. 'AAAAA...') are still valid base64 but often
-    # indicate padding or test data. We previously filtered them out; restore
-    # stripping when:
-    #  - they appear under a key hinting at base64/binary (data, rawBase64,
-    #    file, binary)
-    #  - or they are inside an explicit binary block
-    diversity = len(set(s[:120]))
-    if diversity < 4 and not in_binary_block:
-        lowered = (context_key or "").lower()
-        if not any(h in lowered for h in ("data", "base64", "file", "binary")):
-            return False
-    return True
-
-
-def _contains_binary_marker(d: Any, depth: int = 0) -> bool:
-    """Recursively scan an object for markers of n8n binary data structures.
-
-    This function detects the standard n8n binary object format (a dictionary
-    with 'mimeType' and 'data' keys) or any large base64-encoded string values.
-    The search is depth-limited to prevent excessive recursion on complex objects.
-
-    Args:
-        d: The object to scan (dict, list, or primitive).
-        depth: The current recursion depth.
-
-    Returns:
-        True if a binary marker is found, False otherwise.
-    """
-    if depth > 25:
-        return False
-    try:
-        if isinstance(d, dict):
-            if "binary" in d and isinstance(d["binary"], dict):
-                for v in d["binary"].values():
-                    if isinstance(v, dict):
-                        data_section = v.get("data") if isinstance(v.get("data"), dict) else v
-                        if isinstance(data_section, dict):
-                            mime = data_section.get("mimeType") or data_section.get("mime_type")
-                            b64 = data_section.get("data")
-                            if (
-                                mime
-                                and isinstance(b64, str)
-                                and (
-                                    len(b64) > 200
-                                    and (
-                                        _BASE64_RE.match(b64)
-                                        or b64.startswith("/9j/")
-                                    )
-                                )
-                            ):
-                                return True
-            for val in d.values():
-                if _contains_binary_marker(val, depth + 1):
-                    return True
-        elif isinstance(d, list):
-            for item in d[:25]:
-                if _contains_binary_marker(item, depth + 1):
-                    return True
-        elif isinstance(d, str):
-            if _likely_binary_b64(d):
-                return True
-    except Exception:
-        return False
-    return False
-
-
-def _strip_binary_payload(obj: Any) -> Any:
-    """Recursively replace binary data and large base64 strings with placeholders.
-
-    This function traverses a nested object and replaces any detected binary
-    content with a placeholder dictionary, e.g.,
-    `{"_binary": True, "note": "binary omitted", "_omitted_len": ...}`.
-    This sanitizes the data before serialization, preventing huge payloads.
-
-    Args:
-        obj: The object to sanitize.
-
-    Returns:
-        A new object with binary content replaced by placeholders.
-    """
-    placeholder_text = "binary omitted"
-    try:
-        if isinstance(obj, dict):
-            new_d: Dict[str, Any] = {}
-            for k, v in obj.items():
-                if k == "binary" and isinstance(v, dict):
-                    # replace inner binary data parts
-                    new_bin: Dict[str, Any] = {}
-                    for bk, bv in v.items():
-                        if isinstance(bv, dict):
-                            bv2 = dict(bv)
-                            data_section = bv2.get("data")
-                            # Case 1: legacy assumption where data_section is a
-                            # dict containing its own 'data'
-                            if (
-                                isinstance(data_section, dict)
-                                and isinstance(data_section.get("data"), str)
-                            ):
-                                ds = data_section.copy()
-                                raw_b64 = ds.get("data", "")
-                                if len(raw_b64) > 64:
-                                    ds["data"] = placeholder_text
-                                    ds["_omitted_len"] = len(raw_b64)
-                                    bv2["data"] = ds
-                            # Case 2: common n8n shape where bv2['data'] is
-                            # directly the base64 string alongside
-                            # mimeType/fileType
-                            elif (
-                                isinstance(data_section, str)
-                                and (
-                                    len(data_section) > 64
-                                    and (
-                                        _BASE64_RE.match(data_section)
-                                        or data_section.startswith("/9j/")
-                                    )
-                                )
-                            ):
-                                bv2["_omitted_len"] = len(data_section)
-                                bv2["data"] = placeholder_text
-                            new_bin[bk] = bv2
-                        else:
-                            new_bin[bk] = bv
-                    new_d[k] = new_bin
-                elif isinstance(v, str) and _likely_binary_b64(v, context_key=k):
-                    new_d[k] = {
-                        "_binary": True,
-                        "note": placeholder_text,
-                        "_omitted_len": len(v),
-                    }
-                else:
-                    new_d[k] = _strip_binary_payload(v)
-            return new_d
-        if isinstance(obj, list):
-            out_list = []
-            for x in obj:
-                if isinstance(x, str) and _likely_binary_b64(x):
-                    out_list.append(
-                        {
-                            "_binary": True,
-                            "note": placeholder_text,
-                            "_omitted_len": len(x),
-                        }
-                    )
-                else:
-                    out_list.append(_strip_binary_payload(x))
-            return out_list
-    except Exception:
-        return obj
-    return obj
+from .mapping.io_normalizer import (
+    unwrap_ai_channel as _unwrap_ai_channel,
+    unwrap_generic_json as _unwrap_generic_json,
+    normalize_node_io as _normalize_node_io,
+    strip_system_prompt_from_langchain_lmchat as _strip_system_prompt_from_langchain_lmchat,
+)
+ # Binary helper functions now sourced from mapping.binary_sanitizer. Original
+ # inline definitions removed to reduce mapper.py size; imports above preserve
+ # previous names for callers inside this module.
 
 
 def _strip_system_prompt_from_langchain_lmchat(

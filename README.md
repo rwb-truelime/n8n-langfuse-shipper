@@ -127,6 +127,12 @@ Key points:
 - All timestamps are normalized to timezone-aware UTC early (naive inputs get `tzinfo=UTC`) ensuring consistent ordering & avoiding deprecated naive datetime usage.
 - Media upload (Langfuse Media API phase) occurs after mapping and before exporting; when disabled the pipeline links Mapper directly to Shipper.
 
+Refactor Note: The internal mapper is undergoing a phased decomposition into
+`src/mapping/` submodules (`time_utils`, `id_utils`, `binary_sanitizer`, etc.).
+Public functions `map_execution_to_langfuse` and `map_execution_with_assets`
+remain in `mapper.py` and will not change signature; tests enforce behavioral
+parity. No user‑visible configuration changes are introduced by this refactor.
+
 ---
 
 ## Installation
