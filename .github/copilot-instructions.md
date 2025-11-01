@@ -1,5 +1,56 @@
 # AI Coding Agent Instructions for n8n-langfuse-shipper
 
+## Quick Reference (AI Agent Onboarding)
+
+**What**: Python ETL pipeline streaming n8n PostgreSQL execution history → Langfuse traces via OTLP
+**Why**: Backfill historical workflow executions for AI observability and debugging
+**Stack**: Python 3.12+, Pydantic models, OpenTelemetry SDK, psycopg3, Fish shell
+
+### 5-Minute Orientation
+- **Entry point**: `src/__main__.py` - Typer CLI orchestrating Extract→Transform→Load pipeline
+- **Core transform**: `src/mapping/orchestrator.py` - maps n8n NodeRuns to Langfuse spans with deterministic IDs
+- **Models**: `src/models/n8n.py` + `src/models/langfuse.py` - Pydantic validation throughout
+- **Config**: `src/config.py` - Pydantic Settings from env vars (see table line ~140)
+- **Tests**: Run `pytest` or `pytest -q` in Fish shell - 30+ test files assert invariants
+- **Dev workflow**: `ruff check . && mypy src && pytest` before commits (line-length cap: 100 chars)
+
+### Critical Invariants (NEVER VIOLATE - See line ~115)
+1. **Deterministic IDs**: UUIDv5 with `SPAN_NAMESPACE` in `mapping/id_utils.py` - changing breaks idempotency
+2. **Execution ID appears once**: Root span metadata `n8n.execution.id` only (never duplicated)
+3. **Parent resolution**: 5-tier precedence (Agent Hierarchy → Runtime Exact → Runtime Last → Static Graph → Root) - see line ~390
+4. **Binary stripping**: ALWAYS unconditional (even when truncation disabled) - see line ~230
+5. **Timezone aware**: All datetimes UTC-aware, NEVER use `datetime.utcnow()` (test enforces this)
+6. **Fish shell**: NO Bash heredocs/arrays; use `set -x VAR value` for exports; Python one-liners: `python -c "import sys; print('ok')"` pattern
+
+### Where to Look (Line References)
+- **Mapping modules**: `src/mapping/` - 11 pure submodules (orchestrator, binary_sanitizer, generation, parent_resolution, etc.)
+- **Parent resolution rules**: Line ~390 (Precedence table) + line ~230 (Agent Hierarchy explanation)
+- **Generation detection heuristics**: Line ~290 (tokenUsage presence OR provider markers)
+- **Binary & Media handling**: Line ~340 (stripping) + line ~370 (media token flow when `ENABLE_MEDIA_UPLOAD=true`)
+- **Reserved metadata keys**: Line ~630 (root span, spans, Gemini anomaly, media flags)
+- **Testing contract**: Line ~540 (deterministic IDs, parent precedence, binary stripping, timezone tests)
+- **Environment variables**: Line ~140 (complete table with defaults)
+
+### Common Tasks
+```fish
+# Run specific test file
+pytest tests/test_mapper.py -v
+
+# Type check only mapping module
+mypy src/mapping/
+
+# Dry-run first 25 executions
+python -m src backfill --limit 25 --dry-run
+
+# Check for line length violations
+ruff check . --select E501
+```
+
+### Module Refactor Status (Line ~50)
+Mapper logic extracted into `src/mapping/` subpackage (completed). Facade `src/mapper.py` preserves public API for backward compatibility. Future extractions documented at line ~70.
+
+---
+
 ## Purpose
 Python-based microservice for high-throughput backfill of historical n8n execution data from PostgreSQL to Langfuse via OpenTelemetry (OTLP) endpoint. Focus: correctness, performance, robustness for large-scale data migration.
 
