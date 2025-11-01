@@ -1,7 +1,41 @@
-"""Orchestrator helpers extracted from `mapper.py`.
+"""Central mapping orchestration for n8n execution to Langfuse trace conversion.
 
-Pure functions only; centralizes procedural mapping logic so `mapper.py`
-remains a thin facade. No behavioral changes.
+This module coordinates the complete transformation pipeline, iterating through node
+runs in chronological order and delegating specialized tasks to helper modules. It
+maintains mapping state via MappingContext and assembles the final LangfuseTrace.
+
+Core orchestration function `_map_execution` performs these steps:
+    1. Create trace with deterministic ID from execution ID
+    2. Build root span representing entire execution
+    3. Construct reverse edge graph and agent hierarchy maps
+    4. Sort all node runs by startTime for chronological span ordering
+    5. For each node run:
+        - Resolve parent span via precedence rules
+        - Detect generation spans and extract usage
+        - Normalize I/O structures and strip system prompts
+        - Collect binary assets (when enabled)
+        - Serialize and optionally truncate I/O
+        - Extract model metadata
+        - Detect Gemini empty output anomaly
+        - Create span with all metadata
+    6. Return complete trace and collected assets
+
+Helper Functions:
+    _serialize_and_truncate: JSON serialization with unconditional binary stripping
+    _flatten_runs: Sort node runs chronologically across all nodes
+    _prepare_io_and_output: System prompt strip, normalize, serialize, truncate
+    _extract_model_and_metadata: Model name extraction with parameter fallback
+    _detect_gemini_empty_output_anomaly: Gemini bug detection with tool_calls suppression
+    _collect_binary_assets: Extract binary data and insert pending placeholders
+    _discover_additional_binary_assets: Scan for data URLs and file-like structures
+    _apply_ai_filter: AI-only filtering with context window preservation
+
+Design Notes:
+    - Pure functions only; no network or database I/O
+    - Deterministic IDs via UUIDv5 with stable namespace
+    - Binary stripping precedes truncation (independent operations)
+    - Input propagation uses parent output when inputOverride absent
+    - Size guard on cached outputs when truncation enabled
 """
 from __future__ import annotations
 
@@ -64,11 +98,26 @@ from .time_utils import epoch_ms_to_dt as _epoch_ms_to_dt
 logger = logging.getLogger(__name__)
 
 
-def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[str], bool]:
-    """Serialize object to JSON string with unconditional binary stripping.
+def _serialize_and_truncate(
+    obj: Any, limit: Optional[int]
+) -> Tuple[Optional[str], bool]:
+    """Serialize object to JSON with unconditional binary stripping and optional truncation.
 
-    Stripping applies even when truncation disabled (limit None/<=0), matching
-    invariants asserted by tests. Fail-open on detection errors.
+    Binary stripping always applies regardless of truncation setting to prevent
+    large base64 payloads in output. Truncation applies only when limit > 0.
+
+    Args:
+        obj: Data structure to serialize (typically normalized node I/O)
+        limit: Maximum characters before truncation; None or <=0 disables truncation
+
+    Returns:
+        Tuple of (serialized_string, truncated_flag)
+        - serialized_string: JSON or string representation, None if input None
+        - truncated_flag: True if output exceeded limit and was shortened
+
+    Note:
+        Binary detection errors fail open (continue without stripping). JSON
+        serialization failures fall back to str() representation.
     """
     if obj is None:
         return None, False
@@ -88,7 +137,24 @@ def _serialize_and_truncate(obj: Any, limit: Optional[int]) -> Tuple[Optional[st
     return raw, truncated
 
 
-def _flatten_runs(run_data: Dict[str, List[NodeRun]]) -> List[Tuple[int, str, int, NodeRun]]:
+def _flatten_runs(
+    run_data: Dict[str, List[NodeRun]]
+) -> List[Tuple[int, str, int, NodeRun]]:
+    """Flatten and sort all node runs by startTime for chronological span ordering.
+
+    Extracts runs from nested runData structure and sorts by execution start timestamp
+    to ensure parent spans are emitted before their children in the final trace.
+
+    Args:
+        run_data: Mapping of node_name to list of run instances
+
+    Returns:
+        List of tuples (startTime, node_name, run_index, NodeRun) sorted chronologically
+
+    Note:
+        Run index within tuple represents position in the original node's run list,
+        used for deterministic span ID generation.
+    """
     flattened: List[Tuple[int, str, int, NodeRun]] = []
     for node_name, runs in run_data.items():
         for idx, run in enumerate(runs):
@@ -106,6 +172,30 @@ def _extract_model_and_metadata(
     wf_node_obj: Dict[str, WorkflowNode],
     raw_input_obj: Any,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Extract AI model name and diagnostic metadata from node run data.
+
+    Performs multi-pass search for model identifiers:
+    1. Top-level model field in run.data
+    2. Breadth-first nested search for model/model_name/modelId/model_id keys
+    3. Fallback to static parameters in workflow definition (generation spans only)
+
+    Args:
+        run: NodeRun execution instance with runtime data
+        node_name: Node identifier for workflow lookup
+        node_type: Node type string for generation detection
+        is_generation: Whether span classified as LLM generation
+        wf_node_obj: Workflow node definition map for parameter fallback
+        raw_input_obj: Propagated or explicit input for extended search
+
+    Returns:
+        Tuple of (model_value, metadata_dict)
+        - model_value: Extracted model string or None if not found
+        - metadata_dict: Diagnostic flags like n8n.model.missing, n8n.model.from_parameters
+
+    Note:
+        Parameter fallback triggers opportunistically when model-like keys detected
+        in static parameters, even for non-generation spans.
+    """
     metadata: Dict[str, Any] = {}
     model_val: Optional[str] = None
     try:
@@ -176,6 +266,42 @@ def _detect_gemini_empty_output_anomaly(
     node_name: str,
     next_observation_type: Optional[str] = None,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Detect Gemini/Vertex chat empty output bug with tool_calls suppression logic.
+
+    Identifies anomalous empty text response with non-zero prompt tokens, distinguishing
+    genuine bugs from intentional tool invocation transitions (similar to OpenAI
+    finish_reason=tool_calls).
+
+    Anomaly conditions (all must be true):
+    1. span is generation
+    2. generations[0][0].text == ""
+    3. promptTokens > 0
+    4. totalTokens >= promptTokens
+    5. completionTokens == 0 or absent
+
+    Suppression path when next span is tool observation:
+    - Status remains original (not forced to error)
+    - Metadata flags n8n.gen.tool_calls_pending=true
+    - Token counters preserved for analytics
+
+    Error enforcement path otherwise:
+    - Status forced to "error"
+    - Synthetic error message inserted when original error absent
+    - Metadata flags n8n.gen.empty_output_bug=true
+    - Structured log entry emitted
+
+    Args:
+        is_generation: Whether span classified as LLM generation
+        norm_output_obj: Normalized output structure for text extraction
+        run: NodeRun containing tokenUsage and error data
+        node_name: Node identifier for logging
+        next_observation_type: Lookahead observation type for suppression logic
+
+    Returns:
+        Tuple of (status_override, metadata_dict)
+        - status_override: "error" when anomaly detected and not suppressed, else None
+        - metadata_dict: Diagnostic flags and token counters
+    """
     if not is_generation:
         return None, {}
     meta: Dict[str, Any] = {}
@@ -287,6 +413,34 @@ def _prepare_io_and_output(
     node_type: str,
     truncate_limit: Optional[int],
 ) -> Tuple[Any, Any, Optional[str], bool, Optional[str], bool, Dict[str, bool], Dict[str, bool]]:
+    """Normalize, serialize, and truncate node I/O with generation-specific handling.
+
+    Orchestrates the complete I/O transformation pipeline:
+    1. Strip system prompts from LangChain LMChat inputs (generation spans only)
+    2. Unwrap AI channel and generic JSON wrapper structures
+    3. Merge back binary blocks if lost during unwrapping
+    4. Serialize to JSON with binary stripping
+    5. Extract concise output text for generation spans
+    6. Apply optional truncation when limit > 0
+
+    Args:
+        raw_input_obj: Original input data (inputOverride or propagated parent output)
+        raw_output_obj: Original output data from run.data
+        is_generation: Whether span classified as LLM generation
+        node_type: Node type string for generation-specific transformations
+        truncate_limit: Max characters before truncation; None or <=0 disables
+
+    Returns:
+        8-tuple containing:
+        - norm_input_obj: Normalized input structure
+        - norm_output_obj: Normalized output structure
+        - input_str: Serialized input string (None if input None)
+        - input_trunc: True if input exceeded limit
+        - output_str: Serialized output string (concise for generation, JSON otherwise)
+        - output_trunc: True if output exceeded limit
+        - input_flags: Transformation flags (unwrapped_ai_channel, unwrapped_json_root)
+        - output_flags: Transformation flags including promoted_binary_wrapper
+    """
     if is_generation:
         raw_input_obj = _strip_system_prompt_from_langchain_lmchat(
             raw_input_obj, node_type
@@ -336,6 +490,28 @@ def _discover_additional_binary_assets(
     run_index: int,
     max_assets: int,
 ) -> tuple[list[Any], bool]:
+    """Scan for non-canonical binary assets like data URLs and file-like dicts.
+
+    Extends binary discovery beyond the standard run.data.binary block to find:
+    - Data URLs matching data:<mime>;base64,<payload>
+    - File-like dicts with mimeType/fileName + data field
+    - Long base64 strings (≥64 chars) in contexts with file-indicative sibling keys
+
+    Discovery bounded by max_assets limit to prevent excessive scanning on
+    malformed or adversarial inputs.
+
+    Args:
+        obj: Data structure to scan (typically normalized output)
+        execution_id: Execution ID for asset metadata
+        node_name: Node name for asset metadata
+        run_index: Run index for asset metadata
+        max_assets: Maximum assets to collect; <=0 disables extended scan
+
+    Returns:
+        Tuple of (discovered_assets, limit_hit_flag)
+        - discovered_assets: List of BinaryAsset instances
+        - limit_hit_flag: True if scan stopped due to max_assets limit
+    """
     from ..media_api import BinaryAsset
     found: list[BinaryAsset] = []
     limit_hit = False
@@ -411,6 +587,26 @@ def _collect_binary_assets(
     node_name: str,
     run_index: int,
 ) -> tuple[Any, list[Any], bool, bool]:
+    """Extract binary assets from node run data and insert pending placeholders.
+
+    Processes canonical run.data.binary block and delegates to extended discovery for
+    non-standard binary embeddings. Promotes item-level binary blocks to top level when
+    original lacks binary key. Replaces discovered binary data with temporary placeholders
+    containing SHA256 hash and size metadata for subsequent media token exchange.
+
+    Args:
+        run_data_obj: Node run output data structure
+        execution_id: Execution ID for asset metadata
+        node_name: Node name for asset metadata
+        run_index: Run index for asset metadata
+
+    Returns:
+        4-tuple containing:
+        - cloned: Deep copy of run_data_obj with placeholders substituted
+        - assets: List of discovered BinaryAsset instances
+        - limit_hit: True if extended scan hit EXTENDED_MEDIA_SCAN_MAX_ASSETS limit
+        - promoted_item_binary: True if binary block promoted from nested items
+    """
     from ..config import get_settings
     from ..media_api import BinaryAsset
     assets: list[BinaryAsset] = []
@@ -536,6 +732,29 @@ def _collect_binary_assets(
 
 
 def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
+    """Apply AI-only filtering with context window preservation (mutates trace in place).
+
+    Retains only:
+    - Root span (always preserved)
+    - All AI node spans (detected via observation_mapper.is_ai_node)
+    - Up to 2 spans immediately before first AI span (pre-context)
+    - Up to 2 spans immediately after last AI span (post-context)
+    - Spans on parent chain between AI spans (chain connectors)
+
+    Sets metadata on root span:
+    - n8n.filter.ai_only=true
+    - n8n.filter.excluded_node_count: Number of discarded spans
+    - n8n.filter.window_start_span, window_end_span: AI window boundaries
+    - n8n.filter.pre_context_count, post_context_count, chain_context_count
+
+    Special case when no AI spans found:
+    - Retains only root span
+    - Sets n8n.filter.no_ai_spans=true on all excluded spans
+
+    Args:
+        trace: LangfuseTrace to filter (modified in place)
+        record: N8nExecutionRecord for node type lookups
+    """
     try:
         if not trace.spans:
             return
@@ -649,6 +868,39 @@ def _map_execution(
     *,
     collect_binaries: bool = False,
 ) -> tuple[LangfuseTrace, list[Any]]:
+    """Central orchestration function mapping n8n execution to Langfuse trace structure.
+
+    Performs complete transformation pipeline:
+    1. Create trace with deterministic ID from execution.id
+    2. Build root span representing entire execution
+    3. Construct static graph structures (reverse edges, agent hierarchy)
+    4. Initialize mapping context for state tracking
+    5. Flatten and sort all node runs chronologically
+    6. For each node run:
+        - Resolve parent span via precedence rules
+        - Detect generation spans and extract token usage
+        - Normalize and truncate I/O structures
+        - Collect binary assets (when enabled)
+        - Extract model metadata with parameter fallback
+        - Detect Gemini empty output anomaly
+        - Create span with all attributes and metadata
+    7. Return complete trace and discovered assets
+
+    Args:
+        record: N8nExecutionRecord with workflow data and node run results
+        truncate_limit: Max characters for I/O before truncation; None or <=0 disables
+        collect_binaries: When True, extract binary assets and insert placeholders
+
+    Returns:
+        Tuple of (trace, assets)
+        - trace: Complete LangfuseTrace with deterministic IDs and hierarchical spans
+        - assets: List of discovered BinaryAsset instances (empty if collect_binaries=False)
+
+    Note:
+        Binary stripping always applies regardless of truncation or collection settings.
+        Collected assets contain placeholders in trace output; actual token exchange occurs
+        in post-map patch phase.
+    """
     trace_id = str(record.id)
     started_at = (
         record.startedAt if record.startedAt.tzinfo is not None else record.startedAt.replace(tzinfo=timezone.utc)

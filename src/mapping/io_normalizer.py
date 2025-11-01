@@ -1,7 +1,36 @@
-"""I/O normalization & system prompt stripping utilities.
+"""Input/output normalization and LangChain system prompt stripping.
 
-Extracted from mapper.py. Behavior MUST remain identical to legacy inline
-implementation (tests assert parity). Pure functions only.
+This module unwraps nested structures commonly emitted by n8n nodes, flattening
+AI channel wrappers and generic JSON containers while preserving binary blocks.
+Also strips system prompts from LangChain LMChat node inputs using exact marker
+detection.
+
+Unwrapping Functions:
+    unwrap_ai_channel: Flatten single-key ai_* dicts containing json arrays
+    unwrap_generic_json: Extract json fields from nested list/dict structures
+    normalize_node_io: Apply both unwrappers and merge back binary blocks
+
+System Prompt Stripping:
+    strip_system_prompt_from_langchain_lmchat: Remove System segment using literal
+    split marker `\\n\\n## START PROCESSING\\n\\nHuman: ##`
+
+AI Channel Structure:
+    Input: {"ai_languageModel": [[{"json": {...}}]]}
+    Output: {...} (unwrapped json content)
+
+Generic JSON Structure:
+    Input: [{"json": {...}}, {"json": {...}}]
+    Output: [{...}, {...}] (list of unwrapped objects)
+
+Binary Block Preservation:
+    When unwrapping would lose top-level binary dict, merges it back into
+    normalized output to prevent media placeholder loss.
+
+Design Notes:
+    - Deduplication using JSON signature prevents redundant unwrapped objects
+    - System prompt split occurs BEFORE normalization to preserve structure
+    - Recursive search bounded by depth limits (25) and item counts (100-150)
+    - Fail-open: returns original input on any error
 """
 from __future__ import annotations
 

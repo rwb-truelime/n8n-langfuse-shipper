@@ -1,8 +1,22 @@
-"""Public mapping facade (kept intentionally small).
+"""Public facade for n8n execution to Langfuse trace mapping.
 
-All substantive logic lives in ``mapping.orchestrator`` and helper modules
-under ``src/mapping/``. This file provides a stable import path for external
-callers and tests: ``from mapper import map_execution_to_langfuse``.
+This module provides the stable public API for converting n8n execution records
+into Langfuse-compatible trace structures. All complex mapping logic is delegated
+to the `mapping.orchestrator` module and its helpers in the `src/mapping/` package.
+
+The facade pattern preserves backwards compatibility for existing imports while
+allowing internal refactoring of the mapping implementation.
+
+Public Functions:
+    map_execution_to_langfuse: Convert n8n execution to LangfuseTrace
+    map_execution_with_assets: Convert execution and collect binary assets
+
+Internal Re-exports:
+    _extract_model_and_metadata: Model extraction helper (test usage)
+    _detect_gemini_empty_output_anomaly: Gemini bug detection (test usage)
+    _flatten_runs: NodeRun chronological sorting (test usage)
+    _resolve_parent: Parent span resolution (test usage)
+    SPAN_NAMESPACE: Deterministic UUID namespace (test usage)
 """
 
 from __future__ import annotations
@@ -41,13 +55,25 @@ def map_execution_to_langfuse(
     *,
     filter_ai_only: bool = False,
 ) -> LangfuseTrace:
-    """Map an execution record to a LangfuseTrace.
+    """Convert n8n execution record to Langfuse trace structure.
+
+    Orchestrates the complete mapping pipeline: creates deterministic trace and span
+    IDs, resolves parent-child relationships, normalizes I/O data, detects generation
+    spans, and applies optional AI-only filtering.
 
     Args:
-        record: Parsed n8n execution entity+data record.
-        truncate_limit: Max chars for input/output text (0 disables truncation;
-            binary stripping always on).
-        filter_ai_only: Retain only AI spans plus context window when True.
+        record: n8n execution with workflow data and node run results
+        truncate_limit: Maximum characters for input/output fields before truncation;
+            0 disables truncation but binary stripping always applies regardless
+        filter_ai_only: When True, retains only AI-related spans plus immediate context
+            window (2 before, 2 after, and chain connectors); root span always included
+
+    Returns:
+        Complete LangfuseTrace with deterministic IDs and hierarchical spans
+
+    Note:
+        Binary data is always stripped and replaced with placeholders even when
+        truncation is disabled. This ensures consistent output size constraints.
     """
     trace, _assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=False
@@ -64,11 +90,25 @@ def map_execution_with_assets(
     *,
     filter_ai_only: bool = False,
 ) -> MappedTraceWithAssets:
-    """Map an execution and optionally collect binary asset placeholders.
+    """Convert n8n execution to trace and optionally extract binary assets.
 
-    When `collect_binaries` is True, a list of stripped binary/base64 placeholder
-    objects is returned for later media token exchange. Otherwise the list is
-    empty (even though mapping ran the same core logic).
+    Performs standard trace mapping while optionally collecting discovered binary/base64
+    assets for subsequent media token exchange via Langfuse Media API. Binary data is
+    replaced with temporary placeholders containing SHA256 hash and size metadata.
+
+    Args:
+        record: n8n execution with workflow data and node run results
+        truncate_limit: Maximum characters for input/output before truncation (0 disables)
+        collect_binaries: When True, extracts binary assets and inserts placeholders;
+            when False, returns empty asset list but still applies binary redaction
+        filter_ai_only: Retain only AI spans plus context window when True
+
+    Returns:
+        MappedTraceWithAssets containing the trace and list of discovered binary assets
+
+    Note:
+        Asset collection is independent from binary stripping. Stripping always occurs;
+        collection determines whether asset metadata is gathered for later upload.
     """
     trace, assets = _map_execution(
         record, truncate_limit=truncate_limit, collect_binaries=collect_binaries

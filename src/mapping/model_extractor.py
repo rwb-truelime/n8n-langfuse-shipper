@@ -1,6 +1,31 @@
-"""Model extraction helpers from legacy mapper.
+"""AI model name extraction from runtime data and static workflow parameters.
 
-Pure functions; no side effects besides deterministic logging.
+This module performs multi-pass searches for model identifiers in node execution
+data, with fallback to static workflow definition parameters when runtime data
+lacks explicit model information.
+
+Search Strategy:
+    1. AI channel unwrapping: Look for model in ai_* channel json blocks
+    2. Direct scan: Check for model/model_name/modelId/model_id at top level
+    3. Breadth-first nested search: Traverse structure up to depth 25
+    4. Parameter fallback: Search static workflow node parameters (generation spans)
+
+Model Key Variants:
+    - model, model_name, modelId, model_id (runtime)
+    - model, customModel, deploymentName, deployment, modelName (parameters)
+
+Azure Special Handling:
+    When node type contains "azure", deployment names flagged with
+    n8n.model.is_deployment=true metadata
+
+Public Functions:
+    extract_model_value: Runtime data search with breadth-first traversal
+    extract_model_from_parameters: Static parameter search with priority keys
+    looks_like_model_param_key: Heuristic for model-related parameter keys
+
+Design Note:
+    Bounded traversal (800 nodes, depth 25) prevents infinite loops on cyclic
+    or deeply nested structures.
 """
 from __future__ import annotations
 

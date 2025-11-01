@@ -1,7 +1,37 @@
-"""Generation detection, usage extraction, concise output & Gemini anomaly.
+"""AI generation detection, token usage extraction, and output text handling.
 
-All logic copied from legacy mapper.py sections to preserve behavior.
-Any change requires test + docs updates.
+This module contains all heuristics and logic for identifying spans that represent
+LLM generation calls and extracting their associated metadata. Detection uses explicit
+signals (tokenUsage presence) combined with provider marker matching.
+
+Core Functions:
+    detect_generation: Classify span as generation using two-tier heuristic
+    extract_usage: Normalize various tokenUsage formats into canonical structure
+    extract_concise_output: Extract clean text from generation outputs
+    detect_gemini_empty_output_anomaly: Identify Gemini bug with tool_calls suppression
+
+Detection Heuristics (ordered):
+    1. Presence of tokenUsage or tokenUsageEstimate object (explicit signal)
+    2. Node type contains provider marker AND not embedding/reranker
+
+Provider Markers (case-insensitive):
+    openai, anthropic, gemini, mistral, groq, lmchat, lmopenai, cohere, deepseek,
+    ollama, openrouter, bedrock, vertex, huggingface, xai, limescape
+
+Usage Normalization:
+    - Handles variants: input/output/total, promptTokens/completionTokens/totalTokens,
+      prompt/completion/total
+    - Custom flattened counters: totalInputTokens, totalOutputTokens, totalTokens
+    - Synthesizes total as input+output when absent but components present
+
+Output Text Extraction:
+    - Gemini/Vertex: response.generations[0][0].text
+    - Limescape Docs: markdown field (post normalization)
+    - Fallback: serialized JSON
+
+Design Note:
+    Adding provider markers or changing heuristics requires test updates and
+    documentation sync in same PR.
 """
 from __future__ import annotations
 

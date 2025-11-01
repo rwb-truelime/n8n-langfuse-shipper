@@ -1,4 +1,27 @@
-"""Deterministic ID utilities (UUIDv5 span namespace extraction)."""
+"""Deterministic span and trace ID generation using UUIDv5.
+
+This module provides the stable namespace and helper functions for generating
+deterministic span IDs from execution and node metadata. UUIDv5 ensures identical
+inputs produce identical IDs across runs, enabling idempotent replay and consistent
+trace structures.
+
+Constants:
+    SPAN_NAMESPACE: UUIDv5 namespace derived from DNS namespace + seed string
+        "n8n-langfuse-shipper-span". This value MUST NOT change as it would
+        invalidate all historical span ID mappings.
+
+ID Format:
+    Span ID: UUIDv5(SPAN_NAMESPACE, f"{trace_id}:{node_name}:{run_index}")
+    Root Span ID: UUIDv5(SPAN_NAMESPACE, f"{trace_id}:root")
+    Trace ID: Raw execution.id as string (human-readable in Langfuse UI)
+
+Public Functions:
+    span_uuid: Generate span ID from trace ID, node name, and optional run index
+
+Design Invariant:
+    SPAN_NAMESPACE and ID seed format are immutable contracts. Changing either
+    breaks determinism guarantee and requires major version bump + migration path.
+"""
 from __future__ import annotations
 
 from uuid import NAMESPACE_DNS, uuid5

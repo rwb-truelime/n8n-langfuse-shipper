@@ -1,7 +1,38 @@
-"""Binary detection and stripping utilities extracted from mapper.
+"""Binary data detection and redaction for size-controlled span outputs.
 
-All functions preserve original semantics. Any change MUST update
-`.github/copilot-instructions.md` and tests.
+This module provides unconditional binary stripping that applies regardless of
+truncation settings. Detects base64-encoded data and binary objects in canonical
+run.data.binary blocks and standalone contexts, replacing with stable placeholders
+that preserve metadata without large payloads.
+
+Detection Heuristics:
+    - Base64 regex: ^[A-Za-z0-9+/]{200,}={0,2}$
+    - JPEG marker: starts with /9j/
+    - Diversity check: <4 unique chars in first 120 suggests false positive
+    - Context validation: Requires file-indicative keys unless in binary block
+
+Redaction Strategy:
+    Canonical binary objects:
+        - Replace data field with "binary omitted"
+        - Attach _omitted_len with original length
+        - Retain metadata (mimeType, fileName, etc.)
+
+    Standalone base64 strings:
+        - Replace with dict: {"_binary": true, "note": "binary omitted", "_omitted_len": N}
+
+Traversal:
+    - Bounded depth 25 to prevent stack overflow
+    - Recursive scan through dicts, lists, and nested structures
+    - Fail-open on detection errors (continue without stripping)
+
+Public Functions:
+    likely_binary_b64: Heuristic base64 detection with context awareness
+    contains_binary_marker: Check if structure contains any binary data
+    strip_binary_payload: Recursively replace binary with placeholders
+
+Design Invariant:
+    Binary stripping ALWAYS applies. Truncation is independent and optional.
+    Tests assert this invariant; changing behavior breaks contract.
 """
 from __future__ import annotations
 
