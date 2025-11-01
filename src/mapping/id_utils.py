@@ -32,7 +32,23 @@ __all__ = ["SPAN_NAMESPACE", "span_uuid"]
 
 
 def span_uuid(trace_id: str, node_name: str, run_index: int | None = None) -> str:
-    """Generate deterministic span UUIDv5 consistent with legacy logic."""
+    """Generate deterministic span UUIDv5 from trace ID, node name, and run index.
+
+    Creates stable span identifiers using fixed namespace and composite seed string.
+    Identical inputs always produce identical UUIDs, enabling idempotent replay.
+
+    Seed format:
+    - With run_index: f"{trace_id}:{node_name}:{run_index}"
+    - Without run_index: f"{trace_id}:{node_name}"
+
+    Args:
+        trace_id: Trace identifier (typically str(execution.id))
+        node_name: Workflow node name
+        run_index: Optional run instance index within node (None for single-run nodes)
+
+    Returns:
+        UUIDv5 string representation
+    """
     if run_index is None:
         name = f"{trace_id}:{node_name}"
     else:

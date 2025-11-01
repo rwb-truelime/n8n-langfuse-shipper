@@ -48,6 +48,28 @@ __all__ = [
 
 
 def unwrap_ai_channel(container: Any) -> Any:
+    """Unwrap single-key ai_* wrapper dicts extracting nested json objects.
+
+    n8n AI nodes often wrap outputs as {"ai_languageModel": [[{"json": {...}}]]}.
+    This function flattens such structures by recursively extracting json blocks
+    or dicts containing model/tokenUsage keys.
+
+    Returns original container when:
+    - Not a single-key dict
+    - Key doesn't start with "ai_"
+    - No json blocks or model-related dicts found
+
+    Deduplicates extracted objects using JSON signature to prevent redundancy.
+
+    Args:
+        container: Potential AI channel wrapper structure
+
+    Returns:
+        Unwrapped json object(s) or original container
+        - Single object if only one extracted
+        - List of unique objects if multiple found
+        - Original container if unwrapping not applicable
+    """
     if not isinstance(container, dict) or len(container) != 1:
         return container
     try:
@@ -59,6 +81,16 @@ def unwrap_ai_channel(container: Any) -> Any:
     collected: List[Dict[str, Any]] = []
 
     def _walk(v: Any, depth: int = 0) -> None:
+        """Recursively collect json-wrapped objects or model-related dicts.
+
+        Args:
+            v: Value to traverse (dict, list, or other).
+            depth: Current recursion depth (max 25 to prevent stack overflow).
+
+        Note:
+            Modifies `collected` list in enclosing scope by appending
+            discovered objects that contain model or usage keys.
+        """
         if depth > 25:
             return
         if isinstance(v, list):
@@ -105,11 +137,38 @@ def unwrap_ai_channel(container: Any) -> Any:
 
 
 def unwrap_generic_json(container: Any) -> Any:
+    """Extract nested json field values from list/dict wrapper structures.
+
+    Recursively searches for {"json": {...}} patterns and extracts the json values.
+    Common in n8n node outputs where data is wrapped for processing.
+
+    Bounded by depth=25 and max 150 collected objects to prevent excessive traversal.
+    Deduplicates using JSON signature.
+
+    Args:
+        container: Data structure potentially containing json wrappers
+
+    Returns:
+        Unwrapped json object(s) or original container
+        - Single object if only one found
+        - List of unique objects if multiple found
+        - Original container if no json fields found
+    """
     if not isinstance(container, dict):
         return container
     collected: List[Dict[str, Any]] = []
 
     def _walk(o: Any, depth: int = 0) -> None:
+        """Recursively collect json-wrapped objects from nested structure.
+
+        Args:
+            o: Object to traverse (dict, list, or other).
+            depth: Current recursion depth (max 25, collection cap 150).
+
+        Note:
+            Modifies `collected` list in enclosing scope by appending
+            discovered json-wrapped dicts.
+        """
         if depth > 25 or len(collected) >= 150:
             return
         if isinstance(o, dict):
@@ -146,6 +205,24 @@ def unwrap_generic_json(container: Any) -> Any:
 
 
 def normalize_node_io(obj: Any) -> tuple[Any, Dict[str, bool]]:
+    """Apply unwrapping pipeline to node I/O and preserve binary blocks.
+
+    Orchestrates normalization process:
+    1. Apply AI channel unwrapping
+    2. Apply generic json unwrapping
+    3. Merge back top-level binary dict if lost during unwrapping
+
+    Binary preservation prevents media placeholder loss when output structure
+    flattened.
+
+    Args:
+        obj: Raw node input or output data
+
+    Returns:
+        Tuple of (normalized_object, flags_dict)
+        - normalized_object: Unwrapped data structure
+        - flags_dict: Transformation flags (unwrapped_ai_channel, unwrapped_json_root)
+    """
     flags: Dict[str, bool] = {}
     base = obj
     if isinstance(base, dict):
@@ -169,6 +246,29 @@ _USER_START = "Human: ##"
 
 
 def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) -> Any:
+    """Remove system prompt segment from LangChain LMChat node inputs.
+
+    LangChain LMChat nodes combine System and User prompts in one message. This
+    function strips the System segment using exact literal marker detection.
+
+    Split marker (literal sequence):
+    \\n\\n## START PROCESSING\\n\\nHuman: ##
+
+    Stripping logic:
+    - Recursively searches for "messages" arrays up to depth 25
+    - Handles both list of strings and list of dicts with content keys
+    - Removes everything before "Human: ##" when marker found
+    - Fail-open: returns original input on any error
+
+    Only processes nodes with "lmchat" in type (case-insensitive).
+
+    Args:
+        input_obj: Node input data potentially containing messages
+        node_type: Node type string for lmchat detection
+
+    Returns:
+        Modified input with system prompts stripped, or original on error/no match
+    """
     if not isinstance(node_type, str):
         return input_obj
     node_type_lower = node_type.lower()
@@ -180,6 +280,21 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
         modified_any = False
 
         def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
+            """Recursively find messages arrays and strip system prompts.
+
+            Args:
+                obj: Object to traverse (dict, list, or other).
+                depth: Current recursion depth (max 25 to prevent overflow).
+
+            Returns:
+                True if processing should continue to deeper levels, False
+                if depth limit reached.
+
+            Note:
+                Mutates `modified` in enclosing scope by stripping system
+                prompt prefix from message strings that contain the
+                LangChain LMChat split marker sequence.
+            """
             nonlocal modified_any
             if depth > 25:
                 return False

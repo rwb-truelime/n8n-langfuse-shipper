@@ -24,9 +24,21 @@ __all__ = ["epoch_ms_to_dt"]
 
 
 def epoch_ms_to_dt(ms: int) -> datetime:
-    """Convert an epoch timestamp (ms or s) to a timezone-aware UTC datetime.
+    """Convert epoch timestamp (milliseconds or seconds) to timezone-aware UTC datetime.
 
-    Heuristic: values < 10^12 treated as seconds.
+    Uses heuristic to distinguish seconds from milliseconds:
+    - Values < 1_000_000_000_000 treated as seconds (Unix epoch ~1970-2033)
+    - Values >= 1_000_000_000_000 treated as milliseconds (n8n default format)
+
+    Args:
+        ms: Epoch timestamp in milliseconds or seconds
+
+    Returns:
+        Timezone-aware datetime in UTC
+
+    Note:
+        All exported timestamps MUST be UTC-aware to satisfy timezone invariant.
+        Naive datetimes are forbidden.
     """
     if ms < 1_000_000_000_000:
         return datetime.fromtimestamp(ms, tz=timezone.utc)

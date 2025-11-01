@@ -60,6 +60,20 @@ GENERATION_PROVIDER_MARKERS = [
 
 
 def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[Dict[str, Any]]:
+    """Recursively search for dict containing target key up to max depth.
+
+    Performs depth-limited breadth-first search through nested data structures
+    to find the first dict that contains the target key. Used to locate tokenUsage
+    objects at arbitrary nesting levels.
+
+    Args:
+        data: Root data structure to search (dict, list, or other)
+        target: Key name to search for (e.g., "tokenUsage")
+        max_depth: Maximum recursion depth to prevent stack overflow
+
+    Returns:
+        Dict containing target key, or None if not found or depth exceeded
+    """
     try:
         if max_depth < 0:
             return None
@@ -81,6 +95,22 @@ def _find_nested_key(data: Any, target: str, max_depth: int = 150) -> Optional[D
 
 
 def detect_generation(node_type: str, node_run: NodeRun) -> bool:
+    """Classify span as LLM generation using two-tier heuristic.
+
+    Detection strategy (ordered):
+    1. Explicit signal: tokenUsage or tokenUsageEstimate object present
+    2. Provider marker: node type contains known LLM provider substring
+
+    Exclusions apply even with tokenUsage:
+    - embedding, embeddings, reranker nodes explicitly rejected
+
+    Args:
+        node_type: Node type string from workflow definition
+        node_run: Runtime execution data with potential tokenUsage
+
+    Returns:
+        True if span should be classified as generation observation
+    """
     if node_run.data and any(k in node_run.data for k in ("tokenUsage", "tokenUsageEstimate")):
         return True
     if any(
@@ -95,6 +125,25 @@ def detect_generation(node_type: str, node_run: NodeRun) -> bool:
 
 
 def extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
+    """Normalize token usage from various formats into canonical structure.
+
+    Searches for tokenUsage or tokenUsageEstimate objects at multiple nesting levels
+    and normalizes field names across different provider formats.
+
+    Supported formats:
+    - Canonical: input, output, total
+    - OpenAI-style: promptTokens, completionTokens, totalTokens
+    - Short form: prompt, completion, total
+    - Custom (Limescape): totalInputTokens, totalOutputTokens, totalTokens
+
+    Synthesizes total as input+output when present but total absent.
+
+    Args:
+        node_run: NodeRun containing potential tokenUsage data
+
+    Returns:
+        LangfuseUsage with normalized fields, or None if no usage found
+    """
     data = node_run.data or {}
     tu: Any = None
     for key in ("tokenUsage", "tokenUsageEstimate"):
@@ -109,6 +158,16 @@ def extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
                 break
     if not isinstance(tu, dict):
         def _scan_custom(obj: Any, depth: int = 25) -> Optional[Dict[str, Any]]:
+            """Recursively scan for custom Limescape Docs token keys.
+
+            Args:
+                obj: Object to traverse (dict, list, or other).
+                depth: Remaining recursion depth (decremented each level).
+
+            Returns:
+                First dict containing totalInputTokens, totalOutputTokens,
+                or totalTokens keys, or None if not found.
+            """
             if depth < 0:
                 return None
             if isinstance(obj, dict):
@@ -168,6 +227,23 @@ def extract_usage(node_run: NodeRun) -> Optional[LangfuseUsage]:
 
 
 def extract_concise_output(candidate: Any, node_type: str) -> Optional[str]:
+    """Extract clean generation output text using provider-specific patterns.
+
+    Attempts ordered extraction strategies to obtain concise text output rather
+    than full JSON serialization:
+    1. Gemini/Vertex: response.generations[0][0].text
+    2. Limescape Docs: markdown field (when node type matches)
+    3. Generic AI channel: ai_* keys with nested text fields
+
+    Falls back to None if no clean text extraction succeeds.
+
+    Args:
+        candidate: Normalized output data structure
+        node_type: Node type string for provider-specific logic
+
+    Returns:
+        Extracted text string or None (caller serializes full JSON as fallback)
+    """
     try:
         extracted_text: Optional[str] = None
         if isinstance(candidate, dict):
@@ -214,6 +290,28 @@ def detect_gemini_empty_output_anomaly(
     run: NodeRun,
     node_name: str,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Detect Gemini empty output bug and distinguish from tool_calls transition.
+
+    Identifies anomaly when ALL conditions met:
+    - generations[0][0].text == ""
+    - promptTokens > 0
+    - totalTokens >= promptTokens
+    - completionTokens == 0 or absent
+
+    When detected, forces status to "error" and adds synthetic error message
+    unless original error already present.
+
+    Args:
+        is_generation: Whether span classified as generation (early exit if False)
+        norm_output_obj: Normalized output structure for text extraction
+        run: NodeRun containing tokenUsage and potential error
+        node_name: Node identifier for logging
+
+    Returns:
+        Tuple of (status_override, metadata_dict)
+        - status_override: "error" when anomaly detected, else None
+        - metadata_dict: Diagnostic flags and token counters
+    """
     if not is_generation:
         return None, {}
     meta: Dict[str, Any] = {}

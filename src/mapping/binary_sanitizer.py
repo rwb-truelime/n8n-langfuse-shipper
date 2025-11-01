@@ -54,6 +54,22 @@ def likely_binary_b64(
     context_key: str | None = None,
     in_binary_block: bool = False,
 ) -> bool:
+    """Heuristic detection of base64-encoded binary data in strings.
+
+    Detection criteria:
+    - Length >= 200 characters
+    - Matches base64 regex OR starts with /9j/ (JPEG marker)
+    - Diversity check: <4 unique chars in first 120 suggests false positive
+      (requires file-indicative context key unless in_binary_block=True)
+
+    Args:
+        s: String to test for binary encoding
+        context_key: Dict key containing this string (for context validation)
+        in_binary_block: True if string found in canonical run.data.binary block
+
+    Returns:
+        True if string likely contains base64-encoded binary data
+    """
     if len(s) < 200:
         return False
     if not _BASE64_RE.match(s) and not s.startswith("/9j/"):
@@ -67,6 +83,21 @@ def likely_binary_b64(
 
 
 def contains_binary_marker(d: Any, depth: int = 0) -> bool:
+    """Recursively check if data structure contains any binary content.
+
+    Searches for:
+    - Canonical run.data.binary blocks with mimeType + base64 data
+    - Standalone long base64 strings (via likely_binary_b64 heuristic)
+
+    Bounded by max depth 25 to prevent stack overflow on deeply nested structures.
+
+    Args:
+        d: Data structure to search (dict, list, string, or other)
+        depth: Current recursion depth (internal parameter)
+
+    Returns:
+        True if binary content detected at any depth
+    """
     if depth > 25:
         return False
     try:
@@ -109,6 +140,27 @@ def contains_binary_marker(d: Any, depth: int = 0) -> bool:
 
 
 def strip_binary_payload(obj: Any) -> Any:
+    """Recursively replace binary data with size-preserving placeholders.
+
+    Replacement strategy:
+
+    Canonical binary objects (run.data.binary.slot):
+    - Replace data field with "binary omitted"
+    - Attach _omitted_len with original byte length
+    - Preserve all metadata (mimeType, fileName, etc.)
+
+    Standalone base64 strings:
+    - Replace with dict: {"_binary": true, "note": "binary omitted", "_omitted_len": N}
+
+    Recursively processes nested dicts and lists. Fail-open: returns original
+    object on any processing error.
+
+    Args:
+        obj: Data structure potentially containing binary data
+
+    Returns:
+        Deep copy with binary data replaced by placeholders
+    """
     placeholder_text = "binary omitted"
     try:
         if isinstance(obj, dict):

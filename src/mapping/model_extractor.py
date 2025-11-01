@@ -41,6 +41,22 @@ __all__ = ["extract_model_value", "looks_like_model_param_key", "extract_model_f
 
 
 def extract_model_value(data: Any) -> Optional[str]:
+    """Extract model identifier from runtime node execution data.
+
+    Performs multi-pass search strategy:
+    1. AI channel unwrapping: Search ai_* keys for nested json.model fields
+    2. Direct top-level scan: Check model/model_name/modelId/model_id
+    3. Breadth-first traversal: Bounded search through nested structures
+
+    Search bounded by max_nodes=800 and max_depth=25 to prevent excessive
+    traversal on deeply nested or cyclic structures.
+
+    Args:
+        data: Node run output data structure
+
+    Returns:
+        Model identifier string or None if not found
+    """
     if not data:
         return None
     keys = ("model", "model_name", "modelId", "model_id")
@@ -71,6 +87,15 @@ def extract_model_value(data: Any) -> Optional[str]:
         pass
 
     def _direct_scan(obj: Dict[str, Any]) -> Optional[str]:
+        """Scan object for model keys at top level and options subkey.
+
+        Args:
+            obj: Dictionary to scan for model key-value pairs.
+
+        Returns:
+            First non-empty string value found for any target key, or None
+            if no match found.
+        """
         for k in keys:
             v = obj.get(k)
             if isinstance(v, str) and v:
@@ -128,6 +153,17 @@ def extract_model_value(data: Any) -> Optional[str]:
 
 
 def looks_like_model_param_key(key: str) -> bool:
+    """Heuristic to identify parameter keys likely containing model identifiers.
+
+    Checks for presence of "model" or "deployment" substrings while excluding
+    known false positives like "mode", "modelprovider", "model_type".
+
+    Args:
+        key: Parameter key name from workflow node definition
+
+    Returns:
+        True if key likely contains model identifier
+    """
     lk = key.lower()
     if lk == "mode":
         return False
@@ -137,6 +173,27 @@ def looks_like_model_param_key(key: str) -> bool:
 
 
 def extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    """Extract model identifier from static workflow node parameters.
+
+    Fallback search when runtime data lacks explicit model. Searches node.parameters
+    dict using priority key list and breadth-first traversal.
+
+    Priority keys (checked first):
+    - model, customModel, deploymentName, deployment, modelName, model_id, modelId
+
+    Azure special handling:
+    When node.type contains "azure", attaches n8n.model.is_deployment=true metadata
+    to indicate deployment name rather than model name.
+
+    Args:
+        node: WorkflowNode with static parameters dict
+
+    Returns:
+        Tuple of (model_value, key_path, metadata_dict) or None if not found
+        - model_value: Extracted model string
+        - key_path: Dot-separated path to key (e.g., "parameters.model")
+        - metadata_dict: Additional metadata like is_deployment flag
+    """
     params = getattr(node, "parameters", None)
     if not isinstance(params, dict):
         return None
