@@ -191,7 +191,9 @@ def extract_generation_input_and_params(
     """Extract clean input and LLM parameters for generation spans.
 
     For generation nodes with a `messages` array in input, extracts:
-    - Clean input: the entire messages array
+    - Clean input: content string(s) from messages array
+        * Single message: returns the content string directly
+        * Multiple messages: returns list of content strings
     - LLM params: all other keys (max_tokens, temperature, etc.) as metadata
 
     This provides clean prompt visibility in Langfuse UI while preserving
@@ -206,7 +208,8 @@ def extract_generation_input_and_params(
 
     Returns:
         Tuple of (clean_input, llm_params_metadata)
-        - clean_input: messages array if present, else original input
+        - clean_input: content string (single) or list of strings (multiple),
+          else original
         - llm_params_metadata: dict with n8n.llm.* keys for config params
     """
     llm_params: Dict[str, Any] = {}
@@ -280,9 +283,29 @@ def extract_generation_input_and_params(
         )
         return input_obj, llm_params
 
-    # Extract messages array as clean input
+    # Extract messages array
     messages = messages_dict["messages"]
-    clean_input = messages
+
+    # Extract content strings from messages as clean input
+    if messages and len(messages) > 0:
+        # Extract content from each message
+        content_list = []
+        for msg in messages:
+            if isinstance(msg, dict) and "content" in msg:
+                content_list.append(msg["content"])
+            elif isinstance(msg, str):
+                content_list.append(msg)
+            else:
+                # Fallback: include the message as-is
+                content_list.append(msg)
+
+        # If single message, return just the string; if multiple, return array
+        if len(content_list) == 1:
+            clean_input = content_list[0]
+        else:
+            clean_input = content_list
+    else:
+        clean_input = messages
 
     # Extract all other keys as LLM parameters
     param_keys = []
@@ -318,10 +341,11 @@ def extract_generation_input_and_params(
 
     logger.debug(
         "Extracted %d LLM parameters at depth %d: %s; "
-        "clean input=%d messages",
+        "clean input type=%s (from %d messages)",
         len(llm_params),
         depth_found,
         ", ".join(param_keys[:10]),  # Show first 10 keys
+        type(clean_input).__name__,
         len(messages),
     )
 
