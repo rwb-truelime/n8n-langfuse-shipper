@@ -116,6 +116,14 @@ The shipper automatically links LLM generation spans to their corresponding Lang
 
 2. **Ancestor Chain Resolution**: For each LLM generation span, the shipper walks backward through the workflow execution chain to find the closest ancestor that fetched a prompt, then extracts the prompt name and version.
 
+   **Multiple Prompt Disambiguation**: When multiple prompts are at the same distance from a generation span (e.g., two prompts feeding into an agent), the shipper uses **fingerprint matching** to select the correct prompt:
+   - Extracts the first 300 characters of each candidate prompt text during detection
+   - Computes a fingerprint (SHA256 hash) for each prompt
+   - When resolving a generation, extracts the actual prompt text from the agent's input
+   - Strips LangChain prefixes (`System: `) and computes the input fingerprint
+   - Matches the input fingerprint against candidate fingerprints to select the correct prompt
+   - Falls back to alphabetical ordering if no match is found
+
 3. **Environment-Aware Version Resolution**:
    - **Production**: Uses the exact version number from the workflow execution (no API queries)
    - **Dev/Staging**: Queries the Langfuse API to resolve version labels (e.g., "latest") to actual version numbers

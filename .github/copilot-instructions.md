@@ -377,7 +377,7 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
 
 **Purpose:** Link generation spans to Langfuse prompt versions via OTLP attributes `langfuse.observation.prompt.name` and `langfuse.observation.prompt.version`, enabling prompt management UI integration.
 
-**Architecture (3 Phases):**
+**Architecture (4 Phases):**
 
 1. **Prompt Fetch Node Detection (Building Registry):**
    - Scans all nodes in execution during mapping initialization
@@ -385,6 +385,7 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
      - **Node Type Match:** Exact match on official Langfuse nodes (`@n8n/n8n-nodes-langchain.lmPromptSelector`, future variants)
      - **HTTP API Pattern:** HTTP Request nodes targeting Langfuse prompt API (`/api/public/v2/prompts/<name>`)
      - **Output Schema Validation:** Nodes whose output contains prompt-shaped structure (required keys: `name`, `version`, `prompt`/`config`)
+   - **Fingerprint Computation:** Extracts prompt text from output (checks `prompt`, `config`, `text`, `template` keys), computes SHA256 hash of first 300 characters → first 16 hex digits, stores in `PromptMetadata.fingerprint`
    - Builds immutable `prompt_fetch_registry` dict mapping node name → `PromptFetchNode` metadata
    - Output schema extraction handles n8n main channel wrapper (unwraps `main[0][0].json` path)
 
@@ -394,10 +395,23 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
    - Extracts `name` and `version` from cached ancestor output
    - Handles both dict and object source representations (dual compatibility)
    - Cycle protection prevents infinite loops; depth limit 100 hops
-   - When multiple candidates at same distance: fingerprinting disambiguation (output hash comparison)
+   - **When multiple candidates at same distance:** Disambiguation via precedence:
+     1. **Agent Hierarchy:** If agent exists between generation and prompts → both prompts beyond agent → **Fingerprint Matching** (NEW!)
+     2. **Direct Source Chain:** Prompt is immediate parent in source chain
+     3. **Fingerprint Matching (Tie-Breaker):** Compare agent input text fingerprint against candidate prompt fingerprints
+     4. **Fallback:** First candidate alphabetically (low confidence)
    - Populates `LangfuseSpan.prompt_name` and `prompt_version` fields
 
-3. **Version Resolution (Environment-Aware API Query):**
+3. **Fingerprint Matching (Text-Based Disambiguation):**
+   - **Input Text Extraction:** Recursively searches agent input for prompt text in nested n8n structures (`ai_languageModel[0][0]['json']`)
+   - **Prefix Stripping:** Removes LangChain prefixes (`System: `, `system: `, `SYSTEM: `) from extracted text
+   - **Fingerprint Computation:** Identical algorithm to detection: SHA256(first 300 chars) → first 16 hex digits
+   - **Comparison:** Matches input fingerprint against candidate `PromptMetadata.fingerprint` values
+   - **Success:** Returns matched candidate with `resolution_method=fingerprint`, `confidence=medium`
+   - **Failure:** Falls back to alphabetical selection with `confidence=low`, `ambiguous=true`
+   - **Requirements:** Both input text and prompt fingerprints must be ≥50 chars; shorter text returns empty fingerprint
+
+4. **Version Resolution (Environment-Aware API Query):**
    - **Production Environment:** Pass-through; exports `prompt_version` exactly as fetched (assumes production fetches stable versions)
    - **Dev/Staging Environments:** Queries Langfuse API `/api/public/prompts/<name>` to resolve version label/placeholder
      - Exact match: version label found in API response → use that version number
@@ -435,26 +449,30 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
 - Cycle detection aborts traversal → no prompt resolution for that span
 - Always deterministic: same input execution → same prompt resolution outcome
 
-**Tests (63 total across 5 suites):**
+**Tests (73 total across 6 suites):**
 - `test_prompt_detection.py` (11): HTTP nodes, Langfuse nodes, output schema validation, edge cases
-- `test_prompt_resolution.py` (13): Ancestor traversal, distance calculations, fingerprinting, multiple candidates, ambiguity handling
+- `test_prompt_resolution.py` (15): Ancestor traversal, distance calculations, fingerprinting algorithm consistency, multiple candidates, ambiguity handling
+- `test_prompt_fingerprint_matching.py` (10): Text-based disambiguation, System: prefix stripping, n8n structure unwrapping, equidistant resolution, fingerprint algorithm consistency
 - `test_prompt_version_resolver.py` (17): API integration, exact match, fallback to latest, caching, error handling (404, timeout, HTTP errors)
 - `test_prompt_environment_safeguards.py` (11): Production pass-through, dev/staging API queries, environment isolation, cache isolation
 - `test_prompt_otel_attributes.py` (11): Attribute emission, metadata coexistence, special characters, version 0 validity
 
 **Implementation Files:**
-- `src/mapping/prompt_resolution.py`: Detection, registry building, ancestor traversal, resolution orchestration
+- `src/mapping/prompt_detection.py`: Node detection, output parsing, fingerprint computation
+- `src/mapping/prompt_resolution.py`: Ancestor traversal, fingerprint matching, resolution orchestration, text extraction with prefix stripping
 - `src/mapping/prompt_version_resolver.py`: Environment-aware API client, caching, version resolution logic
-- `src/models/langfuse.py`: `LangfuseSpan.prompt_name`, `prompt_version` fields
+- `src/models/langfuse.py`: `LangfuseSpan.prompt_name`, `prompt_version` fields; `PromptMetadata.fingerprint` field
 - `src/shipper.py`: OTLP attribute emission (`_apply_span_attributes` function)
 
 **Contract Invariants:**
 - Prompt detection is read-only; never modifies execution data
-- Resolution is deterministic; same ancestor chain → same result
+- Resolution is deterministic; same ancestor chain + agent input → same result
+- Fingerprint algorithm must be identical in detection and resolution (SHA256 of first 300 chars → first 16 hex)
 - Production environment NEVER queries Langfuse API (security/performance)
 - Version resolution respects Langfuse API semantics (label → active version number)
 - OTLP attributes only emitted when both name AND version present
 - Debug metadata always attached for troubleshooting regardless of success/failure
+- Fingerprint matching requires minimum 50 characters for both prompt text and agent input
 
 ### Binary & Multimodality
 

@@ -470,7 +470,7 @@ def _extract_prompt_text_from_input(agent_input: Any) -> Optional[str]:
     if not agent_input:
         return None
 
-    # If string: return as-is (but strip common prefixes)
+    # If string: strip common prefixes and return
     if isinstance(agent_input, str):
         text = agent_input
         # Strip LangChain system message prefixes
@@ -495,6 +495,10 @@ def _extract_prompt_text_from_input(agent_input: Any) -> Optional[str]:
             if key in agent_input:
                 value = agent_input[key]
                 if isinstance(value, str):
+                    # Strip prefix from string values
+                    for prefix in ["System: ", "system: ", "SYSTEM: "]:
+                        if value.startswith(prefix):
+                            return value[len(prefix):]
                     return value
                 # Recurse for nested structures
                 if isinstance(value, (dict, list)):

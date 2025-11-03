@@ -186,36 +186,36 @@ def test_resolve_closest_among_multiple():
 
 
 def test_compute_fingerprint_short_text():
-    """Verify fingerprint of short text (< 400 chars)."""
-    text = "This is a short prompt text."
-    fp1 = _compute_text_fingerprint(text)
-    fp2 = _compute_text_fingerprint(text)
+    """Verify fingerprint of short text (< 50 chars returns empty)."""
+    text = "Short text."
+    fp = _compute_text_fingerprint(text)
 
-    # Same text should produce same fingerprint
-    assert fp1 == fp2
-    assert len(fp1) == 64  # SHA256 hex length
+    # Too short, should return empty string
+    assert fp == ""
 
-    # Different text should produce different fingerprint
-    different = "Different prompt text."
-    fp3 = _compute_text_fingerprint(different)
-    assert fp1 != fp3
+    # Sufficient length (>= 50 chars)
+    long_text = "This is a longer prompt text with more than fifty characters."
+    fp_long = _compute_text_fingerprint(long_text)
+    assert len(fp_long) == 16  # First 16 chars of SHA256
 
 
 def test_compute_fingerprint_long_text():
-    """Verify fingerprint uses prefix+suffix for long text."""
-    # Simulate 30K char prompt
-    text = ("A" * 250) + ("B" * 29500) + ("C" * 250)
+    """Verify fingerprint uses first 300 chars only."""
+    # First 300 chars are the same
+    prefix = "A" * 300
 
-    fp1 = _compute_text_fingerprint(text)
-    assert len(fp1) == 64
+    text1 = prefix + ("B" * 10000)
+    text2 = prefix + ("C" * 10000)
 
-    # Same prefix/suffix/length should match
-    text2 = ("A" * 250) + ("X" * 29500) + ("C" * 250)
+    fp1 = _compute_text_fingerprint(text1)
     fp2 = _compute_text_fingerprint(text2)
-    assert fp1 == fp2  # Middle content ignored
 
-    # Different suffix should differ
-    text3 = ("A" * 250) + ("B" * 29500) + ("D" * 250)
+    # Should match (same first 300 chars)
+    assert fp1 == fp2
+    assert len(fp1) == 16
+
+    # Different prefix should produce different fingerprint
+    text3 = ("Z" * 300) + ("B" * 10000)
     fp3 = _compute_text_fingerprint(text3)
     assert fp1 != fp3
 
