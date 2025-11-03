@@ -10,9 +10,12 @@ Unwrapping Functions:
     unwrap_generic_json: Extract json fields from nested list/dict structures
     normalize_node_io: Apply both unwrappers and merge back binary blocks
 
+LLM Parameter Extraction:
+    extract_generation_input_and_params: Separate messages from LLM config params
+
 System Prompt Stripping:
-    strip_system_prompt_from_langchain_lmchat: Remove System segment using literal
-    split marker `\\n\\n## START PROCESSING\\n\\nHuman: ##`
+    strip_system_prompt_from_langchain_lmchat: Remove System segment using
+    case-insensitive "human:" marker
 
 AI Channel Structure:
     Input: {"ai_languageModel": [[{"json": {...}}]]}
@@ -26,16 +29,32 @@ Binary Block Preservation:
     When unwrapping would lose top-level binary dict, merges it back into
     normalized output to prevent media placeholder loss.
 
+Recursive Search Pattern Philosophy:
+    Multiple functions in this module use recursive depth-first traversal through
+    nested dict/list structures. These are kept SEPARATE (not abstracted) because:
+
+    1. Different Semantics: Some are finders (read-only, early exit), others are
+       mutators (deep copy, full traversal)
+    2. Different Goals: Finding specific keys vs transforming content vs collecting
+       assets
+    3. Different Performance: Early exit optimization vs full structure traversal
+    4. Different Depth Limits: 5 vs 25 depending on expected n8n nesting patterns
+    5. Clarity over DRY: Self-contained functions are easier to understand than
+       complex generic helpers with callbacks and predicates
+
+    Each recursive function documents its specific traversal characteristics and
+    contrasts itself with related functions to clarify when to use which pattern.
+
 Design Notes:
     - Deduplication using JSON signature prevents redundant unwrapped objects
     - System prompt split occurs BEFORE normalization to preserve structure
-    - Recursive search bounded by depth limits (25) and item counts (100-150)
+    - Recursive search bounded by depth limits (5-25) and item counts (100-150)
     - Fail-open: returns original input on any error
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +63,7 @@ __all__ = [
     "unwrap_generic_json",
     "normalize_node_io",
     "strip_system_prompt_from_langchain_lmchat",
+    "extract_generation_input_and_params",
 ]
 
 
@@ -241,33 +261,193 @@ def normalize_node_io(obj: Any) -> tuple[Any, Dict[str, bool]]:
     return base, flags
 
 
-_SPLIT_MARKER = "\n\n## START PROCESSING\n\nHuman: ##"
-_USER_START = "Human: ##"
+def extract_generation_input_and_params(
+    input_obj: Any,
+    is_generation: bool
+) -> tuple[Any, Dict[str, Any]]:
+    """Extract clean input and LLM parameters for generation spans.
+
+    For generation nodes with a `messages` array in input, extracts:
+    - Clean input: content string(s) from messages array
+        * Single message: returns the content string directly
+        * Multiple messages: returns list of content strings
+    - LLM params: all other keys (max_tokens, temperature, etc.) as metadata
+
+    This provides clean prompt visibility in Langfuse UI while preserving
+    full LLM configuration in metadata for reproducibility.
+
+    Recursively searches nested structures (up to depth 5) for dicts
+    containing `messages` array, similar to system prompt stripping.
+
+    Args:
+        input_obj: Raw input object (may contain messages + config params)
+        is_generation: Whether span is classified as generation
+
+    Returns:
+        Tuple of (clean_input, llm_params_metadata)
+        - clean_input: content string (single) or list of strings (multiple),
+          else original
+        - llm_params_metadata: dict with n8n.llm.* keys for config params
+    """
+    llm_params: Dict[str, Any] = {}
+
+    if not is_generation:
+        return input_obj, llm_params
+
+    def _find_messages_dict(obj: Any, depth: int = 0) -> tuple[
+        Optional[Dict[str, Any]], int
+    ]:
+        """Recursively search for dict containing messages array.
+
+        Traversal Pattern:
+            - Depth-first search through nested dict/list structures
+            - Early exit optimization: returns immediately on first match
+            - Read-only operation: does not modify input data
+            - Bounded recursion: stops at MAX_DEPTH to prevent infinite loops
+
+        Use Case:
+            Find the first dict containing a "messages" array (non-empty list)
+            to extract LLM parameters. Production n8n data nests messages at
+            depth 4 inside ai_languageModel wrappers.
+
+        Contrast with _process_messages_recursive:
+            - This function FINDS (read-only, early exit)
+            - That function MUTATES (deep copy, full traversal)
+            - Different depth limits (5 vs 25)
+            - Different return types (tuple vs bool)
+
+        Returns:
+            Tuple of (dict_with_messages, depth_found) or (None, -1)
+        """
+        MAX_DEPTH = 5
+        if depth > MAX_DEPTH:
+            return None, -1
+
+        if isinstance(obj, dict):
+            # Check if current dict has messages array
+            messages = obj.get("messages")
+            if isinstance(messages, list) and len(messages) > 0:
+                logger.debug(
+                    "Found messages dict at depth %d: keys=%s, "
+                    "messages_count=%d",
+                    depth,
+                    list(obj.keys())[:20],
+                    len(messages),
+                )
+                return obj, depth
+
+            # Recursively search nested structures
+            for value in obj.values():
+                result, found_depth = _find_messages_dict(value, depth + 1)
+                if result is not None:
+                    return result, found_depth
+
+        elif isinstance(obj, list):
+            # Search list items
+            for item in obj:
+                result, found_depth = _find_messages_dict(item, depth + 1)
+                if result is not None:
+                    return result, found_depth
+
+        return None, -1
+
+    # Search for dict containing messages array
+    messages_dict, depth_found = _find_messages_dict(input_obj)
+
+    if messages_dict is None:
+        logger.debug(
+            "No messages array found in input_obj (searched up to depth 5)"
+        )
+        return input_obj, llm_params
+
+    # Extract messages array
+    messages = messages_dict["messages"]
+
+    # Extract content strings from messages as clean input
+    if messages and len(messages) > 0:
+        # Extract content from each message
+        content_list = []
+        for msg in messages:
+            if isinstance(msg, dict) and "content" in msg:
+                content_list.append(msg["content"])
+            elif isinstance(msg, str):
+                content_list.append(msg)
+            else:
+                # Fallback: include the message as-is
+                content_list.append(msg)
+
+        # If single message, return just the string; if multiple, return array
+        if len(content_list) == 1:
+            clean_input = content_list[0]
+        else:
+            clean_input = content_list
+    else:
+        clean_input = messages
+
+    # Extract all other keys as LLM parameters
+    param_keys = []
+    for key, value in messages_dict.items():
+        if key == "messages":
+            continue
+
+        # Special handling for 'options' dict - flatten it
+        if key == "options" and isinstance(value, dict):
+            for opt_key, opt_value in value.items():
+                try:
+                    import json
+                    json.dumps(opt_value)
+                    llm_params[f"n8n.llm.{opt_key}"] = opt_value
+                    param_keys.append(opt_key)
+                except (TypeError, ValueError):
+                    llm_params[f"n8n.llm.{opt_key}"] = str(opt_value)
+                    param_keys.append(opt_key)
+            continue
+
+        # Store under n8n.llm.* prefix in metadata
+        try:
+            # Convert to JSON-serializable format
+            import json
+            # Test serializability
+            json.dumps(value)
+            llm_params[f"n8n.llm.{key}"] = value
+            param_keys.append(key)
+        except (TypeError, ValueError):
+            # Non-serializable values → convert to string
+            llm_params[f"n8n.llm.{key}"] = str(value)
+            param_keys.append(key)
+
+    logger.debug(
+        "Extracted %d LLM parameters at depth %d: %s; "
+        "clean input type=%s (from %d messages)",
+        len(llm_params),
+        depth_found,
+        ", ".join(param_keys[:10]),  # Show first 10 keys
+        type(clean_input).__name__,
+        len(messages),
+    )
+
+    return clean_input, llm_params
 
 
 def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) -> Any:
-    """Remove system prompt segment from LangChain LMChat node inputs.
+    """Strip System prompts from LangChain LMChat messages.
 
-    LangChain LMChat nodes combine System and User prompts in one message. This
-    function strips the System segment using exact literal marker detection.
+    Searches for 'human:' (case-insensitive) as the consistent split marker
+    across all message formats. Strips everything before AND INCLUDING the
+    'human:' marker and any following whitespace.
 
-    Split marker (literal sequence):
-    \\n\\n## START PROCESSING\\n\\nHuman: ##
+    LangChain LMChat Message Formats (INPUT):
+        - "System: ...\n\n## START PROCESSING\n\nHuman: ## ..."
+        - "System: ...\n\nHuman: ..." (no ## markers)
+        - "System: ...\nhuman: ..." (lowercase)
+        - "System: ...\nHUMAN: ..." (uppercase)
 
-    Stripping logic:
-    - Recursively searches for "messages" arrays up to depth 25
-    - Handles both list of strings and list of dicts with content keys
-    - Removes everything before "Human: ##" when marker found
-    - Fail-open: returns original input on any error
+    Stripping Behavior (OUTPUT):
+        - "System: foo\n\nHuman: ## Order" → "## Order"
+        - "System: bar\nhuman:  test" → "test"
+        - Message without "human:" → unchanged
 
-    Only processes nodes with "lmchat" in type (case-insensitive).
-
-    Args:
-        input_obj: Node input data potentially containing messages
-        node_type: Node type string for lmchat detection
-
-    Returns:
-        Modified input with system prompts stripped, or original on error/no match
+    Only consistent marker across all formats is "human:" (case-insensitive).
     """
     if not isinstance(node_type, str):
         return input_obj
@@ -279,21 +459,53 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
         modified = copy.deepcopy(input_obj)
         modified_any = False
 
-        def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
-            """Recursively find messages arrays and strip system prompts.
+        def _find_human_marker(text: str) -> int:
+            """Find first occurrence of 'human:' (case-insensitive).
 
-            Args:
-                obj: Object to traverse (dict, list, or other).
-                depth: Current recursion depth (max 25 to prevent overflow).
+            Returns the index AFTER 'human:' and any following whitespace,
+            or -1 if not found.
+
+            Example:
+                "System: foo\n\nHuman: ## Order" -> returns index pointing to "##"
+                "human:  test" -> returns index pointing to "test"
+            """
+            text_lower = text.lower()
+            idx = text_lower.find("human:")
+            if idx == -1:
+                return -1
+
+            # Skip past "human:" (6 characters)
+            idx += 6
+
+            # Skip any following whitespace (but NOT newlines with content)
+            # We want to preserve "## " as it's markdown header syntax
+            while idx < len(text) and text[idx] in (' ', '\t'):
+                idx += 1
+
+            return idx
+
+        def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
+            """Recursively find and mutate all messages arrays.
+
+            Traversal Pattern:
+                - Depth-first search through nested dict/list structures
+                - Full traversal: processes ALL messages (no early exit)
+                - Mutation operation: modifies deep copy in-place
+                - Bounded recursion: stops at depth 25, limits list items to 100
+
+            Use Case:
+                Find ALL "messages" arrays within deeply nested structures and
+                strip system prompts from each message string. Must traverse
+                entire structure since multiple messages may exist.
+
+            Contrast with _find_messages_dict:
+                - This function MUTATES (deep copy, full traversal)
+                - That function FINDS (read-only, early exit)
+                - Different depth limits (25 vs 5)
+                - Different return types (bool vs tuple)
 
             Returns:
-                True if processing should continue to deeper levels, False
-                if depth limit reached.
-
-            Note:
-                Mutates `modified` in enclosing scope by stripping system
-                prompt prefix from message strings that contain the
-                LangChain LMChat split marker sequence.
+                Boolean indicating whether any modifications were made
             """
             nonlocal modified_any
             if depth > 25:
@@ -304,8 +516,8 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
                     for i, msg in enumerate(messages):
                         if isinstance(msg, dict):
                             for key, value in list(msg.items()):
-                                if isinstance(value, str) and _SPLIT_MARKER in value:
-                                    split_idx = value.find(_USER_START)
+                                if isinstance(value, str):
+                                    split_idx = _find_human_marker(value)
                                     if split_idx != -1:
                                         msg[key] = value[split_idx:]
                                         modified_any = True
@@ -315,8 +527,8 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
                                             node_type,
                                             split_idx,
                                         )
-                        elif isinstance(msg, str) and _SPLIT_MARKER in msg:
-                            split_idx = msg.find(_USER_START)
+                        elif isinstance(msg, str):
+                            split_idx = _find_human_marker(msg)
                             if split_idx != -1:
                                 messages[i] = msg[split_idx:]
                                 modified_any = True

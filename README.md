@@ -18,6 +18,7 @@ It's designed for developers and teams who use n8n for AI-powered workflows and 
 - **Rich Trace Data**: Intelligently maps n8n concepts to Langfuse, including:
     - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes.
     - **Generation Spans**: Automatically detects LLM calls, extracting model names and token usage.
+    - **Prompt Management Integration**: Links generation spans to Langfuse prompt versions, enabling prompt tracking and versioning.
     - **Error & Status**: Maps n8n node errors to Langfuse span statuses.
 - **Idempotent & Resumable**: Uses deterministic IDs and a checkpoint file to prevent duplicate data and allow you to safely resume exports.
 - **Media Uploads**: Can upload binary files (images, documents) from your workflows to Langfuse and link them to your traces.
@@ -102,6 +103,55 @@ graph TD
 
 ---
 
+## Prompt Management Integration
+
+The shipper automatically links LLM generation spans to their corresponding Langfuse prompt versions, enabling you to track and manage prompts in the Langfuse UI.
+
+### How It Works
+
+1. **Automatic Detection**: The shipper identifies nodes in your n8n workflows that fetch prompts from Langfuse:
+   - Official Langfuse prompt nodes (e.g., `@n8n/n8n-nodes-langchain.lmPromptSelector`)
+   - HTTP Request nodes calling Langfuse prompt API (`/api/public/v2/prompts/<name>`)
+   - Any node with prompt-shaped output (containing `name`, `version`, `prompt`/`config`)
+
+2. **Ancestor Chain Resolution**: For each LLM generation span, the shipper walks backward through the workflow execution chain to find the closest ancestor that fetched a prompt, then extracts the prompt name and version.
+
+3. **Environment-Aware Version Resolution**:
+   - **Production**: Uses the exact version number from the workflow execution (no API queries)
+   - **Dev/Staging**: Queries the Langfuse API to resolve version labels (e.g., "latest") to actual version numbers
+
+4. **OTLP Attribute Emission**: The prompt name and resolved version number are attached to the generation span as OpenTelemetry attributes (`langfuse.observation.prompt.name` and `langfuse.observation.prompt.version`), enabling the Langfuse UI to display prompt metadata.
+
+### Configuration
+
+Set the `LANGFUSE_ENV` environment variable to control version resolution behavior:
+
+```fish
+# Production environment (default) - no API queries, uses exact versions from executions
+set -x LANGFUSE_ENV production
+
+# Development environment - queries Langfuse API to resolve version labels
+set -x LANGFUSE_ENV dev
+
+# Staging environment - also queries Langfuse API
+set -x LANGFUSE_ENV staging
+```
+
+**Important**:
+- The environment value is **case-sensitive** and must be lowercase.
+- In production, the shipper never queries the Langfuse API (for security and performance).
+- In dev/staging, API queries timeout after 5 seconds by default (configurable via `PROMPT_VERSION_API_TIMEOUT`).
+
+### Debug Metadata
+
+The shipper always attaches debug metadata to generation spans for troubleshooting:
+- `n8n.prompt.resolution_method`: How the version was resolved (`exact_match`, `fallback_latest`, `production_passthrough`, etc.)
+- `n8n.prompt.confidence`: Confidence level (`high`, `medium`, `low`, `none`)
+- `n8n.prompt.ancestor_distance`: Number of workflow nodes between the generation and prompt fetch
+- `n8n.prompt.fetch_node_name`: Name of the node that fetched the prompt
+
+---
+
 ## Configuration
 
 The tool is configured via environment variables, which can be overridden by command-line arguments.
@@ -131,6 +181,8 @@ The tool is configured via environment variables, which can be overridden by com
 | `TRUNCATE_FIELD_LEN` | `--truncate-len` | `0` | Maximum length for input/output fields. `0` disables truncation. Binary data is always stripped regardless of this setting. |
 | `FILTER_AI_ONLY` | `--filter-ai-only` | `false` | If `true`, exports only AI-related spans and their ancestors. |
 | `LOG_LEVEL` | (none) | `INFO` | Set the logging level (e.g., `DEBUG`, `INFO`, `WARNING`). |
+| `LANGFUSE_ENV` | (none) | `production` | Environment for prompt version resolution. Values: `production` (no API queries), `dev`, or `staging` (API queries enabled). Must be lowercase. |
+| `PROMPT_VERSION_API_TIMEOUT` | (none) | `5` | Timeout (seconds) for Langfuse prompt API queries in dev/staging environments. |
 
 ### Media Uploads
 

@@ -78,6 +78,7 @@ Use these exact meanings in code comments, docs, and tests. Adding a new term? U
 * **Observation Type:** Semantic classification (agent/tool/chain/etc.) via fallback chain: exact → regex → category → default span.
 * **Parent Resolution Precedence:** Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
 * **Pointer-Compressed Execution:** Alternative list-based JSON encoding using index string references; reconstructed into canonical `runData`.
+* **Prompt Resolution:** Identifying Langfuse prompt fetch nodes via 3-stage detection (node type, HTTP API pattern, output schema), resolving prompt metadata (name, version) from generation span ancestor chains, with environment-aware Langfuse API version queries in dev/staging only.
 * **Root Span:** Span representing entire execution; holds execution id metadata; parent of all top-level node spans.
 * **runData:** Canonical dict mapping node name → list[NodeRun] reconstructed or parsed from execution data JSON.
 * **Truncation:** Optional length limiting of stringified input/output fields when `TRUNCATE_FIELD_LEN > 0`; does not disable binary stripping.
@@ -352,27 +353,108 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 **LangChain LMChat System Prompt Stripping:**
 
 LangChain LMChat nodes (@n8n/n8n-nodes-langchain.lmChat*) combine System and User prompts in one message blob.
-Split marker sequence (literal token sequence):
+The ONLY consistent split marker across all message formats is `"human:"` (case-insensitive).
 
-```text
-\n\n## START PROCESSING\n\nHuman: ##
-```
+Message format variations observed:
+* `"System: ...\n\n## START PROCESSING\n\nHuman: ## ..."`
+* `"System: ...\n\nHuman: ..."` (no ## markers)
+* `"System: ...\nhuman: ..."` (lowercase)
+* `"System: ...\nHUMAN: ..."` (uppercase)
 
-For clarity: the System segment ends just before the line containing ## START PROCESSING; the User
-segment begins at the line starting with Human: ## (hash symbols are part of the literal delimiter
-and are not Markdown headings). This explicit code block avoids editor diagnostics that might
-interpret the double-hash sequences as tool directives.
-
-Function _strip_system_prompt_from_langchain_lmchat() strips System prompts:
+Function `strip_system_prompt_from_langchain_lmchat()` strips System prompts:
 * Called in `_prepare_io_and_output()` **BEFORE** `_normalize_node_io()` (preserves structure).
 * Only processes generation spans with "lmchat" in node type (case-insensitive).
 * **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
-* Handles both message formats: list of strings `["System: ... Human: ## ..."]` and list of dicts `[{"content": "System: ... Human: ## ..."}]`.
-* Strips everything before the Human: ## marker when found.
-* Fail-open: returns original input on any error.
+* Handles both message formats: list of strings `["System: ... Human: ..."]` and list of dicts `[{"content": "System: ... Human: ..."}]`.
+* **Searches case-insensitively for first `"human:"` occurrence** and strips everything before AND INCLUDING the `"human:"` marker plus any following spaces/tabs.
+* **Result:** `"System: foo\n\nHuman: ## Order"` → `"## Order"` (no "Human:" prefix in output).
+* Fail-open: returns original input on any error or if no marker found.
 * Logs depth and characters removed when stripping occurs.
 
 Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, string format, deeply nested, missing marker, non-lmChat, multiple messages).
+
+### Prompt Resolution
+
+**Purpose:** Link generation spans to Langfuse prompt versions via OTLP attributes `langfuse.observation.prompt.name` and `langfuse.observation.prompt.version`, enabling prompt management UI integration.
+
+**Architecture (3 Phases):**
+
+1. **Prompt Fetch Node Detection (Building Registry):**
+   - Scans all nodes in execution during mapping initialization
+   - Identifies nodes fetching prompts from Langfuse via 3-stage heuristic:
+     - **Node Type Match:** Exact match on official Langfuse nodes (`@n8n/n8n-nodes-langchain.lmPromptSelector`, future variants)
+     - **HTTP API Pattern:** HTTP Request nodes targeting Langfuse prompt API (`/api/public/v2/prompts/<name>`)
+     - **Output Schema Validation:** Nodes whose output contains prompt-shaped structure (required keys: `name`, `version`, `prompt`/`config`)
+   - Builds immutable `prompt_fetch_registry` dict mapping node name → `PromptFetchNode` metadata
+   - Output schema extraction handles n8n main channel wrapper (unwraps `main[0][0].json` path)
+
+2. **Prompt Resolution (Ancestor Chain Traversal):**
+   - For each generation span, walks ancestor chain via `NodeRun.source` references
+   - Searches for closest ancestor in prompt fetch registry (distance measured in hops)
+   - Extracts `name` and `version` from cached ancestor output
+   - Handles both dict and object source representations (dual compatibility)
+   - Cycle protection prevents infinite loops; depth limit 100 hops
+   - When multiple candidates at same distance: fingerprinting disambiguation (output hash comparison)
+   - Populates `LangfuseSpan.prompt_name` and `prompt_version` fields
+
+3. **Version Resolution (Environment-Aware API Query):**
+   - **Production Environment:** Pass-through; exports `prompt_version` exactly as fetched (assumes production fetches stable versions)
+   - **Dev/Staging Environments:** Queries Langfuse API `/api/public/prompts/<name>` to resolve version label/placeholder
+     - Exact match: version label found in API response → use that version number
+     - Fallback to latest: version not found but prompt exists → use latest active version
+     - Not found: prompt doesn't exist in Langfuse → metadata flag `n8n.prompt.resolution_method=not_found`
+   - Per-run caching: single API query per unique (name, version_input) tuple per execution
+   - Timeout: `PROMPT_VERSION_API_TIMEOUT` (default 5s); failures → fallback with error metadata
+   - Environment detection via `LANGFUSE_ENV` (case-sensitive lowercase: `production`, `dev`, `staging`)
+
+**OTLP Attribute Emission:**
+- `langfuse.observation.prompt.name` (string): prompt name
+- `langfuse.observation.prompt.version` (integer): resolved version number
+- Emitted by `shipper.py` only when both fields present on generation span
+- Coexists with model/token usage attributes
+
+**Debug Metadata (Always Attached):**
+- `n8n.prompt.original_version`: raw version string from fetch node output
+- `n8n.prompt.resolved_version`: final integer version after resolution
+- `n8n.prompt.resolution_method`: one of `exact_match`, `fallback_latest`, `production_passthrough`, `not_found`, `api_error`
+- `n8n.prompt.confidence`: `high` (exact match), `medium` (fallback), `low` (passthrough), `none` (not found)
+- `n8n.prompt.ancestor_distance`: hops from generation to prompt fetch node
+- `n8n.prompt.fetch_node_name`: name of ancestor node that fetched prompt
+- `n8n.prompt.fetch_node_type`: type of fetch node (for debugging detection)
+- `n8n.prompt.fingerprint_method`: `single_candidate`, `best_match`, or absent
+- Additional error keys when API query fails: `n8n.prompt.api_error`, `n8n.prompt.api_timeout`
+
+**Environment Variables:**
+- `LANGFUSE_ENV` (default: `production`): Controls version resolution behavior. Must be lowercase. Values: `production`, `dev`, `staging`.
+- `PROMPT_VERSION_API_TIMEOUT` (default: `5`): Timeout in seconds for Langfuse API queries in non-production environments.
+
+**Fail-Open Philosophy:**
+- Prompt resolution errors never block export; generation spans exported with available metadata
+- API failures → metadata flags + original version preserved
+- Missing/invalid data → span exported without prompt attributes
+- Cycle detection aborts traversal → no prompt resolution for that span
+- Always deterministic: same input execution → same prompt resolution outcome
+
+**Tests (63 total across 5 suites):**
+- `test_prompt_detection.py` (11): HTTP nodes, Langfuse nodes, output schema validation, edge cases
+- `test_prompt_resolution.py` (13): Ancestor traversal, distance calculations, fingerprinting, multiple candidates, ambiguity handling
+- `test_prompt_version_resolver.py` (17): API integration, exact match, fallback to latest, caching, error handling (404, timeout, HTTP errors)
+- `test_prompt_environment_safeguards.py` (11): Production pass-through, dev/staging API queries, environment isolation, cache isolation
+- `test_prompt_otel_attributes.py` (11): Attribute emission, metadata coexistence, special characters, version 0 validity
+
+**Implementation Files:**
+- `src/mapping/prompt_resolution.py`: Detection, registry building, ancestor traversal, resolution orchestration
+- `src/mapping/prompt_version_resolver.py`: Environment-aware API client, caching, version resolution logic
+- `src/models/langfuse.py`: `LangfuseSpan.prompt_name`, `prompt_version` fields
+- `src/shipper.py`: OTLP attribute emission (`_apply_span_attributes` function)
+
+**Contract Invariants:**
+- Prompt detection is read-only; never modifies execution data
+- Resolution is deterministic; same ancestor chain → same result
+- Production environment NEVER queries Langfuse API (security/performance)
+- Version resolution respects Langfuse API semantics (label → active version number)
+- OTLP attributes only emitted when both name AND version present
+- Debug metadata always attached for troubleshooting regardless of success/failure
 
 ### Binary & Multimodality
 
@@ -504,6 +586,8 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
 | `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
+| `LANGFUSE_ENV` | `production` | Environment identifier for prompt version resolution. Must be lowercase. Values: `production` (API queries disabled), `dev`, `staging` (API queries enabled). |
+| `PROMPT_VERSION_API_TIMEOUT` | `5` | Timeout in seconds for Langfuse prompt API queries in dev/staging environments. |
 
 ### Media Upload (Token Flow)
 
@@ -545,6 +629,18 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.agent.parent`, `n8n.agent.link_type`
 * `n8n.truncated.input`, `n8n.truncated.output`
 * `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
+
+**Prompt resolution (generation spans only):**
+* `n8n.prompt.original_version` – raw version string from prompt fetch node output
+* `n8n.prompt.resolved_version` – final integer version after environment-aware resolution
+* `n8n.prompt.resolution_method` – one of: `exact_match`, `fallback_latest`, `production_passthrough`, `not_found`, `api_error`
+* `n8n.prompt.confidence` – `high` (exact match), `medium` (fallback), `low` (passthrough), `none` (not found)
+* `n8n.prompt.ancestor_distance` – number of hops from generation span to prompt fetch node
+* `n8n.prompt.fetch_node_name` – name of ancestor node that fetched the prompt
+* `n8n.prompt.fetch_node_type` – type of fetch node (for debugging detection)
+* `n8n.prompt.fingerprint_method` – `single_candidate`, `best_match`, or absent
+* `n8n.prompt.api_error` – error message when API query fails (optional)
+* `n8n.prompt.api_timeout` – boolean flag when API query times out (optional)
 
 **Gemini empty-output anomaly (Gemini/Vertex chat bug) & tool-calls suppression:**
 * `n8n.gen.empty_output_bug` (bool) – true only when classified as anomaly

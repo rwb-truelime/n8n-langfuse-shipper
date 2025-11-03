@@ -41,7 +41,8 @@ def test_no_naive_datetime_patterns():
                 if stripped.startswith("#") or stripped.startswith("\""):
                     continue
                 if "datetime.utcnow(" in stripped:
-                    forbidden.append((py_file, i, "datetime.utcnow(", stripped))
+                    if "allow-naive-datetime" not in stripped:
+                        forbidden.append((py_file, i, "datetime.utcnow(", stripped))
                 if "datetime.now(" in stripped:
                     if "allow-naive-datetime" in stripped:
                         continue

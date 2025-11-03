@@ -50,6 +50,9 @@ class LangfuseSpan(BaseModel):
     status: Optional[str] = None  # normalized business outcome (e.g. success, error)
     level: Optional[str] = None  # severity level (DEBUG|DEFAULT|WARNING|ERROR)
     status_message: Optional[str] = None  # human-readable status / error message
+    # Prompt metadata for generation observations (linked to Langfuse prompt management)
+    prompt_name: Optional[str] = None  # Name of prompt from Langfuse prompt registry
+    prompt_version: Optional[int] = None  # Version number of the prompt
     # OTLP span id (16 hex chars) captured during export. This differs from the
     # deterministic logical UUIDv5 `id` above. Media uploads must use this
     # value for `observationId` so the Langfuse backend links media to the

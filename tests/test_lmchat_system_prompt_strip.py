@@ -107,9 +107,12 @@ def test_lmchat_strips_system_prompt_from_input():
     assert "System: # Role and Objective" not in lmchat_span.input
     assert "Primary Transport Management System" not in lmchat_span.input
 
-    # Verify input DOES contain User prompt starting from "Human: ##"
-    assert "Human: ##" in lmchat_span.input
-    assert "Order placed by Transpas Relational" in lmchat_span.input
+    # Verify input DOES contain User prompt WITHOUT "Human: " prefix
+    assert "## Order placed by Transpas Relational" in lmchat_span.input
+    assert "Name: John Doe" in lmchat_span.input
+
+    # Verify "Human:" prefix was stripped
+    assert "Human:" not in lmchat_span.input
     assert "John Doe" in lmchat_span.input
 
 
@@ -293,9 +296,10 @@ def test_lmchat_multiple_messages_with_marker():
     assert "First message without marker" in lmchat_span.input
     assert "Third message without marker" in lmchat_span.input
 
-    # Verify second message has System stripped but User retained
+    # Verify second message has System stripped and "Human:" prefix removed
     assert "System: You are a helpful assistant" not in lmchat_span.input
-    assert "Human: ## What is 2+2?" in lmchat_span.input
+    assert "## What is 2+2?" in lmchat_span.input
+    assert "Human:" not in lmchat_span.input
 
 
 def test_lmchat_strips_system_from_string_messages():
@@ -368,9 +372,10 @@ def test_lmchat_strips_system_from_string_messages():
     assert "System: # Role and Objective" not in lmchat_span.input
     assert "Primary Transport Management System" not in lmchat_span.input
 
-    # Verify User prompt is retained
-    assert "Human: ##" in lmchat_span.input
-    assert "Order placed by Transpas Relational" in lmchat_span.input
+    # Verify User prompt is retained WITHOUT "Human: " prefix
+    assert "## Order placed by Transpas Relational" in lmchat_span.input
+    assert "Name: John Doe" in lmchat_span.input
+    assert "Human:" not in lmchat_span.input
     assert "John Doe" in lmchat_span.input
 
 
@@ -462,7 +467,8 @@ def test_lmchat_strips_system_from_deeply_nested_structure():
     assert "System: # Role and Objective" not in lmchat_span.input
     assert "Primary Transport Management System" not in lmchat_span.input
 
-    # Verify User prompt is retained
-    assert "Human: ##" in lmchat_span.input
-    assert "Order placed by Transpas Relational" in lmchat_span.input
+    # Verify User prompt is retained WITHOUT "Human: " prefix
+    assert "## Order placed by Transpas Relational" in lmchat_span.input
+    assert "Name: John Doe" in lmchat_span.input
+    assert "Human:" not in lmchat_span.input
     assert "John Doe" in lmchat_span.input

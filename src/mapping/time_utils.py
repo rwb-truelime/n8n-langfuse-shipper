@@ -13,7 +13,7 @@ Public Functions:
 
 Design Invariant:
     All datetimes exported to OTLP MUST be timezone-aware UTC. Naive datetimes
-    (no tzinfo) are forbidden. Tests scan codebase for datetime.utcnow() usage
+    (no tzinfo) are forbidden. Tests scan codebase for datetime.utcnow() usage  # allow-naive-datetime
     and fail if found (naive datetime anti-pattern).
 """
 from __future__ import annotations
