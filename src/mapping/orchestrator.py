@@ -96,6 +96,15 @@ from .parent_resolution import (
 from .parent_resolution import (
     resolve_parent as _resolve_parent,
 )
+from .prompt_detection import (
+    build_prompt_registry as _build_prompt_registry,
+)
+from .prompt_resolution import (
+    resolve_prompt_for_generation as _resolve_prompt_for_generation,
+)
+from .prompt_version_resolver import (
+    create_version_resolver_from_env as _create_version_resolver_from_env,
+)
 from .time_utils import epoch_ms_to_dt as _epoch_ms_to_dt
 
 logger = logging.getLogger(__name__)
@@ -952,6 +961,26 @@ def _map_execution(
         truncate_limit=truncate_limit,
     )
     run_data = record.data.executionData.resultData.runData
+
+    # Build prompt source registry (Phase 1: Detection)
+    try:
+        prompt_registry = _build_prompt_registry(
+            run_data, record.workflowData.nodes
+        )
+        logger.debug(
+            f"Built prompt registry with {len(prompt_registry)} entries"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to build prompt registry: {e}")
+        prompt_registry = {}
+
+    # Initialize version resolver for cross-environment support (Phase 2: API Fallback)
+    version_resolver = None
+    try:
+        version_resolver = _create_version_resolver_from_env()
+    except Exception as e:
+        logger.warning(f"Failed to create version resolver: {e}")
+
     flattened = _flatten_runs(run_data)
     collected_assets: list[Any] = []
     for _start_ts_raw, node_name, idx, run in flattened:
@@ -1086,6 +1115,79 @@ def _map_execution(
                         break
         except Exception:
             next_observation_type = None
+
+        # Prompt resolution for generation spans
+        prompt_name: Optional[str] = None
+        prompt_version: Optional[int] = None
+        if is_generation and prompt_registry:
+            try:
+                prompt_result = _resolve_prompt_for_generation(
+                    node_name=node_name,
+                    run_index=idx,
+                    run_data=run_data,
+                    prompt_registry=prompt_registry,
+                    agent_input=raw_input_obj,
+                )
+
+                # Store original version for metadata transparency
+                original_version = prompt_result.original_version
+
+                # Apply cross-environment version resolution if needed
+                if (
+                    prompt_result.prompt_name
+                    and prompt_result.prompt_version
+                    and version_resolver
+                ):
+                    resolved_version, resolution_source = (
+                        version_resolver.resolve_version(
+                            prompt_result.prompt_name,
+                            prompt_result.prompt_version,
+                        )
+                    )
+                    prompt_name = prompt_result.prompt_name
+                    prompt_version = resolved_version
+
+                    # Emit resolution metadata
+                    metadata["n8n.prompt.version.original"] = original_version
+                    if resolved_version != original_version:
+                        metadata["n8n.prompt.version.mapped"] = resolved_version
+                        metadata[
+                            "n8n.prompt.version.mapping_source"
+                        ] = resolution_source
+                else:
+                    # No version resolver or no prompt metadata
+                    prompt_name = prompt_result.prompt_name
+                    prompt_version = prompt_result.prompt_version
+
+                # Emit prompt resolution debug metadata
+                if prompt_result.resolution_method != "none":
+                    metadata[
+                        "n8n.prompt.resolution_method"
+                    ] = prompt_result.resolution_method
+                    metadata["n8n.prompt.confidence"] = prompt_result.confidence
+                    if prompt_result.ancestor_distance is not None:
+                        metadata[
+                            "n8n.prompt.ancestor_distance"
+                        ] = prompt_result.ancestor_distance
+                    if prompt_result.candidate_count > 0:
+                        metadata[
+                            "n8n.prompt.candidate_count"
+                        ] = prompt_result.candidate_count
+                    if prompt_result.ambiguous:
+                        metadata["n8n.prompt.ambiguous"] = True
+
+                    if prompt_name and prompt_version:
+                        logger.info(
+                            f"Resolved prompt for {node_name}[{idx}]: "
+                            f"name='{prompt_name}', version={prompt_version}, "
+                            f"method={prompt_result.resolution_method}, "
+                            f"confidence={prompt_result.confidence}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to resolve prompt for {node_name}[{idx}]: {e}"
+                )
+
         status_override, anomaly_meta = _detect_gemini_empty_output_anomaly(
             is_generation=is_generation,
             norm_output_obj=norm_output_obj,
@@ -1115,6 +1217,8 @@ def _map_execution(
             model=model_val,
             usage=_extract_usage(run),
             status=status_norm,
+            prompt_name=prompt_name,
+            prompt_version=prompt_version,
         )
         trace.spans.append(span)
         ctx.last_span_for_node[node_name] = span_id

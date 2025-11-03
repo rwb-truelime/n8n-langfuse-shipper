@@ -129,6 +129,14 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
     if span_model.model:
         span_ot.set_attribute("langfuse.observation.model.name", span_model.model)
         span_ot.set_attribute("model", span_model.model)
+    # Emit prompt linking attributes for generation spans
+    if span_model.prompt_name and span_model.prompt_version is not None:
+        span_ot.set_attribute(
+            "langfuse.observation.prompt.name", span_model.prompt_name
+        )
+        span_ot.set_attribute(
+            "langfuse.observation.prompt.version", span_model.prompt_version
+        )
     if span_model.status:
         span_ot.set_attribute("langfuse.observation.status", span_model.status)
     # Explicit level / status_message provided (non-error spans included)
