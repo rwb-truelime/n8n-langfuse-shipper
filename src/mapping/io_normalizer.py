@@ -356,13 +356,19 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
     """Strip System prompts from LangChain LMChat messages.
 
     Searches for 'human:' (case-insensitive) as the consistent split marker
-    across all message formats. Strips everything before the first occurrence.
+    across all message formats. Strips everything before AND INCLUDING the
+    'human:' marker and any following whitespace.
 
-    LangChain LMChat Message Formats:
+    LangChain LMChat Message Formats (INPUT):
         - "System: ...\n\n## START PROCESSING\n\nHuman: ## ..."
         - "System: ...\n\nHuman: ..." (no ## markers)
         - "System: ...\nhuman: ..." (lowercase)
         - "System: ...\nHUMAN: ..." (uppercase)
+
+    Stripping Behavior (OUTPUT):
+        - "System: foo\n\nHuman: ## Order" → "## Order"
+        - "System: bar\nhuman:  test" → "test"
+        - Message without "human:" → unchanged
 
     Only consistent marker across all formats is "human:" (case-insensitive).
     """

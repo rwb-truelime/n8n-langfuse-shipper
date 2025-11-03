@@ -314,8 +314,8 @@ Function `strip_system_prompt_from_langchain_lmchat()` strips System prompts:
 * Only processes generation spans with "lmchat" in node type (case-insensitive).
 * **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
 * Handles both message formats: list of strings `["System: ... Human: ..."]` and list of dicts `[{"content": "System: ... Human: ..."}]`.
-* **Searches case-insensitively for first `"human:"` occurrence** and strips everything before it.
-* Preserves original case of the matched marker (e.g., `"Human:"`, `"human:"`, `"HUMAN:"`).
+* **Searches case-insensitively for first `"human:"` occurrence** and strips everything before AND INCLUDING the `"human:"` marker plus any following spaces/tabs.
+* **Result:** `"System: foo\n\nHuman: ## Order"` → `"## Order"` (no "Human:" prefix in output).
 * Fail-open: returns original input on any error or if no marker found.
 * Logs depth and characters removed when stripping occurs.
 
