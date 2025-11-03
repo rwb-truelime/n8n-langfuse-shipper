@@ -42,28 +42,23 @@ class PromptResolutionResult(BaseModel):
 def _compute_text_fingerprint(text: str) -> str:
     """Compute lightweight fingerprint of text for comparison.
 
-    Uses first 200 + last 200 characters plus length to create compact hash.
-    Avoids expensive full-text hashing of 30K+ character prompts.
+    Uses first 300 characters to create compact hash for matching against
+    generation inputs. Must match algorithm in prompt_detection.py.
 
     Args:
         text: Input text (prompt or agent input)
 
     Returns:
-        Hex hash string
+        Hex hash string (first 16 chars of SHA256)
     """
-    if not text or len(text) < 400:
-        # Short text: hash entire content
-        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    if not text or len(text) < 50:
+        return ""
 
-    # Long text: fingerprint strategy
-    prefix = text[:200]
-    suffix = text[-200:]
-    length = str(len(text))
-
-    fingerprint_input = f"{prefix}||{suffix}||{length}"
+    # Use first 300 chars for fingerprint (enough to disambiguate)
+    sample = text[:300]
     return hashlib.sha256(
-        fingerprint_input.encode("utf-8", errors="ignore")
-    ).hexdigest()
+        sample.encode("utf-8", errors="ignore")
+    ).hexdigest()[:16]  # First 16 chars sufficient
 
 
 def _extract_ancestor_chain(
@@ -380,6 +375,8 @@ def resolve_prompt_for_generation(
                 f"DEBUG: Multiple candidates match agent hierarchy: "
                 f"{[(m.name, f) for m, f, _ in matching_candidates]}"
             )
+            # Use matching_candidates for fingerprint tie-breaking
+            equidistant = [(m, f) for m, f, _ in matching_candidates]
     else:
         logger.debug(
             f"No agent_parent for {node_name}[{run_index}], "
@@ -412,6 +409,11 @@ def resolve_prompt_for_generation(
                 )
 
     # Try fingerprint matching as tertiary tie-breaker
+    logger.warning(
+        f"DEBUG: Trying fingerprint matching - agent_input present: "
+        f"{agent_input is not None}, equidistant count: "
+        f"{len(equidistant)}"
+    )
     if agent_input:
         best_match = _fingerprint_match(
             agent_input, [meta for meta, _ in equidistant]
@@ -468,19 +470,27 @@ def _extract_prompt_text_from_input(agent_input: Any) -> Optional[str]:
     if not agent_input:
         return None
 
-    # If string: return as-is
+    # If string: return as-is (but strip common prefixes)
     if isinstance(agent_input, str):
-        return agent_input
+        text = agent_input
+        # Strip LangChain system message prefixes
+        for prefix in ["System: ", "system: ", "SYSTEM: "]:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        return text
 
-    # If dict: search for common keys
+    # If dict: search for common keys first, then recurse into all values
     if isinstance(agent_input, dict):
-        # Common keys for system messages
+        # Common keys for system messages (prioritize these)
         for key in [
             "systemMessage",
             "system_message",
             "system",
             "prompt",
             "messages",
+            "text",
+            "content",
         ]:
             if key in agent_input:
                 value = agent_input[key]
@@ -492,8 +502,15 @@ def _extract_prompt_text_from_input(agent_input: Any) -> Optional[str]:
                     if nested:
                         return nested
 
-    # If list: try first item (common in messages arrays)
-    if isinstance(agent_input, list) and agent_input:
+        # If no known keys found, try all dict values (handles n8n wrappers)
+        for value in agent_input.values():
+            if isinstance(value, (dict, list)):
+                nested = _extract_prompt_text_from_input(value)
+                if nested:
+                    return nested
+
+    # If list: try each item
+    if isinstance(agent_input, list):
         for item in agent_input:
             text = _extract_prompt_text_from_input(item)
             if text:
@@ -508,7 +525,7 @@ def _fingerprint_match(
     """Match agent input against prompt candidates using text fingerprinting.
 
     Compares fingerprints of agent input text against prompt text stored
-    in candidate metadata. Returns best match if similarity exceeds threshold.
+    in candidate metadata. Returns best match if found.
 
     Args:
         agent_input: Agent input data
@@ -518,20 +535,81 @@ def _fingerprint_match(
         Best matching PromptMetadata or None
     """
     # Extract text from agent input
+    logger.warning(
+        f"DEBUG: agent_input type: {type(agent_input).__name__}, "
+        f"keys: {list(agent_input.keys()) if isinstance(agent_input, dict) else 'N/A'}"
+    )
+    if isinstance(agent_input, dict) and 'ai_languageModel' in agent_input:
+        lm_data = agent_input['ai_languageModel']
+        logger.warning(
+            f"DEBUG: ai_languageModel type: {type(lm_data).__name__}, "
+            f"len: {len(lm_data) if isinstance(lm_data, (list, dict)) else 'N/A'}"
+        )
+        if isinstance(lm_data, list) and lm_data:
+            first_item = lm_data[0]
+            logger.warning(
+                f"DEBUG: First ai_languageModel item type: "
+                f"{type(first_item).__name__}"
+            )
+            if isinstance(first_item, list) and first_item:
+                logger.warning(
+                    f"DEBUG: Nested list, first nested item type: "
+                    f"{type(first_item[0]).__name__}, "
+                    f"keys: {list(first_item[0].keys()) if isinstance(first_item[0], dict) else 'N/A'}"
+                )
+
     input_text = _extract_prompt_text_from_input(agent_input)
+
+    logger.warning(
+        f"DEBUG: Extracted input_text length: "
+        f"{len(input_text) if input_text else 0}"
+    )
+
     if not input_text or len(input_text) < 50:
-        logger.debug("Agent input too short or missing for fingerprint matching")
+        logger.warning(
+            f"DEBUG: Agent input too short "
+            f"({len(input_text) if input_text else 0} chars) "
+            "or missing for fingerprint matching"
+        )
         return None
 
     input_fp = _compute_text_fingerprint(input_text)
 
-    # Compare against candidates
-    # NOTE: This requires prompt text to be stored in PromptMetadata
-    # Currently we don't store full prompt text (only metadata)
-    # For now, this is a placeholder - would need to fetch prompt text
-    # from registry or Langfuse API
-    logger.debug(
-        "Fingerprint matching not fully implemented (prompt text "
-        "not available in registry)"
+    logger.warning(
+        f"DEBUG: Fingerprint matching - input_fp={input_fp}, "
+        f"input_text_len={len(input_text)}, "
+        f"first_100_chars='{input_text[:100]}...'"
+    )
+
+    # Filter candidates that have fingerprints
+    candidates_with_fp = [
+        c for c in candidates if c.fingerprint is not None
+    ]
+
+    if not candidates_with_fp:
+        logger.warning(
+            "DEBUG: No candidates have fingerprints - "
+            "cannot use fingerprint matching"
+        )
+        return None
+
+    logger.warning(
+        f"DEBUG: Checking {len(candidates_with_fp)} candidates "
+        f"with fingerprints: "
+        f"{[(c.name, c.fingerprint) for c in candidates_with_fp]}"
+    )
+
+    # Find exact match
+    for candidate in candidates_with_fp:
+        if candidate.fingerprint == input_fp:
+            logger.warning(
+                f"DEBUG: Fingerprint MATCH found for prompt "
+                f"'{candidate.name}' v{candidate.version}"
+            )
+            return candidate
+
+    logger.warning(
+        "DEBUG: No fingerprint match found - input fingerprint "
+        "doesn't match any candidate"
     )
     return None

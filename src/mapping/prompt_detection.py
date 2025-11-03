@@ -11,6 +11,7 @@ Detection strategies:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, ValidationError
@@ -29,6 +30,28 @@ LANGFUSE_PROMPT_API_PATTERNS = [
     "langfuse.com/api/public/prompts",
     "cloud.langfuse.com/api/public/prompts",
 ]
+
+
+def _compute_prompt_fingerprint(prompt_text: str) -> str:
+    """Compute fingerprint of prompt text for disambiguation.
+
+    Uses first 300 chars to create compact hash for matching against
+    generation inputs.
+
+    Args:
+        prompt_text: Prompt string content
+
+    Returns:
+        Hex hash string
+    """
+    if not prompt_text or len(prompt_text) < 50:
+        return ""
+
+    # Use first 300 chars for fingerprint (enough to disambiguate)
+    sample = prompt_text[:300]
+    return hashlib.sha256(
+        sample.encode("utf-8", errors="ignore")
+    ).hexdigest()[:16]  # First 16 chars sufficient
 
 
 class PromptMetadata(BaseModel):
@@ -139,8 +162,38 @@ def _extract_prompt_metadata_from_output(
         if "name" not in candidate or "version" not in candidate:
             continue
 
-        # Optional: validate presence of prompt text (not extracted here)
-        # Could check for "prompt" or "config" keys
+        # Extract prompt text for fingerprinting
+        prompt_text = None
+
+        # Try multiple keys where prompt text might be stored
+        for key in ["prompt", "config", "text", "template"]:
+            if key in candidate:
+                val = candidate[key]
+                if isinstance(val, str):
+                    prompt_text = val
+                    break
+                elif isinstance(val, dict):
+                    # Config might contain nested text/template
+                    for subkey in ["text", "template", "prompt"]:
+                        if (
+                            subkey in val
+                            and isinstance(val[subkey], str)
+                        ):
+                            prompt_text = val[subkey]
+                            break
+                    if prompt_text:
+                        break
+
+        # Compute fingerprint if text found
+        fingerprint = None
+        if prompt_text and len(prompt_text) >= 50:
+            fingerprint = _compute_prompt_fingerprint(prompt_text)
+            logger.warning(
+                f"DEBUG: Computed fingerprint for prompt "
+                f"'{candidate.get('name')}': {fingerprint} "
+                f"(text_len={len(prompt_text)}), "
+                f"first_100='{prompt_text[:100]}...'"
+            )
 
         try:
             return PromptMetadata(
@@ -148,6 +201,7 @@ def _extract_prompt_metadata_from_output(
                 version=int(candidate["version"]),
                 type=candidate.get("type"),
                 labels=candidate.get("labels", []),
+                fingerprint=fingerprint,
             )
         except (ValueError, TypeError, ValidationError) as e:
             logger.debug(
