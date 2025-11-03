@@ -10,9 +10,12 @@ Unwrapping Functions:
     unwrap_generic_json: Extract json fields from nested list/dict structures
     normalize_node_io: Apply both unwrappers and merge back binary blocks
 
+LLM Parameter Extraction:
+    extract_generation_input_and_params: Separate messages from LLM config params
+
 System Prompt Stripping:
-    strip_system_prompt_from_langchain_lmchat: Remove System segment using literal
-    split marker `\\n\\n## START PROCESSING\\n\\nHuman: ##`
+    strip_system_prompt_from_langchain_lmchat: Remove System segment using
+    case-insensitive "human:" marker
 
 AI Channel Structure:
     Input: {"ai_languageModel": [[{"json": {...}}]]}
@@ -26,10 +29,26 @@ Binary Block Preservation:
     When unwrapping would lose top-level binary dict, merges it back into
     normalized output to prevent media placeholder loss.
 
+Recursive Search Pattern Philosophy:
+    Multiple functions in this module use recursive depth-first traversal through
+    nested dict/list structures. These are kept SEPARATE (not abstracted) because:
+
+    1. Different Semantics: Some are finders (read-only, early exit), others are
+       mutators (deep copy, full traversal)
+    2. Different Goals: Finding specific keys vs transforming content vs collecting
+       assets
+    3. Different Performance: Early exit optimization vs full structure traversal
+    4. Different Depth Limits: 5 vs 25 depending on expected n8n nesting patterns
+    5. Clarity over DRY: Self-contained functions are easier to understand than
+       complex generic helpers with callbacks and predicates
+
+    Each recursive function documents its specific traversal characteristics and
+    contrasts itself with related functions to clarify when to use which pattern.
+
 Design Notes:
     - Deduplication using JSON signature prevents redundant unwrapped objects
     - System prompt split occurs BEFORE normalization to preserve structure
-    - Recursive search bounded by depth limits (25) and item counts (100-150)
+    - Recursive search bounded by depth limits (5-25) and item counts (100-150)
     - Fail-open: returns original input on any error
 """
 from __future__ import annotations
@@ -200,6 +219,23 @@ def extract_generation_input_and_params(
     ]:
         """Recursively search for dict containing messages array.
 
+        Traversal Pattern:
+            - Depth-first search through nested dict/list structures
+            - Early exit optimization: returns immediately on first match
+            - Read-only operation: does not modify input data
+            - Bounded recursion: stops at MAX_DEPTH to prevent infinite loops
+
+        Use Case:
+            Find the first dict containing a "messages" array (non-empty list)
+            to extract LLM parameters. Production n8n data nests messages at
+            depth 4 inside ai_languageModel wrappers.
+
+        Contrast with _process_messages_recursive:
+            - This function FINDS (read-only, early exit)
+            - That function MUTATES (deep copy, full traversal)
+            - Different depth limits (5 vs 25)
+            - Different return types (tuple vs bool)
+
         Returns:
             Tuple of (dict_with_messages, depth_found) or (None, -1)
         """
@@ -297,6 +333,14 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
 
     Searches for 'human:' (case-insensitive) as the consistent split marker
     across all message formats. Strips everything before the first occurrence.
+
+    LangChain LMChat Message Formats:
+        - "System: ...\n\n## START PROCESSING\n\nHuman: ## ..."
+        - "System: ...\n\nHuman: ..." (no ## markers)
+        - "System: ...\nhuman: ..." (lowercase)
+        - "System: ...\nHUMAN: ..." (uppercase)
+
+    Only consistent marker across all formats is "human:" (case-insensitive).
     """
     if not isinstance(node_type, str):
         return input_obj
@@ -318,6 +362,28 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
             return idx
 
         def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
+            """Recursively find and mutate all messages arrays.
+
+            Traversal Pattern:
+                - Depth-first search through nested dict/list structures
+                - Full traversal: processes ALL messages (no early exit)
+                - Mutation operation: modifies deep copy in-place
+                - Bounded recursion: stops at depth 25, limits list items to 100
+
+            Use Case:
+                Find ALL "messages" arrays within deeply nested structures and
+                strip system prompts from each message string. Must traverse
+                entire structure since multiple messages may exist.
+
+            Contrast with _find_messages_dict:
+                - This function MUTATES (deep copy, full traversal)
+                - That function FINDS (read-only, early exit)
+                - Different depth limits (25 vs 5)
+                - Different return types (bool vs tuple)
+
+            Returns:
+                Boolean indicating whether any modifications were made
+            """
             nonlocal modified_any
             if depth > 25:
                 return False
