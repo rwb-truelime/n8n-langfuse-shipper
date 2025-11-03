@@ -379,10 +379,26 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
         def _find_human_marker(text: str) -> int:
             """Find first occurrence of 'human:' (case-insensitive).
 
-            Returns the index where 'Human:' or 'human:' begins, or -1 if not found.
+            Returns the index AFTER 'human:' and any following whitespace,
+            or -1 if not found.
+
+            Example:
+                "System: foo\n\nHuman: ## Order" -> returns index pointing to "##"
+                "human:  test" -> returns index pointing to "test"
             """
             text_lower = text.lower()
             idx = text_lower.find("human:")
+            if idx == -1:
+                return -1
+
+            # Skip past "human:" (6 characters)
+            idx += 6
+
+            # Skip any following whitespace (but NOT newlines with content)
+            # We want to preserve "## " as it's markdown header syntax
+            while idx < len(text) and text[idx] in (' ', '\t'):
+                idx += 1
+
             return idx
 
         def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
