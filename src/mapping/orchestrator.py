@@ -1121,12 +1121,19 @@ def _map_execution(
         prompt_version: Optional[int] = None
         if is_generation and prompt_registry:
             try:
+                # Get agent parent for disambiguation (if generation is under agent)
+                agent_parent = None
+                if node_name in ctx.child_agent_map:
+                    agent_parent, _ = ctx.child_agent_map[node_name]
+
                 prompt_result = _resolve_prompt_for_generation(
                     node_name=node_name,
                     run_index=idx,
                     run_data=run_data,
                     prompt_registry=prompt_registry,
                     agent_input=raw_input_obj,
+                    agent_parent=agent_parent,
+                    child_agent_map=ctx.child_agent_map,
                 )
 
                 # Store original version for metadata transparency

@@ -135,12 +135,55 @@ def _extract_ancestor_chain(
     return ancestors
 
 
+def _get_direct_source_ancestor(
+    node_name: str,
+    run_index: int,
+    run_data: Dict[str, List[Any]],
+) -> Optional[str]:
+    """Get the immediate previousNode from source chain.
+
+    Used for disambiguating equidistant prompt candidates by preferring
+    the one in the direct source lineage.
+
+    Args:
+        node_name: Generation node name
+        run_index: Generation run index
+        run_data: Full execution runData
+
+    Returns:
+        Name of direct ancestor node, or None
+    """
+    node_runs = run_data.get(node_name, [])
+    if run_index >= len(node_runs):
+        return None
+
+    run = node_runs[run_index]
+
+    # Extract source (handle both dict and object)
+    source_list = None
+    if isinstance(run, dict):
+        source_list = run.get("source", [])
+    elif hasattr(run, "source"):
+        source_list = run.source
+
+    if not source_list:
+        return None
+
+    # Get first (primary) source's previousNode
+    first_source = source_list[0]
+    if isinstance(first_source, dict):
+        return first_source.get("previousNode")
+    return getattr(first_source, "previousNode", None)
+
+
 def resolve_prompt_for_generation(
     node_name: str,
     run_index: int,
     run_data: Dict[str, List[Any]],
     prompt_registry: Dict[Tuple[str, int], PromptMetadata],
     agent_input: Optional[Any] = None,
+    agent_parent: Optional[str] = None,
+    child_agent_map: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> PromptResolutionResult:
     """Resolve prompt metadata for a generation span.
 
@@ -148,8 +191,10 @@ def resolve_prompt_for_generation(
     1. Walk ancestor chain backward from generation node
     2. Find all ancestors present in prompt_registry
     3. If exactly 1: use it (high confidence)
-    4. If multiple: use fingerprint matching (medium confidence)
-    5. If none: no prompt metadata
+    4. If multiple at different distances: use closest
+    5. If multiple equidistant: prefer one under same agent parent
+    6. If still ambiguous: use fingerprint matching (medium confidence)
+    7. If none: no prompt metadata
 
     Args:
         node_name: Generation node name
@@ -157,6 +202,8 @@ def resolve_prompt_for_generation(
         run_data: Full execution runData
         prompt_registry: Prompt fetch registry from prompt_detection module
         agent_input: Optional agent input for fingerprint matching
+        agent_parent: Optional agent parent node name (from agent hierarchy)
+        child_agent_map: Optional map of child->agent for hierarchy checking
 
     Returns:
         PromptResolutionResult with metadata and debug info
@@ -164,13 +211,13 @@ def resolve_prompt_for_generation(
     # Extract ancestor chain
     ancestors = _extract_ancestor_chain(node_name, run_index, run_data)
 
-    # Find prompt-fetch ancestors
-    prompt_candidates: List[Tuple[PromptMetadata, int]] = []
+    # Find prompt-fetch ancestors (keep node name for tie-breaking)
+    prompt_candidates: List[Tuple[PromptMetadata, int, str]] = []
     for ancestor_node, ancestor_run, distance in ancestors:
         key = (ancestor_node, ancestor_run)
         if key in prompt_registry:
             prompt_meta = prompt_registry[key]
-            prompt_candidates.append((prompt_meta, distance))
+            prompt_candidates.append((prompt_meta, distance, ancestor_node))
             logger.debug(
                 f"Found prompt candidate: {ancestor_node}[{ancestor_run}] "
                 f"at distance {distance} "
@@ -188,7 +235,7 @@ def resolve_prompt_for_generation(
 
     # Single candidate: use it (high confidence)
     if len(prompt_candidates) == 1:
-        prompt_meta, distance = prompt_candidates[0]
+        prompt_meta, distance, _ = prompt_candidates[0]
         logger.info(
             f"Resolved prompt for {node_name}[{run_index}]: "
             f"name='{prompt_meta.name}', version={prompt_meta.version}, "
@@ -205,9 +252,9 @@ def resolve_prompt_for_generation(
             ambiguous=False,
         )
 
-    # Multiple candidates: prefer closest OR use fingerprint matching
+    # Multiple candidates: prefer closest OR use direct source chain
     prompt_candidates.sort(key=lambda x: x[1])  # Sort by distance
-    closest_meta, closest_distance = prompt_candidates[0]
+    closest_meta, closest_distance, _ = prompt_candidates[0]
 
     # Check if closest is significantly closer than others
     second_distance = prompt_candidates[1][1]
@@ -230,10 +277,144 @@ def resolve_prompt_for_generation(
             ambiguous=True,
         )
 
-    # Tie in distance: try fingerprint matching
+    # Tie in distance: use agent hierarchy to disambiguate
+    equidistant = [
+        (meta, ancestor_node)
+        for meta, dist, ancestor_node in prompt_candidates
+        if dist == closest_distance
+    ]
+
+    logger.warning(
+        f"DEBUG: {node_name}[{run_index}] has {len(equidistant)} "
+        f"equidistant candidates, agent_parent={agent_parent}"
+    )
+
+    # First: check if any equidistant candidate is under same agent parent
+    # Strategy: walk up from generation node; first prompt fetch encountered
+    # before hitting a different agent node is the correct one
+    if agent_parent:
+        logger.warning(
+            f"DEBUG: Checking agent hierarchy for {node_name}[{run_index}], "
+            f"candidates: {[(m.name, a) for m, a in equidistant]}"
+        )
+
+        # Walk up generation's ancestor chain looking for agent boundaries
+        gen_ancestors = _extract_ancestor_chain(
+            node_name, run_index, run_data, max_depth=30
+        )
+
+        logger.warning(
+            f"DEBUG: Generation {node_name}[{run_index}] ancestor chain "
+            f"(first 10): {[(n, d) for n, _, d in gen_ancestors[:10]]}"
+        )
+
+        # Check if agent_parent is in the ancestor chain
+        agent_distance = None
+        for anc_node, _, dist in gen_ancestors:
+            if anc_node == agent_parent:
+                agent_distance = dist
+                break
+
+        if agent_distance:
+            logger.warning(
+                f"DEBUG: Agent '{agent_parent}' found at distance {agent_distance}"
+            )
+        else:
+            logger.warning(
+                f"DEBUG: Agent '{agent_parent}' NOT in ancestor chain!"
+            )
+
+        # Find which agent each prompt fetch belongs to by checking what agent
+        # we encounter first when walking down from the fetch to the generation
+        matching_candidates = []
+        for meta, fetch_node in equidistant:
+            # Check if this fetch node is in the generation's ancestor chain
+            fetch_distance = None
+            for anc_node, _, anc_distance in gen_ancestors:
+                if anc_node == fetch_node:
+                    fetch_distance = anc_distance
+                    logger.warning(
+                        f"DEBUG: Fetch '{fetch_node}' found at distance "
+                        f"{fetch_distance}"
+                    )
+                    break
+
+            if not fetch_distance:
+                logger.warning(
+                    f"DEBUG: Fetch '{fetch_node}' NOT in ancestor chain!"
+                )
+                continue
+
+            # If agent is between generation and fetch (closer distance),
+            # this fetch belongs to our agent
+            if agent_distance and agent_distance < fetch_distance:
+                matching_candidates.append((meta, fetch_node, fetch_distance))
+                logger.warning(
+                    f"DEBUG: Fetch '{fetch_node}' matches: agent at "
+                    f"{agent_distance} < fetch at {fetch_distance}"
+                )
+
+        # If we found exactly one match, use it
+        if len(matching_candidates) == 1:
+            meta, fetch_node, fetch_distance = matching_candidates[0]
+            logger.info(
+                f"Resolved prompt for {node_name}[{run_index}] "
+                f"using agent hierarchy: name='{meta.name}', "
+                f"version={meta.version}, fetch_node='{fetch_node}' "
+                f"at distance {fetch_distance}, agent_parent="
+                f"'{agent_parent}' at distance {agent_distance}, "
+                f"confidence=high"
+            )
+            return PromptResolutionResult(
+                prompt_name=meta.name,
+                prompt_version=meta.version,
+                original_version=meta.version,
+                resolution_method="agent_hierarchy",
+                confidence="high",
+                ancestor_distance=closest_distance,
+                candidate_count=len(prompt_candidates),
+                ambiguous=False,
+            )
+        elif len(matching_candidates) > 1:
+            logger.warning(
+                f"DEBUG: Multiple candidates match agent hierarchy: "
+                f"{[(m.name, f) for m, f, _ in matching_candidates]}"
+            )
+    else:
+        logger.debug(
+            f"No agent_parent for {node_name}[{run_index}], "
+            f"skipping agent hierarchy disambiguation"
+        )
+
+    # Second: try direct source chain to disambiguate
+    direct_ancestor = _get_direct_source_ancestor(
+        node_name, run_index, run_data
+    )
+
+    if direct_ancestor:
+        # Check if any equidistant candidate is in direct source chain
+        for meta, ancestor_node in equidistant:
+            if ancestor_node == direct_ancestor:
+                logger.info(
+                    f"Resolved prompt for {node_name}[{run_index}] using "
+                    f"direct source chain: name='{meta.name}', "
+                    f"version={meta.version}, confidence=high"
+                )
+                return PromptResolutionResult(
+                    prompt_name=meta.name,
+                    prompt_version=meta.version,
+                    original_version=meta.version,
+                    resolution_method="direct_source",
+                    confidence="high",
+                    ancestor_distance=closest_distance,
+                    candidate_count=len(prompt_candidates),
+                    ambiguous=False,
+                )
+
+    # Try fingerprint matching as tertiary tie-breaker
     if agent_input:
         best_match = _fingerprint_match(
-            agent_input, [meta for meta, _ in prompt_candidates]
+            agent_input, [meta for meta, _ in equidistant]
         )
         if best_match:
             logger.info(
@@ -252,11 +433,13 @@ def resolve_prompt_for_generation(
                 ambiguous=True,
             )
 
-    # Fallback: use closest
+    # Fallback: use first equidistant (but warn about ambiguity)
     logger.warning(
         f"Ambiguous prompt resolution for {node_name}[{run_index}]: "
-        f"{len(prompt_candidates)} equidistant candidates. "
-        f"Using closest: '{closest_meta.name}' v{closest_meta.version}"
+        f"{len(equidistant)} equidistant candidates at distance "
+        f"{closest_distance}. Using: '{closest_meta.name}' "
+        f"v{closest_meta.version}. Candidates: "
+        f"{', '.join(f'{m.name} v{m.version}' for m, _ in equidistant)}"
     )
     return PromptResolutionResult(
         prompt_name=closest_meta.name,
