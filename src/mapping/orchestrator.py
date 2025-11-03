@@ -74,6 +74,9 @@ from .io_normalizer import (
 from .io_normalizer import (
     strip_system_prompt_from_langchain_lmchat as _strip_system_prompt_from_langchain_lmchat,
 )
+from .io_normalizer import (
+    extract_generation_input_and_params as _extract_generation_input_and_params,
+)
 from .mapping_context import MappingContext
 from .model_extractor import (
     extract_model_from_parameters as _extract_model_from_parameters,
@@ -412,16 +415,17 @@ def _prepare_io_and_output(
     is_generation: bool,
     node_type: str,
     truncate_limit: Optional[int],
-) -> Tuple[Any, Any, Optional[str], bool, Optional[str], bool, Dict[str, bool], Dict[str, bool]]:
+) -> Tuple[Any, Any, Optional[str], bool, Optional[str], bool, Dict[str, bool], Dict[str, bool], Dict[str, Any]]:
     """Normalize, serialize, and truncate node I/O with generation-specific handling.
 
     Orchestrates the complete I/O transformation pipeline:
     1. Strip system prompts from LangChain LMChat inputs (generation spans only)
-    2. Unwrap AI channel and generic JSON wrapper structures
-    3. Merge back binary blocks if lost during unwrapping
-    4. Serialize to JSON with binary stripping
-    5. Extract concise output text for generation spans
-    6. Apply optional truncation when limit > 0
+    2. Extract LLM parameters from generation input (messages[0] as input, rest as metadata)
+    3. Unwrap AI channel and generic JSON wrapper structures
+    4. Merge back binary blocks if lost during unwrapping
+    5. Serialize to JSON with binary stripping
+    6. Extract concise output text for generation spans
+    7. Apply optional truncation when limit > 0
 
     Args:
         raw_input_obj: Original input data (inputOverride or propagated parent output)
@@ -431,7 +435,7 @@ def _prepare_io_and_output(
         truncate_limit: Max characters before truncation; None or <=0 disables
 
     Returns:
-        8-tuple containing:
+        9-tuple containing:
         - norm_input_obj: Normalized input structure
         - norm_output_obj: Normalized output structure
         - input_str: Serialized input string (None if input None)
@@ -440,10 +444,17 @@ def _prepare_io_and_output(
         - output_trunc: True if output exceeded limit
         - input_flags: Transformation flags (unwrapped_ai_channel, unwrapped_json_root)
         - output_flags: Transformation flags including promoted_binary_wrapper
+        - llm_params_metadata: Dict with n8n.llm.* keys for generation config params
     """
+    llm_params_metadata: Dict[str, Any] = {}
+
     if is_generation:
         raw_input_obj = _strip_system_prompt_from_langchain_lmchat(
             raw_input_obj, node_type
+        )
+        # Extract LLM parameters and clean input (messages[0])
+        raw_input_obj, llm_params_metadata = _extract_generation_input_and_params(
+            raw_input_obj, is_generation
         )
     norm_input_obj, input_flags = _normalize_node_io(raw_input_obj)
     norm_output_obj, output_flags = _normalize_node_io(raw_output_obj)
@@ -476,6 +487,7 @@ def _prepare_io_and_output(
         output_trunc,
         input_flags,
         output_flags,
+        llm_params_metadata,
     )
 
 
@@ -1000,6 +1012,7 @@ def _map_execution(
             output_trunc,
             input_flags,
             output_flags,
+            llm_params_metadata,
         ) = _prepare_io_and_output(
             raw_input_obj=raw_input_obj,
             raw_output_obj=raw_output_obj,
@@ -1007,6 +1020,9 @@ def _map_execution(
             node_type=node_type,
             truncate_limit=ctx.truncate_limit,
         )
+        # Merge LLM parameters into metadata
+        if llm_params_metadata:
+            metadata.update(llm_params_metadata)
         if input_flags.get("unwrapped_ai_channel") or output_flags.get("unwrapped_ai_channel"):
             metadata["n8n.io.unwrapped_ai_channel"] = True
         if input_flags.get("unwrapped_json_root") or output_flags.get("unwrapped_json_root"):

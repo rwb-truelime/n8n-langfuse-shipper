@@ -44,6 +44,7 @@ __all__ = [
     "unwrap_generic_json",
     "normalize_node_io",
     "strip_system_prompt_from_langchain_lmchat",
+    "extract_generation_input_and_params",
 ]
 
 
@@ -162,6 +163,65 @@ def normalize_node_io(obj: Any) -> tuple[Any, Dict[str, bool]]:
             after_json = merged
         return after_json, flags
     return base, flags
+
+
+def extract_generation_input_and_params(
+    input_obj: Any,
+    is_generation: bool
+) -> tuple[Any, Dict[str, Any]]:
+    """Extract clean input and LLM parameters for generation spans.
+
+    For generation nodes with a `messages` array in input, extracts:
+    - Clean input: the entire messages array
+    - LLM params: all other keys (max_tokens, temperature, etc.) as metadata
+
+    This provides clean prompt visibility in Langfuse UI while preserving
+    full LLM configuration in metadata for reproducibility.
+
+    Args:
+        input_obj: Raw input object (may contain messages + config params)
+        is_generation: Whether span is classified as generation
+
+    Returns:
+        Tuple of (clean_input, llm_params_metadata)
+        - clean_input: messages array if present, else original input
+        - llm_params_metadata: dict with n8n.llm.* keys for config params
+    """
+    llm_params: Dict[str, Any] = {}
+
+    if not is_generation or not isinstance(input_obj, dict):
+        return input_obj, llm_params
+
+    # Check if input contains messages array
+    messages = input_obj.get("messages")
+    if not isinstance(messages, list) or len(messages) == 0:
+        return input_obj, llm_params
+
+    # Extract entire messages array as clean input
+    clean_input = messages
+
+    # Extract all other keys as LLM parameters
+    for key, value in input_obj.items():
+        if key == "messages":
+            continue
+        # Store under n8n.llm.* prefix in metadata
+        try:
+            # Convert to JSON-serializable format
+            import json
+            # Test serializability
+            json.dumps(value)
+            llm_params[f"n8n.llm.{key}"] = value
+        except (TypeError, ValueError):
+            # Non-serializable values → convert to string
+            llm_params[f"n8n.llm.{key}"] = str(value)
+
+    logger.debug(
+        "Extracted %d LLM parameters from generation input; clean input=%d messages",
+        len(llm_params),
+        len(messages) if isinstance(messages, list) else 0,
+    )
+
+    return clean_input, llm_params
 
 
 def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) -> Any:
