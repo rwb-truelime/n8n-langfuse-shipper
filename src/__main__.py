@@ -16,10 +16,22 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, List, Optional
 
 import typer
 from pydantic import ValidationError
+
+# Load .env file if present (before any config access)
+try:
+    from dotenv import load_dotenv
+
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        logging.debug(f"Loaded environment from {env_path}")
+except ImportError:
+    pass  # python-dotenv not installed; rely on system env vars
 
 from .checkpoint import load_checkpoint, store_checkpoint
 from .config import get_settings
