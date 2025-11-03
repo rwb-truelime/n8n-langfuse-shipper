@@ -164,11 +164,12 @@ def normalize_node_io(obj: Any) -> tuple[Any, Dict[str, bool]]:
     return base, flags
 
 
-_SPLIT_MARKER = "\n\n## START PROCESSING\n\nHuman: ##"
-_USER_START = "Human: ##"
-
-
 def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) -> Any:
+    """Strip System prompts from LangChain LMChat messages.
+
+    Searches for 'human:' (case-insensitive) as the consistent split marker
+    across all message formats. Strips everything before the first occurrence.
+    """
     if not isinstance(node_type, str):
         return input_obj
     node_type_lower = node_type.lower()
@@ -178,6 +179,15 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
         import copy
         modified = copy.deepcopy(input_obj)
         modified_any = False
+
+        def _find_human_marker(text: str) -> int:
+            """Find first occurrence of 'human:' (case-insensitive).
+
+            Returns the index where 'Human:' or 'human:' begins, or -1 if not found.
+            """
+            text_lower = text.lower()
+            idx = text_lower.find("human:")
+            return idx
 
         def _process_messages_recursive(obj: Any, depth: int = 0) -> bool:
             nonlocal modified_any
@@ -189,8 +199,8 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
                     for i, msg in enumerate(messages):
                         if isinstance(msg, dict):
                             for key, value in list(msg.items()):
-                                if isinstance(value, str) and _SPLIT_MARKER in value:
-                                    split_idx = value.find(_USER_START)
+                                if isinstance(value, str):
+                                    split_idx = _find_human_marker(value)
                                     if split_idx != -1:
                                         msg[key] = value[split_idx:]
                                         modified_any = True
@@ -200,8 +210,8 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
                                             node_type,
                                             split_idx,
                                         )
-                        elif isinstance(msg, str) and _SPLIT_MARKER in msg:
-                            split_idx = msg.find(_USER_START)
+                        elif isinstance(msg, str):
+                            split_idx = _find_human_marker(msg)
                             if split_idx != -1:
                                 messages[i] = msg[split_idx:]
                                 modified_any = True

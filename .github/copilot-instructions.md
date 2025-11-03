@@ -301,24 +301,22 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 **LangChain LMChat System Prompt Stripping:**
 
 LangChain LMChat nodes (@n8n/n8n-nodes-langchain.lmChat*) combine System and User prompts in one message blob.
-Split marker sequence (literal token sequence):
+The ONLY consistent split marker across all message formats is `"human:"` (case-insensitive).
 
-```text
-\n\n## START PROCESSING\n\nHuman: ##
-```
+Message format variations observed:
+* `"System: ...\n\n## START PROCESSING\n\nHuman: ## ..."`
+* `"System: ...\n\nHuman: ..."` (no ## markers)
+* `"System: ...\nhuman: ..."` (lowercase)
+* `"System: ...\nHUMAN: ..."` (uppercase)
 
-For clarity: the System segment ends just before the line containing ## START PROCESSING; the User
-segment begins at the line starting with Human: ## (hash symbols are part of the literal delimiter
-and are not Markdown headings). This explicit code block avoids editor diagnostics that might
-interpret the double-hash sequences as tool directives.
-
-Function _strip_system_prompt_from_langchain_lmchat() strips System prompts:
+Function `strip_system_prompt_from_langchain_lmchat()` strips System prompts:
 * Called in `_prepare_io_and_output()` **BEFORE** `_normalize_node_io()` (preserves structure).
 * Only processes generation spans with "lmchat" in node type (case-insensitive).
 * **Recursively searches** for `messages` arrays at any depth (up to 25 levels) since actual n8n data nests messages deeply (e.g., `ai_languageModel[0][0]['json']['messages']`).
-* Handles both message formats: list of strings `["System: ... Human: ## ..."]` and list of dicts `[{"content": "System: ... Human: ## ..."}]`.
-* Strips everything before the Human: ## marker when found.
-* Fail-open: returns original input on any error.
+* Handles both message formats: list of strings `["System: ... Human: ..."]` and list of dicts `[{"content": "System: ... Human: ..."}]`.
+* **Searches case-insensitively for first `"human:"` occurrence** and strips everything before it.
+* Preserves original case of the matched marker (e.g., `"Human:"`, `"human:"`, `"HUMAN:"`).
+* Fail-open: returns original input on any error or if no marker found.
 * Logs depth and characters removed when stripping occurs.
 
 Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, string format, deeply nested, missing marker, non-lmChat, multiple messages).
