@@ -107,16 +107,26 @@ def _extract_ancestor_chain(
         if distance > 0:
             ancestors.append((current_node, current_run, distance))
 
-        # Walk to parents via source chain
-        if hasattr(run, "source") and run.source:
-            for source in run.source:
-                if source.previousNode:
-                    parent_node = source.previousNode
-                    parent_run = (
-                        source.previousNodeRun
-                        if source.previousNodeRun is not None
-                        else 0
-                    )
+        # Walk to parents via source chain (handle both dict and object)
+        source_list = None
+        if isinstance(run, dict):
+            source_list = run.get("source", [])
+        elif hasattr(run, "source"):
+            source_list = run.source
+
+        if source_list:
+            for source in source_list:
+                # Handle both dict and object sources
+                if isinstance(source, dict):
+                    parent_node = source.get("previousNode")
+                    parent_run = source.get("previousNodeRun", 0)
+                else:
+                    parent_node = getattr(source, "previousNode", None)
+                    parent_run = getattr(source, "previousNodeRun", None)
+                    if parent_run is None:
+                        parent_run = 0
+
+                if parent_node:
                     queue.append((parent_node, parent_run, distance + 1))
 
     logger.debug(

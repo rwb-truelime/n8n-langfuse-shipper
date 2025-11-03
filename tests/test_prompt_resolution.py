@@ -327,8 +327,8 @@ def test_resolve_ambiguous_metadata():
 
     assert result.ambiguous is True
     assert result.candidate_count == 2
-    assert result.confidence == "medium"  # Ambiguous → medium confidence
-    # Should pick one of them (closest by default)
+    assert result.confidence == "low"  # Equidistant → low confidence fallback
+    # Should pick one of them (first by sort order when equidistant)
     assert result.prompt_name in ["P1", "P2"]
 
 
