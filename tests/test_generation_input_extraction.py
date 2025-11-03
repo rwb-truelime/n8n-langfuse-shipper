@@ -248,6 +248,7 @@ def test_non_generation_node_unaffected():
     # Verify it's NOT classified as generation
     assert span.observation_type != "generation"
 
+
     # Verify input contains the original structure (no extraction)
     assert span.input is not None
     assert "messages" in span.input
@@ -255,3 +256,118 @@ def test_non_generation_node_unaffected():
 
     # No LLM parameters in metadata
     assert "n8n.llm.timeout" not in span.metadata
+
+
+def test_recursive_search_with_nested_structure():
+    """Verify recursive search finds messages dict at depth 4 with options flattening."""
+    now = datetime.now(timezone.utc)
+
+    # Realistic production structure: ai_languageModel wrapping at multiple levels
+    user_message = {"content": "What is Python?"}
+
+    lmchat_run = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=200,
+        executionStatus="success",
+        data={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "response": {
+                                "generations": [[{"text": "Python is a language."}]]
+                            },
+                            "tokenUsage": {
+                                "promptTokens": 15,
+                                "completionTokens": 8,
+                                "totalTokens": 23,
+                            },
+                        }
+                    }
+                ]
+            ]
+        },
+        inputOverride={
+            "ai_languageModel": [
+                [
+                    {
+                        "json": {
+                            "messages": [user_message],
+                            "estimatedTokens": 16327,
+                            "options": {
+                                "max_tokens": 4000,
+                                "temperature": 0.7,
+                                "timeout": 60000,
+                                "max_retries": 2,
+                                "configuration": {},
+                                "model_kwargs": {
+                                    "response_format": {"type": "json_object"}
+                                },
+                            },
+                        }
+                    }
+                ]
+            ]
+        },
+    )
+
+    # Build execution
+    workflow_data = WorkflowData(
+        id="test-wf-recursive",
+        name="Recursive Search Test",
+        nodes=[
+            WorkflowNode(
+                name="LMChat",
+                type="n8n-nodes-langchain.lmChatAzureOpenAi",
+            )
+        ],
+        connections={},
+    )
+
+    execution = N8nExecutionRecord(
+        id=999,
+        workflowId="test-wf",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=workflow_data,
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(
+                resultData=ResultData(runData={"LMChat": [lmchat_run]})
+            )
+        ),
+    )
+
+    # Map to Langfuse
+    trace = map_execution_to_langfuse(execution)
+
+    # Find LMChat span
+    span = next((s for s in trace.spans if s.name == "LMChat"), None)
+    assert span is not None
+    assert span.observation_type == "generation"
+
+    # Verify input contains ONLY messages array (clean extraction)
+    assert span.input is not None
+    assert isinstance(span.input, str)
+    assert "What is Python?" in span.input
+
+    # Verify LLM params are NOT in the input string
+    assert "max_tokens" not in span.input
+    assert "temperature" not in span.input
+    assert "timeout" not in span.input
+    assert "estimatedTokens" not in span.input
+    assert "options" not in span.input
+
+    # Verify all LLM parameters in metadata with flattened options
+    assert span.metadata["n8n.llm.estimatedTokens"] == 16327
+    assert span.metadata["n8n.llm.max_tokens"] == 4000
+    assert span.metadata["n8n.llm.temperature"] == 0.7
+    assert span.metadata["n8n.llm.timeout"] == 60000
+    assert span.metadata["n8n.llm.max_retries"] == 2
+    assert span.metadata["n8n.llm.configuration"] == {}
+    assert span.metadata["n8n.llm.model_kwargs"] == {
+        "response_format": {"type": "json_object"}
+    }
+
+    # Verify options dict was NOT stored as nested key
+    assert "n8n.llm.options" not in span.metadata

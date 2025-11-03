@@ -35,7 +35,7 @@ Design Notes:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,9 @@ def extract_generation_input_and_params(
     This provides clean prompt visibility in Langfuse UI while preserving
     full LLM configuration in metadata for reproducibility.
 
+    Recursively searches nested structures (up to depth 5) for dicts
+    containing `messages` array, similar to system prompt stripping.
+
     Args:
         input_obj: Raw input object (may contain messages + config params)
         is_generation: Whether span is classified as generation
@@ -189,21 +192,81 @@ def extract_generation_input_and_params(
     """
     llm_params: Dict[str, Any] = {}
 
-    if not is_generation or not isinstance(input_obj, dict):
+    if not is_generation:
         return input_obj, llm_params
 
-    # Check if input contains messages array
-    messages = input_obj.get("messages")
-    if not isinstance(messages, list) or len(messages) == 0:
+    def _find_messages_dict(obj: Any, depth: int = 0) -> tuple[
+        Optional[Dict[str, Any]], int
+    ]:
+        """Recursively search for dict containing messages array.
+
+        Returns:
+            Tuple of (dict_with_messages, depth_found) or (None, -1)
+        """
+        MAX_DEPTH = 5
+        if depth > MAX_DEPTH:
+            return None, -1
+
+        if isinstance(obj, dict):
+            # Check if current dict has messages array
+            messages = obj.get("messages")
+            if isinstance(messages, list) and len(messages) > 0:
+                logger.debug(
+                    "Found messages dict at depth %d: keys=%s, "
+                    "messages_count=%d",
+                    depth,
+                    list(obj.keys())[:20],
+                    len(messages),
+                )
+                return obj, depth
+
+            # Recursively search nested structures
+            for value in obj.values():
+                result, found_depth = _find_messages_dict(value, depth + 1)
+                if result is not None:
+                    return result, found_depth
+
+        elif isinstance(obj, list):
+            # Search list items
+            for item in obj:
+                result, found_depth = _find_messages_dict(item, depth + 1)
+                if result is not None:
+                    return result, found_depth
+
+        return None, -1
+
+    # Search for dict containing messages array
+    messages_dict, depth_found = _find_messages_dict(input_obj)
+
+    if messages_dict is None:
+        logger.debug(
+            "No messages array found in input_obj (searched up to depth 5)"
+        )
         return input_obj, llm_params
 
-    # Extract entire messages array as clean input
+    # Extract messages array as clean input
+    messages = messages_dict["messages"]
     clean_input = messages
 
     # Extract all other keys as LLM parameters
-    for key, value in input_obj.items():
+    param_keys = []
+    for key, value in messages_dict.items():
         if key == "messages":
             continue
+
+        # Special handling for 'options' dict - flatten it
+        if key == "options" and isinstance(value, dict):
+            for opt_key, opt_value in value.items():
+                try:
+                    import json
+                    json.dumps(opt_value)
+                    llm_params[f"n8n.llm.{opt_key}"] = opt_value
+                    param_keys.append(opt_key)
+                except (TypeError, ValueError):
+                    llm_params[f"n8n.llm.{opt_key}"] = str(opt_value)
+                    param_keys.append(opt_key)
+            continue
+
         # Store under n8n.llm.* prefix in metadata
         try:
             # Convert to JSON-serializable format
@@ -211,14 +274,19 @@ def extract_generation_input_and_params(
             # Test serializability
             json.dumps(value)
             llm_params[f"n8n.llm.{key}"] = value
+            param_keys.append(key)
         except (TypeError, ValueError):
             # Non-serializable values → convert to string
             llm_params[f"n8n.llm.{key}"] = str(value)
+            param_keys.append(key)
 
     logger.debug(
-        "Extracted %d LLM parameters from generation input; clean input=%d messages",
+        "Extracted %d LLM parameters at depth %d: %s; "
+        "clean input=%d messages",
         len(llm_params),
-        len(messages) if isinstance(messages, list) else 0,
+        depth_found,
+        ", ".join(param_keys[:10]),  # Show first 10 keys
+        len(messages),
     )
 
     return clean_input, llm_params
