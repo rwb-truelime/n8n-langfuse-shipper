@@ -51,16 +51,13 @@ def test_production_passthrough(mock_resolver):
 
 def test_exact_version_match(mock_resolver):
     """Verify exact version match when version exists in target env."""
-    # Mock API response
+    # Mock API response (v2 API returns single prompt object)
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Test Prompt",
-        "versions": [
-            {"version": 1},
-            {"version": 15},
-            {"version": 58},
-        ]
+        "version": 58,
+        "labels": ["production", "latest"],
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -75,16 +72,13 @@ def test_exact_version_match(mock_resolver):
 
 def test_fallback_to_latest(mock_resolver):
     """Verify fallback to latest when original version missing."""
-    # Mock API response without version 58
+    # Mock API response (v2 API returns latest version)
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Test Prompt",
-        "versions": [
-            {"version": 1},
-            {"version": 5},
-            {"version": 15},  # Latest available
-        ]
+        "version": 15,  # Latest available in dev
+        "labels": ["production", "latest"],
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -98,25 +92,26 @@ def test_fallback_to_latest(mock_resolver):
 
 
 def test_caching_behavior(mock_resolver):
-    """Verify API results are cached and not re-fetched."""
+    """Verify API results are cached per export run."""
+    # Mock API response (v2 API)
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [{"version": 1}, {"version": 2}]
+        "name": "Cached Prompt",
+        "version": 1,
+        "labels": ["latest"],
     }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
-        # First call should hit API
-        mock_resolver.resolve_version("Cached Prompt", 1)
+        # First call - should hit API
+        v1, _ = mock_resolver.resolve_version("Cached Prompt", 2)
+        assert v1 == 1
         assert mock_get.call_count == 1
 
-        # Second call should use cache
-        mock_resolver.resolve_version("Cached Prompt", 2)
-        assert mock_get.call_count == 1  # Still 1, not 2
-
-        # Different prompt should hit API again
-        mock_resolver.resolve_version("Different Prompt", 1)
-        assert mock_get.call_count == 2
+        # Second call - should use cache
+        v2, _ = mock_resolver.resolve_version("Cached Prompt", 2)
+        assert v2 == 1
+        assert mock_get.call_count == 1  # No additional API call
 
 
 def test_prompt_not_found_404(mock_resolver):
@@ -173,12 +168,12 @@ def test_api_http_error(mock_resolver):
 
 
 def test_empty_versions_list(mock_resolver):
-    """Verify handling when API returns empty versions array."""
+    """Verify handling when API returns response without version field."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "name": "Empty Prompt",
-        "versions": []  # No versions
+        "name": "Empty Prompt"
+        # No version field - prompt exists but no versions available
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -214,7 +209,11 @@ def test_clear_cache(mock_resolver):
     """Verify cache clearing functionality."""
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": [{"version": 1}]}
+    mock_response.json.return_value = {
+        "name": "Test",
+        "version": 1,
+        "labels": ["latest"],
+    }
 
     with patch("httpx.get", return_value=mock_response):
         mock_resolver.resolve_version("Test", 1)
@@ -275,16 +274,13 @@ def test_create_from_env_default_values():
 
 
 def test_version_sorting(mock_resolver):
-    """Verify versions are correctly sorted for max() selection."""
+    """Verify v2 API returns single latest version (no array sorting)."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [
-            {"version": 15},
-            {"version": 2},
-            {"version": 100},
-            {"version": 50},
-        ]
+        "name": "Sorted Test",
+        "version": 100,  # v2 API returns highest/latest version only
+        "labels": ["latest", "production"]
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -294,7 +290,7 @@ def test_version_sorting(mock_resolver):
             original_version=999,
         )
 
-    # Should pick highest version
+    # v2 API always returns latest version (100)
     assert resolved_version == 100
     assert source == "fallback_latest"
 
@@ -303,7 +299,11 @@ def test_auth_credentials_passed(mock_resolver):
     """Verify auth credentials are correctly passed to API."""
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": []}
+    mock_response.json.return_value = {
+        "name": "Auth Test",
+        "version": 1,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         mock_resolver.resolve_version("Auth Test", 1)
@@ -314,17 +314,23 @@ def test_auth_credentials_passed(mock_resolver):
 
 
 def test_url_construction(mock_resolver):
-    """Verify correct API URL construction."""
+    """Verify correct v2 API URL construction."""
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": []}
+    mock_response.json.return_value = {
+        "name": "My Prompt",
+        "version": 1,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         mock_resolver.resolve_version("My Prompt", 1)
 
-        # Verify URL format
+        # Verify v2 API URL format
         call_args = mock_get.call_args
-        expected_url = "https://test.langfuse.com/api/public/prompts/My Prompt"
+        expected_url = (
+            "https://test.langfuse.com/api/public/v2/prompts/My Prompt"
+        )
         assert call_args.args[0] == expected_url
 
 
@@ -332,7 +338,11 @@ def test_timeout_parameter(mock_resolver):
     """Verify timeout parameter is passed to httpx."""
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": []}
+    mock_response.json.return_value = {
+        "name": "Timeout Test",
+        "version": 1,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         mock_resolver.resolve_version("Timeout Test", 1)

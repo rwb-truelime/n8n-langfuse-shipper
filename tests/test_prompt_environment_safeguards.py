@@ -47,7 +47,9 @@ def test_dev_environment_queries_api():
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [{"version": 5}, {"version": 10}]
+        "name": "Dev Prompt",
+        "version": 10,  # v2 returns single latest version
+        "labels": ["latest", "production"]
     }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
@@ -74,7 +76,9 @@ def test_staging_environment_queries_api():
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [{"version": 1}, {"version": 2}]
+        "name": "Staging Prompt",
+        "version": 2,  # v2 returns single latest version
+        "labels": ["latest"]
     }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
@@ -109,7 +113,9 @@ def test_resolution_source_metadata():
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [{"version": 42}]
+        "name": "Test",
+        "version": 42,
+        "labels": ["latest"]
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -130,11 +136,9 @@ def test_fallback_latest_in_non_production():
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "versions": [
-            {"version": 1},
-            {"version": 5},
-            {"version": 12},  # Latest
-        ]
+        "name": "Fallback Test",
+        "version": 12,  # v2 always returns latest labeled version
+        "labels": ["latest", "production"]
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -156,7 +160,11 @@ def test_environment_case_insensitive():
 
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": [{"version": 10}]}
+    mock_response.json.return_value = {
+        "name": "Test",
+        "version": 10,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         version, source = resolver.resolve_version("Test", 10)
@@ -177,7 +185,11 @@ def test_unknown_environment_treated_as_non_production():
 
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": [{"version": 5}]}
+    mock_response.json.return_value = {
+        "name": "Custom Env Test",
+        "version": 5,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         resolver.resolve_version("Custom Env Test", 5)
@@ -220,7 +232,11 @@ def test_multiple_environments_separate_resolvers():
 
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": [{"version": 5}]}
+    mock_response.json.return_value = {
+        "name": "Test",
+        "version": 5,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response) as mock_get:
         # Production: no API call
@@ -279,7 +295,11 @@ def test_cache_isolation_between_environments():
 
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"versions": [{"version": 5}]}
+    mock_response.json.return_value = {
+        "name": "Cached",
+        "version": 5,
+        "labels": ["latest"]
+    }
 
     with patch("httpx.get", return_value=mock_response):
         # Dev populates cache

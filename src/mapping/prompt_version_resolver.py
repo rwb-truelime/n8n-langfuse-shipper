@@ -118,9 +118,9 @@ class PromptVersionResolver:
         if prompt_name in self._version_cache:
             return self._version_cache[prompt_name]
 
-        # Query API
+        # Query API (use v2 endpoint for OSS compatibility)
         try:
-            url = f"{self.langfuse_host}/api/public/prompts/{prompt_name}"
+            url = f"{self.langfuse_host}/api/public/v2/prompts/{prompt_name}"
             response = httpx.get(
                 url, auth=self.auth, timeout=self.timeout
             )
@@ -136,29 +136,26 @@ class PromptVersionResolver:
             response.raise_for_status()
             prompt_data = response.json()
 
-            # Extract versions
-            # API response structure may vary; handle both direct version list
-            # and nested structure
+            # V2 API returns single prompt version (typically 'latest')
+            # Extract version number
             versions = []
-            if isinstance(prompt_data, dict):
-                # Check for versions array
-                if "versions" in prompt_data:
-                    versions = [
-                        v["version"]
-                        for v in prompt_data["versions"]
-                        if "version" in v
-                    ]
-                # Or single version in prompt object
-                elif "version" in prompt_data:
-                    versions = [prompt_data["version"]]
+            if isinstance(prompt_data, dict) and "version" in prompt_data:
+                version = prompt_data["version"]
+                versions = [version]
+                logger.debug(
+                    f"Fetched prompt '{prompt_name}' v{version} "
+                    f"(labels: {prompt_data.get('labels', [])})"
+                )
 
             versions.sort()
             self._version_cache[prompt_name] = versions
 
-            logger.debug(
-                f"Fetched {len(versions)} versions for prompt "
-                f"'{prompt_name}': {versions}"
-            )
+            if not versions:
+                logger.warning(
+                    f"No version found in API response for prompt "
+                    f"'{prompt_name}'"
+                )
+
             return versions
 
         except httpx.HTTPStatusError as e:
