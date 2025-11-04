@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.mapping.prompt_detection import (
+from n8n_langfuse_shipper.mapping.prompt_detection import (
     PromptMetadata,
     PromptSourceInfo,
     detect_prompt_fetch_node,

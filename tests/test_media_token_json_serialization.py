@@ -13,9 +13,9 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from src.config import Settings
-from src.models.langfuse import LangfuseSpan, LangfuseTrace
-from src.shipper import export_trace
+from n8n_langfuse_shipper.config import Settings
+from n8n_langfuse_shipper.models.langfuse import LangfuseSpan, LangfuseTrace
+from n8n_langfuse_shipper.shipper import export_trace
 
 
 def test_media_token_json_serialized_in_output():
@@ -82,7 +82,7 @@ def test_media_token_json_serialized_in_output():
         TRUNCATE_FIELD_LEN=0,
     )
 
-    with patch("src.shipper.trace.get_tracer", return_value=mock_tracer):
+    with patch("n8n_langfuse_shipper.shipper.trace.get_tracer", return_value=mock_tracer):
         export_trace(trace, settings, dry_run=False)
 
     # Verify output was JSON-serialized
@@ -167,7 +167,7 @@ def test_media_token_json_serialized_in_input():
         TRUNCATE_FIELD_LEN=0,
     )
 
-    with patch("src.shipper.trace.get_tracer", return_value=mock_tracer):
+    with patch("n8n_langfuse_shipper.shipper.trace.get_tracer", return_value=mock_tracer):
         export_trace(trace, settings, dry_run=False)
 
     # Verify input was JSON-serialized
@@ -244,7 +244,7 @@ def test_media_token_not_double_stringified():
         TRUNCATE_FIELD_LEN=0,
     )
 
-    with patch("src.shipper.trace.get_tracer", return_value=mock_tracer):
+    with patch("n8n_langfuse_shipper.shipper.trace.get_tracer", return_value=mock_tracer):
         export_trace(trace, settings, dry_run=False)
 
     output_attr = captured_attributes["langfuse.observation.output"]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.observation_mapper import map_node_to_observation_type
+from n8n_langfuse_shipper.observation_mapper import map_node_to_observation_type
 
 
 def test_observation_exact_sets():

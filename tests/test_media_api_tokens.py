@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from src.config import Settings
-from src.mapper import map_execution_to_langfuse, map_execution_with_assets
-from src.media_api import patch_and_upload_media
-from src.models.n8n import (
+from n8n_langfuse_shipper.config import Settings
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse, map_execution_with_assets
+from n8n_langfuse_shipper.media_api import patch_and_upload_media
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

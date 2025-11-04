@@ -5,12 +5,12 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from src.media_api import (
+from n8n_langfuse_shipper.media_api import (
     BinaryAsset,
     MappedTraceWithAssets,
     patch_and_upload_media,
 )
-from src.models.langfuse import LangfuseSpan, LangfuseTrace
+from n8n_langfuse_shipper.models.langfuse import LangfuseSpan, LangfuseTrace
 
 
 class _Settings:
@@ -85,7 +85,7 @@ def _build_span():
 
 def test_status_patch_success(monkeypatch):
     client = _ClientOK()
-    monkeypatch.setattr("src.media_api._MediaClient", lambda **_: client)
+    monkeypatch.setattr("n8n_langfuse_shipper.media_api._MediaClient", lambda **_: client)
     span, trace, asset = _build_span()
     mapped = MappedTraceWithAssets(trace=trace, assets=[asset])
     patch_and_upload_media(mapped, _Settings)
@@ -95,7 +95,7 @@ def test_status_patch_success(monkeypatch):
 
 def test_status_patch_failure(monkeypatch):
     client = _ClientPatchFail()
-    monkeypatch.setattr("src.media_api._MediaClient", lambda **_: client)
+    monkeypatch.setattr("n8n_langfuse_shipper.media_api._MediaClient", lambda **_: client)
     span, trace, asset = _build_span()
     mapped = MappedTraceWithAssets(trace=trace, assets=[asset])
     patch_and_upload_media(mapped, _Settings)

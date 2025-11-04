@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.mapper import map_execution_to_langfuse
-from src.models.n8n import (
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,
@@ -290,7 +290,7 @@ def test_model_priority_over_model_provider():
         data={"main": [[{"json": {"start": True}}]]},
     )
     # Parameters include modelProvider (Azure) and model (gpt-4.1)
-    from src.models.n8n import WorkflowNode
+    from n8n_langfuse_shipper.models.n8n import WorkflowNode
     node = WorkflowNode(
         name="Limescape Docs",
         type="n8n-nodes-limescape-docs.limescapeDocs",

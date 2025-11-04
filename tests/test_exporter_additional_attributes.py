@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
-from src.shipper import _apply_span_attributes
+from n8n_langfuse_shipper.models.langfuse import LangfuseSpan, LangfuseTrace, LangfuseUsage
+from n8n_langfuse_shipper.shipper import _apply_span_attributes
 
 
 class DummySpan:

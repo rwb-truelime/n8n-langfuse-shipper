@@ -1,10 +1,10 @@
 import json
 from datetime import datetime, timezone
 
-from src.config import Settings
-from src.mapper import _map_execution  # type: ignore
-from src.media_api import MappedTraceWithAssets, patch_and_upload_media
-from src.models.n8n import (
+from n8n_langfuse_shipper.config import Settings
+from n8n_langfuse_shipper.mapper import _map_execution  # type: ignore
+from n8n_langfuse_shipper.media_api import MappedTraceWithAssets, patch_and_upload_media
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

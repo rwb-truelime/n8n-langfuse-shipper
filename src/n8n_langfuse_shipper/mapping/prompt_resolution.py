@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
 
-from src.mapping.prompt_detection import PromptMetadata
+from .prompt_detection import PromptMetadata
 
 logger = logging.getLogger(__name__)
 

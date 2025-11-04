@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import Mock, patch
 
-from src.mapping.prompt_version_resolver import PromptVersionResolver
+from n8n_langfuse_shipper.mapping.prompt_version_resolver import PromptVersionResolver
 
 
 def test_production_never_queries_api():

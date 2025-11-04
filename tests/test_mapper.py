@@ -4,9 +4,9 @@ import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 
-from src.checkpoint import load_checkpoint, store_checkpoint
-from src.mapper import map_execution_to_langfuse
-from src.models.n8n import (
+from n8n_langfuse_shipper.checkpoint import load_checkpoint, store_checkpoint
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

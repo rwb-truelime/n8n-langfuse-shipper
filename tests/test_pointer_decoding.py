@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.__main__ import _decode_compact_pointer_execution
-from src.mapper import map_execution_to_langfuse
-from src.models.n8n import (
+from n8n_langfuse_shipper.__main__ import _decode_compact_pointer_execution
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
+from n8n_langfuse_shipper.models.n8n import (
     N8nExecutionRecord,
     WorkflowData,
     WorkflowNode,

@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid5
 
-from src.mapper import (
+from n8n_langfuse_shipper.mapper import (
     SPAN_NAMESPACE,
     _detect_gemini_empty_output_anomaly,
     _extract_model_and_metadata,
     _resolve_parent,
 )
-from src.models.n8n import (
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

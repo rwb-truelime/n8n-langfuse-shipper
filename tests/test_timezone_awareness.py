@@ -4,8 +4,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from src.mapper import map_execution_to_langfuse
-from src.models.n8n import (
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

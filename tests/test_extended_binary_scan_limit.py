@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timezone
 
-from src.mapper import map_execution_with_assets
-from src.models.n8n import (
+from n8n_langfuse_shipper.mapper import map_execution_with_assets
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,
@@ -55,7 +55,7 @@ def test_extended_scan_limit_triggers_error_code(monkeypatch):
     # Force cap to 1 so second asset causes limit hit.
     monkeypatch.setenv("EXTENDED_MEDIA_SCAN_MAX_ASSETS", "1")
     # Clear cached settings so new env var is picked up.
-    from src.config import get_settings  # local import
+    from n8n_langfuse_shipper.config import get_settings  # local import
     try:
         get_settings.cache_clear()  # type: ignore[attr-defined]
     except Exception:

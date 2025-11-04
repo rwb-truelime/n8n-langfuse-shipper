@@ -63,3 +63,6 @@ asyncio_mode = "auto"
 # It automatically finds all your code in the 'src' directory.
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.scripts]
+n8n-shipper = "n8n_langfuse_shipper.__main__:app"

@@ -1,9 +1,9 @@
 import json
 from datetime import datetime, timezone
 
-from src.mapper import map_execution_with_assets
-from src.media_api import patch_and_upload_media  # type: ignore
-from src.models.n8n import (
+from n8n_langfuse_shipper.mapper import map_execution_with_assets
+from n8n_langfuse_shipper.media_api import patch_and_upload_media  # type: ignore
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,
@@ -39,7 +39,7 @@ class Settings:
     OTEL_EXPORTER_OTLP_TIMEOUT: int = 10
 
 # Monkeypatch get_settings in media_api to return our settings
-from src import media_api as media_mod  # noqa
+from n8n_langfuse_shipper import media_api as media_mod  # noqa
 media_mod.get_settings = lambda: Settings()  # type: ignore
 
 

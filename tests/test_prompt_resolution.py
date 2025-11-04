@@ -8,13 +8,13 @@ from __future__ import annotations
 import pytest
 from typing import Any, Dict, List
 
-from src.mapping.prompt_resolution import (
+from n8n_langfuse_shipper.mapping.prompt_resolution import (
     PromptResolutionResult,
     resolve_prompt_for_generation,
     _compute_text_fingerprint,
     _extract_ancestor_chain,
 )
-from src.mapping.prompt_detection import PromptMetadata
+from n8n_langfuse_shipper.mapping.prompt_detection import PromptMetadata
 
 
 def test_resolve_immediate_parent_prompt():

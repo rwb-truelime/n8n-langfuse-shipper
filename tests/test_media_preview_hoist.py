@@ -5,12 +5,12 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from src.media_api import (
+from n8n_langfuse_shipper.media_api import (
     BinaryAsset,
     MappedTraceWithAssets,
     patch_and_upload_media,
 )
-from src.models.langfuse import LangfuseSpan, LangfuseTrace
+from n8n_langfuse_shipper.models.langfuse import LangfuseSpan, LangfuseTrace
 
 
 class _Settings:
@@ -34,7 +34,7 @@ class _DummyClient:
 
 
 def test_media_inplace_preview(monkeypatch):
-    monkeypatch.setattr("src.media_api._MediaClient", _DummyClient)
+    monkeypatch.setattr("n8n_langfuse_shipper.media_api._MediaClient", _DummyClient)
     content = b"hello-image"
     b64 = base64.b64encode(content).decode("ascii")
     sha256_hex = hashlib.sha256(content).hexdigest()

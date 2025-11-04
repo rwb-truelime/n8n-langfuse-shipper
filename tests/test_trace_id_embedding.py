@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.shipper import _build_human_trace_id
+from n8n_langfuse_shipper.shipper import _build_human_trace_id
 
 
 def test_trace_id_embedding_simple():
@@ -31,5 +31,3 @@ def test_trace_id_embedding_when_no_digits():
     assert hex_id.endswith("0")
     assert len(hex_id) == 32
     assert int(hex_id, 16) == int_id
-
-

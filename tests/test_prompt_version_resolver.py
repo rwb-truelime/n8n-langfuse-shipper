@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import Mock, patch
 import httpx
 
-from src.mapping.prompt_version_resolver import (
+from n8n_langfuse_shipper.mapping.prompt_version_resolver import (
     PromptVersionResolver,
     create_version_resolver_from_env,
 )

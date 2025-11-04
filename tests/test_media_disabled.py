@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from src.mapper import map_execution_to_langfuse, map_execution_with_assets
-from src.models.n8n import (
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse, map_execution_with_assets
+from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,

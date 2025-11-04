@@ -1,7 +1,7 @@
 import pytest
 
-from src.config import get_settings
-from src.db import ExecutionSource
+from n8n_langfuse_shipper.config import get_settings
+from n8n_langfuse_shipper.db import ExecutionSource
 
 pytestmark = pytest.mark.asyncio
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from importlib import reload
 
-from src import config as config_module
+from n8n_langfuse_shipper import config as config_module
 
 
 def _reload_with_env(env: dict):

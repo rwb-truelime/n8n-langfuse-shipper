@@ -8,13 +8,13 @@ from __future__ import annotations
 import pytest
 from typing import Any, Dict
 
-from src.mapping.prompt_resolution import (
+from n8n_langfuse_shipper.mapping.prompt_resolution import (
     PromptResolutionResult,
     resolve_prompt_for_generation,
     _compute_text_fingerprint,
     _extract_prompt_text_from_input,
 )
-from src.mapping.prompt_detection import (
+from n8n_langfuse_shipper.mapping.prompt_detection import (
     PromptMetadata,
     _compute_prompt_fingerprint,
 )
