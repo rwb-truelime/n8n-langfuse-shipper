@@ -2,7 +2,8 @@
 
 This module provides the stable public API for converting n8n execution records
 into Langfuse-compatible trace structures. All complex mapping logic is delegated
-to the `mapping.orchestrator` module and its helpers in the `src/mapping/` package.
+to the n8n_langfuse_shipper.mapping.orchestrator module and its helpers in the
+n8n_langfuse_shipper.mapping package.
 
 The facade pattern preserves backwards compatibility for existing imports while
 allowing internal refactoring of the mapping implementation.

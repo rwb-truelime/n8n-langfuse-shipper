@@ -3,11 +3,11 @@
 This module provides a command-line interface using Typer to run the backfill
 process. It orchestrates the entire ETL pipeline:
 1.  Loading configuration and checkpoints.
-2.  Streaming execution records from the database (`db.py`).
+2.  Streaming execution records from the database (n8n_langfuse_shipper.db).
 3.  Parsing and validating the raw data, including handling complex formats like
     pointer-compressed executions.
-4.  Mapping the records to Langfuse traces (`mapper.py`).
-5.  Exporting the traces via OTLP (`shipper.py`).
+4.  Mapping the records to Langfuse traces (n8n_langfuse_shipper.mapper).
+5.  Exporting the traces via OTLP (n8n_langfuse_shipper.shipper).
 6.  Storing the new checkpoint upon successful processing.
 """
 from __future__ import annotations

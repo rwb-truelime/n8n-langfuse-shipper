@@ -4,7 +4,7 @@ This module provides simple, file-based checkpointing to track the last
 successfully processed n8n execution ID. This allows the backfill process to
 be stopped and resumed without reprocessing data.
 
-The `store_checkpoint` function uses an atomic write pattern (write to a
+The store_checkpoint function uses an atomic write pattern (write to a
 temporary file then rename) to prevent checkpoint corruption if the process is
 interrupted.
 """

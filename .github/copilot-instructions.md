@@ -7,10 +7,10 @@
 **Stack**: Python 3.12+, Pydantic models, OpenTelemetry SDK, psycopg3, Fish shell
 
 ### 5-Minute Orientation
-- **Entry point**: `src/__main__.py` - Typer CLI orchestrating Extract→Transform→Load pipeline
-- **Core transform**: `src/mapping/orchestrator.py` - maps n8n NodeRuns to Langfuse spans with deterministic IDs
-- **Models**: `src/models/n8n.py` + `src/models/langfuse.py` - Pydantic validation throughout
-- **Config**: `src/config.py` - Pydantic Settings from env vars (see table line ~140)
+- **Entry point**: `src/n8n_langfuse_shipper/__main__.py` - Typer CLI orchestrating Extract→Transform→Load pipeline
+- **Core transform**: `src/n8n_langfuse_shipper/mapping/orchestrator.py` - maps n8n NodeRuns to Langfuse spans with deterministic IDs
+- **Models**: `src/n8n_langfuse_shipper/models/n8n.py` + `src/n8n_langfuse_shipper/models/langfuse.py` - Pydantic validation throughout
+- **Config**: `src/n8n_langfuse_shipper/config.py` - Pydantic Settings from env vars (see table line ~140)
 - **Tests**: Run `pytest` or `pytest -q` in Fish shell - 30+ test files assert invariants
 - **Dev workflow**: `ruff check . && mypy src && pytest` before commits (line-length cap: 100 chars)
 
@@ -23,7 +23,7 @@
 6. **Fish shell**: NO Bash heredocs/arrays; use `set -x VAR value` for exports; Python one-liners: `python -c "import sys; print('ok')"` pattern
 
 ### Where to Look (Line References)
-- **Mapping modules**: `src/mapping/` - 11 pure submodules (orchestrator, binary_sanitizer, generation, parent_resolution, etc.)
+- **Mapping modules**: `src/n8n_langfuse_shipper/mapping/` - 11 pure submodules (orchestrator, binary_sanitizer, generation, parent_resolution, etc.)
 - **Parent resolution rules**: Line ~390 (Precedence table) + line ~230 (Agent Hierarchy explanation)
 - **Generation detection heuristics**: Line ~290 (tokenUsage presence OR provider markers)
 - **Binary & Media handling**: Line ~340 (stripping) + line ~370 (media token flow when `ENABLE_MEDIA_UPLOAD=true`)
@@ -37,17 +37,17 @@
 pytest tests/test_mapper.py -v
 
 # Type check only mapping module
-mypy src/mapping/
+mypy src/n8n_langfuse_shipper/mapping/
 
 # Dry-run first 25 executions
-python -m src backfill --limit 25 --dry-run
+n8n-shipper backfill --limit 25 --dry-run
 
 # Check for line length violations
 ruff check . --select E501
 ```
 
 ### Module Refactor Status (Line ~50)
-Mapper logic extracted into `src/mapping/` subpackage (completed). Facade `src/mapper.py` preserves public API for backward compatibility. Future extractions documented at line ~70.
+Mapper logic extracted into `src/n8n_langfuse_shipper/mapping/` subpackage (completed). Facade `src/n8n_langfuse_shipper/mapper.py` preserves public API for backward compatibility. Future extractions documented at line ~70.
 
 ---
 
@@ -109,7 +109,7 @@ graph TD
 
     ### Module Boundaries (Refactor Phase)
 
-    Mapper logic is being decomposed into a `src/mapping/` subpackage. Purity and
+    Mapper logic is being decomposed into a `src/n8n_langfuse_shipper/mapping/` subpackage. Purity and
     determinism MUST be preserved. New modules (initial tranche):
 
     * `mapping.time_utils` – epoch millisecond → UTC conversion helpers.

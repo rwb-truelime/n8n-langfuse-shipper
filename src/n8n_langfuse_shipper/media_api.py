@@ -1,6 +1,6 @@
 """Langfuse Media API integration (breaking change replacing Azure Blob path).
 
-This module supersedes the previous `media_uploader` Azure‑only implementation.
+This module supersedes the previous media_uploader Azure‑only implementation.
 We now follow the official Langfuse multi‑modality flow:
 
 1. Mapper (when ENABLE_MEDIA_UPLOAD true) collects binary assets and inserts
@@ -13,18 +13,18 @@ We now follow the official Langfuse multi‑modality flow:
            "slot": <optional origin slot or field path>
        }
 2. Here we call the Langfuse Media API for every asset, obtaining either:
-   a. An `uploadUrl` (HTTP PUT pre‑signed) + `id` (media identifier) OR
-   b. A deduplicated response with only an `id` (no upload needed).
-3. If `uploadUrl` present we PUT the decoded bytes (binary) exactly once.
+   a. An uploadUrl (HTTP PUT pre‑signed) + id (media identifier) OR
+   b. A deduplicated response with only an id (no upload needed).
+3. If uploadUrl present we PUT the decoded bytes (binary) exactly once.
 4. We then patch span output JSON replacing the placeholder with the canonical
      Langfuse media token string:
              @@@langfuseMedia:type=<mime>|id=<id>|source=base64_data_uri@@@
      Notes:
-         * `type=<mime>` only included when mime type known.
-         * `source=base64_data_uri` standard Langfuse source form.
-5. Span metadata `n8n.media.asset_count` records number of successful patches.
+         * type=<mime> only included when mime type known.
+         * source=base64_data_uri standard Langfuse source form.
+5. Span metadata n8n.media.asset_count records number of successful patches.
 6. Failures (API error, decode error, oversize, failed PUT) leave placeholder
-   intact and set `n8n.media.upload_failed=true` (single flag even if multiple
+   intact and set n8n.media.upload_failed=true (single flag even if multiple
    failures) but do not abort the trace.
 
 Breaking Changes vs prior Azure implementation:

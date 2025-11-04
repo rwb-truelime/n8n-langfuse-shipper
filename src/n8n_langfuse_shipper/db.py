@@ -1,7 +1,7 @@
 """Database interaction layer for fetching n8n execution records.
 
 This module contains the "E" (Extract) part of the ETL pipeline. It provides
-a class, `ExecutionSource`, responsible for connecting to the n8n PostgreSQL
+a class, ExecutionSource, responsible for connecting to the n8n PostgreSQL
 database and streaming execution records in batches. It handles dynamic table
 naming (schema and prefix), connection management, and resilient fetching with
 exponential backoff.

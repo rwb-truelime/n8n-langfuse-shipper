@@ -1,17 +1,18 @@
 """Shipper: converts internal Langfuse models to real OpenTelemetry spans and exports.
 
-This module is the "L" (Load) in the ETL pipeline. It takes the `LangfuseTrace`
-objects produced by the `mapper` module and converts them into OpenTelemetry (OTLP)
-spans. These spans are then exported to a configured Langfuse OTLP endpoint.
+This module is the "L" (Load) in the ETL pipeline. It takes the LangfuseTrace
+objects produced by the n8n_langfuse_shipper.mapper module and converts them into
+OpenTelemetry (OTLP) spans. These spans are then exported to a configured Langfuse
+OTLP endpoint.
 
 Key responsibilities include:
 - One-time initialization of the OTLP exporter with credentials and endpoint config.
-- Mapping a `LangfuseTrace` object to a hierarchy of OTLP spans.
-- Translating fields from internal `LangfuseSpan` models into OTLP attributes
-  according to Langfuse conventions (e.g., `langfuse.observation.type`).
+- Mapping a LangfuseTrace object to a hierarchy of OTLP spans.
+- Translating fields from internal LangfuseSpan models into OTLP attributes
+  according to Langfuse conventions (e.g., langfuse.observation.type).
 - Generating a human-readable but spec-compliant OTLP trace ID that embeds the
   original n8n execution ID for easy cross-referencing.
-- Handling `dry-run` mode for testing and validation.
+- Handling dry-run mode for testing and validation.
 - Implementing a simple backpressure mechanism to prevent memory overruns during
   high-throughput exports.
 """

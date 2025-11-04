@@ -58,14 +58,14 @@ Get up and running in a few steps.
     Process the first 25 executions without sending any data to Langfuse. This is great for testing your configuration.
 
     ```bash
-    python -m src backfill --limit 25 --dry-run
+    n8n-shipper backfill --limit 25 --dry-run
     ```
 
 4.  **Run a Real Export**
     To perform a real export, use the `--no-dry-run` flag.
 
     ```bash
-    python -m src backfill --limit 100 --no-dry-run
+    n8n-shipper backfill --limit 100 --no-dry-run
     ```
 
 The shipper creates a `.backfill_checkpoint` file to remember the last exported execution. The next time you run the command, it will automatically resume from where it left off.
@@ -208,30 +208,30 @@ The main command is `backfill`.
 
 ```bash
 # Show all available commands and options
-python -m src --help
+n8n-shipper --help
 ```
 
 ### Common Examples
 
 **Start a new export, processing up to 500 executions.**
 ```bash
-python -m src backfill --limit 500 --no-dry-run
+n8n-shipper backfill --limit 500 --no-dry-run
 ```
 
 **Resume an export, starting after a specific execution ID.**
 This overrides the checkpoint file.
 ```bash
-python -m src backfill --start-after-id 42000 --no-dry-run
+n8n-shipper backfill --start-after-id 42000 --no-dry-run
 ```
 
 **Export only AI-related spans.**
 ```bash
-python -m src backfill --filter-ai-only --no-dry-run
+n8n-shipper backfill --filter-ai-only --no-dry-run
 ```
 
 **Run with verbose logging for debugging.**
 ```bash
-LOG_LEVEL=DEBUG python -m src backfill --limit 10 --dry-run
+LOG_LEVEL=DEBUG n8n-shipper backfill --limit 10 --dry-run
 ```
 
 ---
@@ -254,7 +254,7 @@ Contributions are welcome. Please follow these steps to set up your development 
 
 3.  **Run Tests**
     The test suite covers the core mapping logic, data parsing, and integration points.
-    ```bash
+    ```fish
     # Run all tests
     pytest
 

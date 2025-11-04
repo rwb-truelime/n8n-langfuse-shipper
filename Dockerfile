@@ -43,8 +43,8 @@ ENV CHECKPOINT_FILE=/data/.backfill_checkpoint
 
 # Expose no ports (acts as batch job / worker). Healthcheck is simple mapper import.
 HEALTHCHECK --interval=1m --timeout=10s --start-period=30s CMD python -c \
-    "import importlib,sys; importlib.import_module('src.mapper'); sys.exit(0)" || exit 1
+    "import importlib,sys; importlib.import_module('n8n_langfuse_shipper.mapper'); sys.exit(0)" || exit 1
 
 # Default command runs backfill in dry-run mode (safe). Override with --no-dry-run in runtime args.
-ENTRYPOINT ["python", "-m", "src", "backfill"]
+ENTRYPOINT ["n8n-shipper", "backfill"]
 CMD ["--limit", "50", "--no-dry-run"]
