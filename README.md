@@ -186,11 +186,27 @@ The tool is configured via environment variables, which can be overridden by com
 |---|---|---|---|
 | `FETCH_BATCH_SIZE` | (none) | `100` | Number of executions to fetch from the database at once. |
 | `CHECKPOINT_FILE` | `--checkpoint-file` | `.backfill_checkpoint` | Path to the file that stores the last processed execution ID. |
+| `DRY_RUN` | `--dry-run / --no-dry-run` | `true` | If `true`, only mapping is performed (no export to Langfuse). Set to `false` or use `--no-dry-run` to actually export. |
+| `DEBUG` | `--debug / --no-debug` | `false` | Enable verbose debug logging for execution data parsing. |
+| `ATTEMPT_DECOMPRESS` | `--attempt-decompress / --no-attempt-decompress` | `false` | Attempt decompression of execution data payloads. |
+| `DEBUG_DUMP_DIR` | `--debug-dump-dir` | (none) | Directory to dump raw execution data JSON files when debug is enabled. |
 | `TRUNCATE_FIELD_LEN` | `--truncate-len` | `0` | Maximum length for input/output fields. `0` disables truncation. Binary data is always stripped regardless of this setting. |
-| `FILTER_AI_ONLY` | `--filter-ai-only` | `false` | If `true`, exports only AI-related spans and their ancestors. |
+| `FILTER_AI_ONLY` | `--filter-ai-only / --no-filter-ai-only` | `false` | If `true`, exports only AI-related spans (LangChain nodes) and their ancestors. Root span always included. |
+| `REQUIRE_EXECUTION_METADATA` | `--require-execution-metadata / --no-require-execution-metadata` | `false` | If `true`, only process executions that have a matching row in `execution_metadata` table. **Critical for selective processing.** |
 | `LOG_LEVEL` | (none) | `INFO` | Set the logging level (e.g., `DEBUG`, `INFO`, `WARNING`). |
 | `LANGFUSE_ENV` | (none) | `production` | Environment for prompt version resolution. Values: `production` (no API queries), `dev`, or `staging` (API queries enabled). Must be lowercase. |
 | `PROMPT_VERSION_API_TIMEOUT` | (none) | `5` | Timeout (seconds) for Langfuse prompt API queries in dev/staging environments. |
+
+### Export Backpressure & Reliability
+
+| Environment Variable | CLI Argument | Default | Description |
+|---|---|---|---|
+| `FLUSH_EVERY_N_TRACES` | (none) | `1` | Force flush the exporter after every N traces. |
+| `OTEL_MAX_QUEUE_SIZE` | (none) | `10000` | Maximum queue size for spans in the batch processor. |
+| `OTEL_MAX_EXPORT_BATCH_SIZE` | (none) | `512` | Maximum number of spans per export batch. |
+| `OTEL_SCHEDULED_DELAY_MILLIS` | (none) | `200` | Delay in milliseconds before a batch is exported. |
+| `EXPORT_QUEUE_SOFT_LIMIT` | `--export-queue-soft-limit` | `5000` | Soft limit for queued spans before introducing backpressure sleep. |
+| `EXPORT_SLEEP_MS` | `--export-sleep-ms` | `75` | Sleep duration in milliseconds when soft queue limit is exceeded. |
 
 ### Media Uploads
 
@@ -224,14 +240,30 @@ This overrides the checkpoint file.
 n8n-shipper backfill --start-after-id 42000 --no-dry-run
 ```
 
-**Export only AI-related spans.**
+**Export only executions that have metadata rows (selective processing).**
+```bash
+n8n-shipper backfill --require-execution-metadata --no-dry-run
+```
+
+**Export only AI-related spans (LangChain nodes).**
 ```bash
 n8n-shipper backfill --filter-ai-only --no-dry-run
 ```
 
+**Combine filters: AI-only + metadata requirement.**
+```bash
+n8n-shipper backfill --filter-ai-only --require-execution-metadata --no-dry-run
+```
+
 **Run with verbose logging for debugging.**
 ```bash
-LOG_LEVEL=DEBUG n8n-shipper backfill --limit 10 --dry-run
+n8n-shipper backfill --limit 10 --debug --dry-run
+```
+
+**Dry run (mapping only, no export) - default behavior.**
+```bash
+n8n-shipper backfill --limit 10
+# Same as: n8n-shipper backfill --limit 10 --dry-run
 ```
 
 ---
