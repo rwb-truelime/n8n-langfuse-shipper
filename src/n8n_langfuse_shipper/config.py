@@ -77,6 +77,24 @@ class Settings(BaseSettings):
         description="Path to file storing last processed execution id",
     )
 
+    # ---------------- Execution Processing Behavior -----------------
+    DRY_RUN: bool = Field(
+        default=True,
+        description="If true, do not send spans to Langfuse (mapping only, no export)",
+    )
+    DEBUG: bool = Field(
+        default=False,
+        description="Enable verbose debug logging for execution data parsing",
+    )
+    ATTEMPT_DECOMPRESS: bool = Field(
+        default=False,
+        description="Attempt decompression of execution data payloads (currently placeholder)",
+    )
+    DEBUG_DUMP_DIR: Optional[str] = Field(
+        default=None,
+        description="Directory to dump raw execution data JSON when debug enabled",
+    )
+
     # Filtering: only process executions that have at least one metadata row
     # whose key='executionId' and whose value equals the execution id.
     REQUIRE_EXECUTION_METADATA: bool = Field(

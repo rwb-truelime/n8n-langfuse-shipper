@@ -371,24 +371,52 @@ def backfill(
     limit: Optional[int] = typer.Option(
         None, help="Maximum number of executions to process in this run"
     ),
-    dry_run: bool = typer.Option(True, help="If true, do not send spans to Langfuse (mapping only)"),
+    dry_run: Optional[str] = typer.Option(
+        None,
+        "--dry-run",
+        help=(
+            "If true, do not send spans to Langfuse (mapping only). "
+            "Use --dry-run=true or --dry-run=false to override config. "
+            "If not specified, uses DRY_RUN from config/env."
+        ),
+    ),
     checkpoint_file: Optional[str] = typer.Option(
         None, help="Path to checkpoint file (defaults to settings.CHECKPOINT_FILE)"
     ),
-    debug: bool = typer.Option(False, help="Enable verbose debug for execution data parsing"),
-    attempt_decompress: bool = typer.Option(
-        False, help="Attempt decompression of execution data payloads (currently placeholder)"
+    debug: Optional[str] = typer.Option(
+        None,
+        "--debug",
+        help=(
+            "Enable verbose debug for execution data parsing. "
+            "Use --debug=true or --debug=false to override config. "
+            "If not specified, uses DEBUG from config/env."
+        ),
+    ),
+    attempt_decompress: Optional[str] = typer.Option(
+        None,
+        "--attempt-decompress",
+        help=(
+            "Attempt decompression of execution data payloads. "
+            "Use --attempt-decompress=true or --attempt-decompress=false to override config. "
+            "If not specified, uses ATTEMPT_DECOMPRESS from config/env."
+        ),
     ),
     debug_dump_dir: Optional[str] = typer.Option(
-        None, help="Directory to dump raw execution data JSON when debug enabled"
+        None, help="Directory to dump raw execution data JSON when debug enabled (overrides DEBUG_DUMP_DIR)"
     ),
     truncate_len: Optional[int] = typer.Option(
         None,
         help="Override truncation length for input/output serialization (0 disables truncation). Overrides TRUNCATE_FIELD_LEN env setting.",
     ),
-    require_execution_metadata: bool = typer.Option(
+    require_execution_metadata: Optional[str] = typer.Option(
         None,
-        help="If set, only process executions that have a metadata row (execution_metadata) with key='executionId' and value matching the execution id.",
+        "--require-execution-metadata",
+        help=(
+            "If set, only process executions that have a metadata row (execution_metadata) "
+            "with key='executionId' and value matching the execution id. "
+            "Use --require-execution-metadata=true or --require-execution-metadata=false to override config. "
+            "If not specified, uses REQUIRE_EXECUTION_METADATA from config/env."
+        ),
     ),
     export_queue_soft_limit: Optional[int] = typer.Option(
         None,
@@ -398,12 +426,15 @@ def backfill(
         None,
         help="Override EXPORT_SLEEP_MS (sleep duration in ms when backlog exceeds soft limit)",
     ),
-    filter_ai_only: Optional[bool] = typer.Option(
+    filter_ai_only: Optional[str] = typer.Option(
         None,
+        "--filter-ai-only",
         help=(
             "Only export spans for AI-related nodes (LangChain package). Root span always "
             "included; non-AI parents of AI nodes preserved. Executions with no AI nodes "
-            "export root span only with n8n.filter.no_ai_spans=true."
+            "export root span only with n8n.filter.no_ai_spans=true. "
+            "Use --filter-ai-only=true or --filter-ai-only=false to override config. "
+            "If not specified, uses FILTER_AI_ONLY from config/env."
         ),
     ),
 ) -> None:
@@ -420,6 +451,25 @@ def backfill(
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
         typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
     typer.echo("Starting backfill with mapping...")
+
+    # Parse all string-based boolean CLI inputs to avoid Typer flag default behavior
+    if dry_run is not None:
+        effective_dry_run = dry_run.lower() in ("true", "1", "yes")
+    else:
+        effective_dry_run = settings.DRY_RUN
+
+    if debug is not None:
+        effective_debug = debug.lower() in ("true", "1", "yes")
+    else:
+        effective_debug = settings.DEBUG
+
+    if attempt_decompress is not None:
+        effective_decompress = attempt_decompress.lower() in ("true", "1", "yes")
+    else:
+        effective_decompress = settings.ATTEMPT_DECOMPRESS
+
+    effective_dump_dir = debug_dump_dir or settings.DEBUG_DUMP_DIR
+
     # Apply optional runtime overrides for export backpressure tuning
     if export_queue_soft_limit is not None:
         # Runtime override of settings attribute (present on Settings model)
@@ -427,15 +477,16 @@ def backfill(
     if export_sleep_ms is not None:
         settings.EXPORT_SLEEP_MS = int(export_sleep_ms)
     # Determine AI-only filtering flag (CLI has precedence over env/settings)
-    effective_filter_ai_only = (
-        filter_ai_only if filter_ai_only is not None else settings.FILTER_AI_ONLY
-    )
+    # Parse string-based CLI input to avoid Typer boolean flag default behavior
+    if filter_ai_only is not None:
+        effective_filter_ai_only = filter_ai_only.lower() in ("true", "1", "yes")
+    else:
+        effective_filter_ai_only = settings.FILTER_AI_ONLY
     # Determine metadata filter flag: CLI overrides env/settings
-    require_meta_flag = (
-        require_execution_metadata
-        if require_execution_metadata is not None
-        else settings.REQUIRE_EXECUTION_METADATA
-    )
+    if require_execution_metadata is not None:
+        require_meta_flag = require_execution_metadata.lower() in ("true", "1", "yes")
+    else:
+        require_meta_flag = settings.REQUIRE_EXECUTION_METADATA
     source = ExecutionSource(
         settings.PG_DSN,
         batch_size=settings.FETCH_BATCH_SIZE,
@@ -473,17 +524,17 @@ def backfill(
                 data=_build_execution_data(
                     raw.get("data"),
                     workflow_data_raw=raw.get("workflowData"),
-                    debug=debug,
-                    attempt_decompress=attempt_decompress,
+                    debug=effective_debug,
+                    attempt_decompress=effective_decompress,
                     execution_id=raw["id"],
                 ),
             )
-            if debug and debug_dump_dir:
+            if effective_debug and effective_dump_dir:
                 try:
                     import json
                     import os as _os
-                    _os.makedirs(debug_dump_dir, exist_ok=True)
-                    dump_path = _os.path.join(debug_dump_dir, f"execution_{record.id}_data.json")
+                    _os.makedirs(effective_dump_dir, exist_ok=True)
+                    dump_path = _os.path.join(effective_dump_dir, f"execution_{record.id}_data.json")
                     with open(dump_path, "w", encoding="utf-8") as f:
                         json.dump(raw.get("data"), f, ensure_ascii=False, indent=2)
                     logging.getLogger(__name__).info("Dumped raw data JSON to %s", dump_path)
@@ -524,7 +575,7 @@ def backfill(
                 logging.getLogger(__name__).debug(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
-            export_trace(trace, settings, dry_run=dry_run)
+            export_trace(trace, settings, dry_run=effective_dry_run)
             if settings.ENABLE_MEDIA_UPLOAD and mapped is not None:
                 # Now that OTLP span ids are populated, perform media create + upload.
                 try:
@@ -548,13 +599,13 @@ def backfill(
                 )
             count += 1
             last_id = int(record.id)
-        if not dry_run and last_id is not None:
+        if not effective_dry_run and last_id is not None:
             store_checkpoint(cp_path, last_id)
             logging.getLogger(__name__).info(
                 "Stored checkpoint id %s to %s", last_id, cp_path
             )
         typer.echo(
-            f"Processed {count} execution(s). dry_run={dry_run} start_after={effective_start_after}"
+            f"Processed {count} execution(s). dry_run={effective_dry_run} start_after={effective_start_after}"
         )
         if count:
             logging.getLogger(__name__).info(
