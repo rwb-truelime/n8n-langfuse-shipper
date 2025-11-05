@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .config import get_settings
 from .mapping.orchestrator import (
     _apply_ai_filter,
     _map_execution,
@@ -80,7 +81,16 @@ def map_execution_to_langfuse(
         record, truncate_limit=truncate_limit, collect_binaries=False
     )
     if filter_ai_only:
-        _apply_ai_filter(trace, record)
+        settings = get_settings()
+        _apply_ai_filter(
+            trace=trace,
+            record=record,
+            run_data=record.data.executionData.resultData.runData,
+            extraction_nodes=settings.FILTER_AI_EXTRACTION_NODES,
+            include_patterns=settings.FILTER_AI_EXTRACTION_INCLUDE_KEYS,
+            exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
+            max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
+        )
     return trace
 
 
@@ -115,5 +125,14 @@ def map_execution_with_assets(
         record, truncate_limit=truncate_limit, collect_binaries=collect_binaries
     )
     if filter_ai_only:
-        _apply_ai_filter(trace, record)
+        settings = get_settings()
+        _apply_ai_filter(
+            trace=trace,
+            record=record,
+            run_data=record.data.executionData.resultData.runData,
+            extraction_nodes=settings.FILTER_AI_EXTRACTION_NODES,
+            include_patterns=settings.FILTER_AI_EXTRACTION_INCLUDE_KEYS,
+            exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
+            max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
+        )
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])

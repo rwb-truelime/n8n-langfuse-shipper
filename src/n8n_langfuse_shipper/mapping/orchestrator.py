@@ -87,6 +87,9 @@ from .model_extractor import (
 from .model_extractor import (
     looks_like_model_param_key as _looks_like_model_param_key,
 )
+from .node_extractor import (
+    extract_nodes_data as _extract_nodes_data,
+)
 from .parent_resolution import (
     build_child_agent_map as _build_child_agent_map,
 )
@@ -752,7 +755,15 @@ def _collect_binary_assets(
     return cloned, assets, limit_hit, promoted_item_binary
 
 
-def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
+def _apply_ai_filter(
+    trace: LangfuseTrace,
+    record: N8nExecutionRecord,
+    run_data: Dict[str, List[NodeRun]],
+    extraction_nodes: list[str],
+    include_patterns: list[str],
+    exclude_patterns: list[str],
+    max_value_len: int,
+) -> None:
     """Apply AI-only filtering with context window preservation (mutates trace in place).
 
     Retains only:
@@ -762,11 +773,16 @@ def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
     - Up to 2 spans immediately after last AI span (post-context)
     - Spans on parent chain between AI spans (chain connectors)
 
+    Optionally extracts data from specified nodes before filtering and attaches to root
+    span metadata under n8n.extracted_nodes for visibility when excluded nodes contain
+    critical configuration or business context.
+
     Sets metadata on root span:
     - n8n.filter.ai_only=true
     - n8n.filter.excluded_node_count: Number of discarded spans
     - n8n.filter.window_start_span, window_end_span: AI window boundaries
     - n8n.filter.pre_context_count, post_context_count, chain_context_count
+    - n8n.extracted_nodes: Extracted node data (when extraction_nodes specified)
 
     Special case when no AI spans found:
     - Retains only root span
@@ -775,8 +791,28 @@ def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
     Args:
         trace: LangfuseTrace to filter (modified in place)
         record: N8nExecutionRecord for node type lookups
+        run_data: Complete runData dict for node data extraction
+        extraction_nodes: List of node names to extract data from
+        include_patterns: Wildcard patterns for keys to include in extraction
+        exclude_patterns: Wildcard patterns for keys to exclude from extraction
+        max_value_len: Maximum string length per extracted value
     """
+    extracted_data = None  # Initialize outside try for scope
     try:
+        # Extract node data BEFORE filtering removes spans
+        if extraction_nodes:
+            extracted_data = _extract_nodes_data(
+                run_data=run_data,
+                extraction_nodes=extraction_nodes,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+                max_value_len=max_value_len,
+            )
+            if extracted_data:
+                logger.debug(
+                    f"Extracted data from {extracted_data.get('_meta', {}).get('extracted_count', 0)} nodes"
+                )
+
         if not trace.spans:
             return
         root_span = next(
@@ -806,6 +842,9 @@ def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
             root_span.metadata["n8n.filter.ai_only"] = True
             root_span.metadata.setdefault("n8n.filter.excluded_node_count", len(original_order) - 1)
             root_span.metadata["n8n.filter.no_ai_spans"] = True
+            # Attach extracted data even when no AI spans
+            if extracted_data:
+                root_span.metadata["n8n.extracted_nodes"] = extracted_data
             return
         first_ai_idx = ai_indices[0]
         last_ai_idx = ai_indices[-1]
@@ -875,6 +914,11 @@ def _apply_ai_filter(trace: LangfuseTrace, record: N8nExecutionRecord) -> None:
         root_span.metadata["n8n.filter.pre_context_count"] = pre_context_count
         root_span.metadata["n8n.filter.post_context_count"] = post_context_count
         root_span.metadata["n8n.filter.chain_context_count"] = chain_context_count
+
+        # Attach extracted node data to root span metadata
+        if extracted_data:
+            root_span.metadata["n8n.extracted_nodes"] = extracted_data
+
         trace.spans = new_spans
     except Exception as e:  # pragma: no cover
         try:

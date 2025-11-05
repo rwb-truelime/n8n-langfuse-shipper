@@ -13,7 +13,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict as _SettingsConfigDict
 
@@ -173,11 +173,72 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------------- Node Extraction (for AI-only filtering) -----------------
+    FILTER_AI_EXTRACTION_NODES: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Comma-separated list of node names to extract input/output data from "
+            "when FILTER_AI_ONLY is enabled. Data stored in root span metadata "
+            "under n8n.extracted_nodes.<node_name>. Empty list = no extraction."
+        ),
+    )
+    FILTER_AI_EXTRACTION_INCLUDE_KEYS: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional wildcard patterns for keys to include in extracted data. "
+            "Supports glob patterns (e.g., userId, *Id, headers.*). "
+            "Empty list = extract all keys (subject to exclude patterns)."
+        ),
+    )
+    FILTER_AI_EXTRACTION_EXCLUDE_KEYS: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional wildcard patterns for keys to exclude from extracted data. "
+            "Supports glob patterns (e.g., *password*, *token*, *secret*). "
+            "Applied after include patterns. Empty list = no exclusions."
+        ),
+    )
+    FILTER_AI_EXTRACTION_MAX_VALUE_LEN: int = Field(
+        default=10000,
+        description=(
+            "Maximum string length for any single value in extracted node data. "
+            "Values exceeding this are truncated with suffix marker. "
+            "Prevents metadata bloat. Default 10KB."
+        ),
+    )
+
     # Media surfacing: always in-place replacement (legacy/mirror modes removed
     # for simplicity per project policy of no backward compatibility). Tokens
     # are inserted exactly where base64 strings were, with shallow promotion of
     # canonical binary slots. (Former MEDIA_SURFACE_MODE removed.)
 
+    @field_validator(
+        "FILTER_AI_EXTRACTION_NODES",
+        "FILTER_AI_EXTRACTION_INCLUDE_KEYS",
+        "FILTER_AI_EXTRACTION_EXCLUDE_KEYS",
+        mode="before",
+    )
+    @classmethod
+    def parse_comma_separated(cls, v: str | list[str]) -> list[str]:
+        """Parse comma-separated string into list of stripped strings.
+
+        Supports both direct list input (from code/tests) and comma-separated
+        string input (from environment variables). Empty strings result in
+        empty list.
+
+        Args:
+            v: Input value (string or list)
+
+        Returns:
+            List of stripped strings with empty entries removed
+        """
+        if isinstance(v, list):
+            return [s.strip() for s in v if s.strip()]
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return []
 
     @model_validator(mode="after")
     def build_dsn_if_needed(self) -> "Settings":
