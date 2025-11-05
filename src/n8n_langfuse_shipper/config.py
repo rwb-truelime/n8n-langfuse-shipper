@@ -11,7 +11,7 @@ configuration, ensuring consistent settings throughout the application.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -174,7 +174,8 @@ class Settings(BaseSettings):
     )
 
     # ---------------- Node Extraction (for AI-only filtering) -----------------
-    FILTER_AI_EXTRACTION_NODES: list[str] = Field(
+    # Use Any type to prevent Pydantic Settings JSON decoding; validator converts to list[str]
+    FILTER_AI_EXTRACTION_NODES: Any = Field(
         default_factory=list,
         description=(
             "Comma-separated list of node names to extract input/output data from "
@@ -182,7 +183,7 @@ class Settings(BaseSettings):
             "under n8n.extracted_nodes.<node_name>. Empty list = no extraction."
         ),
     )
-    FILTER_AI_EXTRACTION_INCLUDE_KEYS: list[str] = Field(
+    FILTER_AI_EXTRACTION_INCLUDE_KEYS: Any = Field(
         default_factory=list,
         description=(
             "Optional wildcard patterns for keys to include in extracted data. "
@@ -190,7 +191,7 @@ class Settings(BaseSettings):
             "Empty list = extract all keys (subject to exclude patterns)."
         ),
     )
-    FILTER_AI_EXTRACTION_EXCLUDE_KEYS: list[str] = Field(
+    FILTER_AI_EXTRACTION_EXCLUDE_KEYS: Any = Field(
         default_factory=list,
         description=(
             "Optional wildcard patterns for keys to exclude from extracted data. "
