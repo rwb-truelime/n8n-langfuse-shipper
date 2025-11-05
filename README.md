@@ -37,8 +37,9 @@ Get up and running in a few steps.
     ```
 
 2.  **Configure Environment**
-    Set the following environment variables. The example below uses the [Fish shell](https://fishshell.com/).
+    Set the following environment variables:
 
+    **Fish shell:**
     ```fish
     # Your n8n database connection string
     set -x PG_DSN postgresql://user:pass@host:5432/n8n
@@ -50,8 +51,24 @@ Get up and running in a few steps.
     # The table prefix used by your n8n instance (often 'n8n_')
     set -x DB_TABLE_PREFIX n8n_
 
-    # Optional: Set if you are self-hosting Langfuse
-    set -x LANGFUSE_HOST http://your-langfuse-host:3000
+    # Langfuse host URL
+    set -x LANGFUSE_HOST https://cloud.langfuse.com
+    ```
+
+    **Bash/Zsh:**
+    ```bash
+    # Your n8n database connection string
+    export PG_DSN=postgresql://user:pass@host:5432/n8n
+
+    # Your Langfuse project credentials
+    export LANGFUSE_PUBLIC_KEY=lf_pk_...
+    export LANGFUSE_SECRET_KEY=lf_sk_...
+
+    # The table prefix used by your n8n instance (often 'n8n_')
+    export DB_TABLE_PREFIX=n8n_
+
+    # Langfuse host URL
+    export LANGFUSE_HOST=https://cloud.langfuse.com
     ```
 
 3.  **Run a Dry Run**
@@ -134,6 +151,7 @@ The shipper automatically links LLM generation spans to their corresponding Lang
 
 Set the `LANGFUSE_ENV` environment variable to control version resolution behavior:
 
+**Fish shell:**
 ```fish
 # Production environment (default) - no API queries, uses exact versions from executions
 set -x LANGFUSE_ENV production
@@ -143,6 +161,18 @@ set -x LANGFUSE_ENV dev
 
 # Staging environment - also queries Langfuse API
 set -x LANGFUSE_ENV staging
+```
+
+**Bash/Zsh:**
+```bash
+# Production environment (default) - no API queries, uses exact versions from executions
+export LANGFUSE_ENV=production
+
+# Development environment - queries Langfuse API to resolve version labels
+export LANGFUSE_ENV=dev
+
+# Staging environment - also queries Langfuse API
+export LANGFUSE_ENV=staging
 ```
 
 **Important**:
@@ -282,13 +312,24 @@ To match these, use wildcards:
 ### Example Configurations
 
 **Extract all data from tool nodes:**
+
+*Fish shell:*
 ```fish
 set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "WebScraperTool,DatabaseQueryTool"
 n8n-shipper backfill --no-dry-run
 ```
 
+*Bash/Zsh:*
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="WebScraperTool,DatabaseQueryTool"
+n8n-shipper backfill --no-dry-run
+```
+
 **Extract only URLs and response bodies, exclude secrets:**
+
+*Fish shell:*
 ```fish
 set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "*Tool*"
@@ -297,12 +338,32 @@ set -x FILTER_AI_EXTRACTION_EXCLUDE_KEYS "*secret*,*password*,*key*"
 n8n-shipper backfill --no-dry-run
 ```
 
+*Bash/Zsh:*
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="*Tool*"
+export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*url,*response*"
+export FILTER_AI_EXTRACTION_EXCLUDE_KEYS="*secret*,*password*,*key*"
+n8n-shipper backfill --no-dry-run
+```
+
 **Extract specific fields with size limit:**
+
+*Fish shell:*
 ```fish
 set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "Agent*"
 set -x FILTER_AI_EXTRACTION_INCLUDE_KEYS "*input*,*output*"
 set -x FILTER_AI_EXTRACTION_MAX_VALUE_LEN 5000
+n8n-shipper backfill --no-dry-run
+```
+
+*Bash/Zsh:*
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="Agent*"
+export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*input*,*output*"
+export FILTER_AI_EXTRACTION_MAX_VALUE_LEN=5000
 n8n-shipper backfill --no-dry-run
 ```
 

@@ -32,6 +32,8 @@
 - **Environment variables**: Line ~140 (complete table with defaults)
 
 ### Common Tasks
+
+**For development (Fish shell):**
 ```fish
 # Run specific test file
 pytest tests/test_mapper.py -v
@@ -43,6 +45,23 @@ mypy src/n8n_langfuse_shipper/mapping/
 n8n-shipper backfill --limit 25 --dry-run
 
 # Check for line length violations
+ruff check . --select E501
+```
+
+**For users (Bash/Zsh):**
+```bash
+# Run specific test file
+pytest tests/test_mapper.py -v
+
+# Type check only mapping module
+mypy src/n8n_langfuse_shipper/mapping/
+
+# Dry-run first 25 executions
+n8n-shipper backfill --limit 25 --dry-run
+
+# Check for line length violations
+ruff check . --select E501
+```
 ruff check . --select E501
 ```
 
@@ -808,6 +827,8 @@ Each new metadata key must appear in at least one assertion. Forbidden duplicati
 
 Development and CI use Fish shell. Follow these strict rules:
 
+**For Internal Development & Testing:**
+
 1. Always assume Fish syntax (NOT Bash). No heredocs, no `$()` inside single quotes, no Bash arrays.
 2. Environment variable assignment: `set -x VAR value` (export) not `VAR=value command`.
 3. Path modification: `set -x PATH /custom/bin $PATH`.
@@ -822,6 +843,27 @@ Development and CI use Fish shell. Follow these strict rules:
 8. Avoid trailing backslashes; prefer separate lines.
 9. Module checking: only use standardized command pattern (maintain consistency).
 10. No Bash `${VAR}` unless inside Python string; in Fish use `$VAR`.
+
+**For User-Facing Documentation (README.md, copilot-instructions.md examples):**
+
+**ALWAYS provide BOTH Fish and Bash/Zsh examples** side-by-side. Most users use Bash, but developers use Fish.
+
+Format:
+```markdown
+**Fish shell:**
+\`\`\`fish
+set -x VAR value
+command --flag
+\`\`\`
+
+**Bash/Zsh:**
+\`\`\`bash
+export VAR=value
+command --flag
+\`\`\`
+```
+
+This hybrid approach accommodates all users. When adding new command examples, include both syntaxes.
 
 Deviation = correctness issue; correct in same PR.
 
