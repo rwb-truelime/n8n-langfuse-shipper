@@ -74,6 +74,7 @@ Use these exact meanings in code comments, docs, and tests. Adding a new term? U
 * **Human-readable Trace ID (OTLP):** 32-hex trace id produced by `_build_human_trace_id` embedding zero-padded execution id digits as suffix.
 * **Input Propagation:** Injecting parent span raw output as child logical input when `inputOverride` absent.
 * **Multimodality / Media Upload:** Feature-flag gated Langfuse Media API token flow. Mapper collects binary assets inserting temporary placeholders; post-map phase exchanges each for stable Langfuse media token string. Fail-open: on error or oversize, original redaction placeholder stays.
+* **Node Extraction:** Feature-flag gated mechanism to copy input/output data from specified nodes into root span metadata when `FILTER_AI_ONLY=true`. Applies binary stripping, wildcard key filtering (include/exclude patterns matching flattened paths), and size limiting before attaching to `n8n.extracted_nodes`. Preserves data from filtered-out (non-AI) nodes for debugging.
 * **NodeRun:** Runtime execution instance of a workflow node (timing, status, source chain, outputs, error).
 * **Observation Type:** Semantic classification (agent/tool/chain/etc.) via fallback chain: exact → regex → category → default span.
 * **Parent Resolution Precedence:** Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
@@ -603,6 +604,10 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `TRUNCATE_FIELD_LEN` | `0` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
 | `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |
+| `FILTER_AI_EXTRACTION_NODES` | `""` | Comma-separated node names or wildcard patterns (`Tool*,Agent*`) for extracting node data to root metadata when `FILTER_AI_ONLY=true`. Empty disables extraction. |
+| `FILTER_AI_EXTRACTION_INCLUDE_KEYS` | `""` | Comma-separated wildcard patterns (`*url,*token*`) for keys to include in extracted data. Empty includes all. Patterns match full flattened paths like `main.0.0.json.fieldname`. |
+| `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` | `""` | Comma-separated wildcard patterns (`*secret*,*password*`) for keys to exclude from extracted data. Applied after include filter. Patterns match full flattened paths. |
+| `FILTER_AI_EXTRACTION_MAX_VALUE_LEN` | `10000` | Max string length per extracted value. Prevents excessively large metadata payloads. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
 | `LANGFUSE_ENV` | `production` | Environment identifier for prompt version resolution. Must be lowercase. Values: `production` (API queries disabled), `dev`, `staging` (API queries enabled). |
 | `PROMPT_VERSION_API_TIMEOUT` | `5` | Timeout in seconds for Langfuse prompt API queries in dev/staging environments. |
@@ -639,6 +644,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 
 **Root span:**
 * `n8n.execution.id`
+* `n8n.extracted_nodes` – dict containing extracted node data when `FILTER_AI_EXTRACTION_NODES` configured
 
 **All spans (optional context):**
 * `n8n.node.type`, `n8n.node.category`, `n8n.node.run_index`, `n8n.node.execution_time_ms`, `n8n.node.execution_status`
@@ -647,6 +653,19 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.agent.parent`, `n8n.agent.link_type`
 * `n8n.truncated.input`, `n8n.truncated.output`
 * `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
+
+**Node extraction metadata (within `n8n.extracted_nodes`):**
+* `_meta.extracted_count` – number of nodes successfully extracted
+* `_meta.nodes_requested` – number of nodes requested for extraction
+* `_meta.nodes_not_found` – list of requested node names not found in runData (optional)
+* `_meta.extraction_config.include_keys` – applied include patterns (optional)
+* `_meta.extraction_config.exclude_keys` – applied exclude patterns (optional)
+* `<node_name>.runs[]` – array of run data for each extracted node
+* `<node_name>.runs[].run_index` – zero-based run index
+* `<node_name>.runs[].execution_status` – node execution status
+* `<node_name>.runs[].input` – filtered/truncated input data (may be null)
+* `<node_name>.runs[].output` – filtered/truncated output data (may be null)
+* `<node_name>.runs[]._truncated` – boolean indicating if any truncation occurred
 
 **Prompt resolution (generation spans only):**
 * `n8n.prompt.original_version` – raw version string from prompt fetch node output
@@ -713,6 +732,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Timezone Enforcement | No naive datetimes; normalization to UTC | `test_timezone_awareness.py` |
 | Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
 | AI-only Filtering | Root retention, ancestor preservation, metadata flags | `test_ai_filtering.py` |
+| Node Extraction | Wildcard patterns match full flattened paths; flatten/unflatten preserves structure | `test_ai_extraction_*` |
 
 ### Parent Resolution Precedence (Authoritative Table)
 

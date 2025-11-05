@@ -106,19 +106,22 @@ def _flatten_dict(
 ) -> dict[str, Any]:
     """Flatten nested dict into dotted-path key-value pairs.
 
+    Recursively flattens nested dicts AND lists, creating paths like
+    "main.0.0.json.fieldname" for n8n's typical channel structure.
+
     Args:
         data: Nested dictionary to flatten
         parent_key: Prefix for current level keys
         sep: Separator for path components
 
     Returns:
-        Flattened dict with dotted paths as keys
+        Flattened dict with dotted paths as keys (including list indices)
 
     Examples:
         >>> _flatten_dict({"a": {"b": 1, "c": 2}})
         {"a.b": 1, "a.c": 2}
-        >>> _flatten_dict({"headers": {"x-id": "123"}})
-        {"headers.x-id": "123"}
+        >>> _flatten_dict({"main": [[{"json": {"x": 1}}]]})
+        {"main.0.0.json.x": 1}
     """
     items: list[tuple[str, Any]] = []
     for k, v in data.items():
@@ -126,36 +129,100 @@ def _flatten_dict(
         if isinstance(v, dict):
             items.extend(_flatten_dict(v, new_key, sep=sep).items())
         elif isinstance(v, list):
-            # Keep lists as-is at this level (don't flatten list indices)
-            items.append((new_key, v))
+            # Recursively flatten list items with index in path
+            for idx, item in enumerate(v):
+                list_key = f"{new_key}{sep}{idx}"
+                if isinstance(item, dict):
+                    items.extend(_flatten_dict(item, list_key, sep=sep).items())
+                elif isinstance(item, list):
+                    # Nested list - recursively flatten
+                    for sub_idx, sub_item in enumerate(item):
+                        sub_key = f"{list_key}{sep}{sub_idx}"
+                        if isinstance(sub_item, dict):
+                            items.extend(
+                                _flatten_dict(sub_item, sub_key, sep=sep).items()
+                            )
+                        else:
+                            items.append((sub_key, sub_item))
+                else:
+                    items.append((list_key, item))
         else:
             items.append((new_key, v))
     return dict(items)
 
 
 def _unflatten_dict(flat_dict: dict[str, Any], sep: str = ".") -> dict[str, Any]:
-    """Reconstruct nested dict from flattened dotted-path keys.
+    """Reconstruct nested dict/list structure from flattened dotted-path keys.
+
+    Numeric path components are reconstructed as list indices.
 
     Args:
         flat_dict: Flattened dict with dotted path keys
         sep: Separator used in path components
 
     Returns:
-        Nested dict reconstructed from flat paths
+        Nested dict/list structure reconstructed from flat paths
 
     Examples:
         >>> _unflatten_dict({"a.b": 1, "a.c": 2})
         {"a": {"b": 1, "c": 2}}
+        >>> _unflatten_dict({"main.0.0.json.x": 1})
+        {"main": [[{"json": {"x": 1}}]]}
     """
     result: dict[str, Any] = {}
+
     for key, value in flat_dict.items():
         parts = key.split(sep)
-        current = result
-        for part in parts[:-1]:
-            if part not in current:
-                current[part] = {}
-            current = current[part]
-        current[parts[-1]] = value
+        current: Any = result
+
+        i = 0
+        while i < len(parts):
+            part = parts[i]
+
+            # Check if this is the last part
+            if i == len(parts) - 1:
+                # Leaf value - assign it
+                if part.isdigit():
+                    # Setting list element
+                    if isinstance(current, list):
+                        idx = int(part)
+                        while len(current) <= idx:
+                            current.append(None)
+                        current[idx] = value
+                elif isinstance(current, dict):
+                    current[part] = value
+                break
+
+            # Not the last part - navigate/create structure
+            # Check if this part is numeric (list index)
+            if part.isdigit():
+                # Current should be a list, and we're indexing into it
+                idx = int(part)
+                # Extend list if needed
+                while isinstance(current, list) and len(current) <= idx:
+                    # Look ahead to determine type
+                    next_part = parts[i + 1] if i + 1 < len(parts) else None
+                    if next_part and next_part.isdigit():
+                        current.append([])
+                    else:
+                        current.append({})
+                if isinstance(current, list):
+                    current = current[idx]
+                i += 1
+            else:
+                # Dict key
+                # Ensure key exists
+                if isinstance(current, dict) and part not in current:
+                    # Look ahead to determine type
+                    next_part = parts[i + 1] if i + 1 < len(parts) else None
+                    if next_part and next_part.isdigit():
+                        current[part] = []
+                    else:
+                        current[part] = {}
+                if isinstance(current, dict):
+                    current = current[part]
+                i += 1
+
     return result
 
 

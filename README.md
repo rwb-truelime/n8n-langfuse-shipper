@@ -192,6 +192,10 @@ The tool is configured via environment variables, which can be overridden by com
 | `DEBUG_DUMP_DIR` | `--debug-dump-dir` | (none) | Directory to dump raw execution data JSON files when `DEBUG=true`. |
 | `TRUNCATE_FIELD_LEN` | `--truncate-len` | `0` | Maximum length for input/output fields. `0` disables truncation. Binary data is always stripped regardless of this setting. |
 | `FILTER_AI_ONLY` | `--filter-ai-only / --no-filter-ai-only` | `false` | If `true`, exports only AI-related spans (LangChain nodes) and their ancestors. Root span always included. |
+| `FILTER_AI_EXTRACTION_NODES` | (none) | `""` | Comma-separated node names or wildcard patterns for extracting node data to root metadata when `FILTER_AI_ONLY=true`. Example: `Tool*,Agent*`. Empty disables extraction. |
+| `FILTER_AI_EXTRACTION_INCLUDE_KEYS` | (none) | `""` | Comma-separated wildcard patterns for keys to include in extracted data. Patterns match full flattened paths like `main.0.0.json.fieldname`. Example: `*url,*token*`. Empty includes all keys. |
+| `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` | (none) | `""` | Comma-separated wildcard patterns for keys to exclude from extracted data. Applied after include filter. Example: `*secret*,*password*`. Empty excludes nothing. |
+| `FILTER_AI_EXTRACTION_MAX_VALUE_LEN` | (none) | `10000` | Maximum string length per extracted value. Prevents excessively large metadata payloads. |
 | `REQUIRE_EXECUTION_METADATA` | `--require-execution-metadata / --no-require-execution-metadata` | `false` | If `true`, only process executions that have a matching row in `execution_metadata` table. **Critical for selective processing.** |
 | `LOG_LEVEL` | (none) | `INFO` | **Logging verbosity level.** Values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Use `LOG_LEVEL=DEBUG` for detailed logs. |
 | `LANGFUSE_ENV` | (none) | `production` | Environment for prompt version resolution. Values: `production` (no API queries), `dev`, or `staging` (API queries enabled). Must be lowercase. |
@@ -215,6 +219,157 @@ The tool is configured via environment variables, which can be overridden by com
 | `ENABLE_MEDIA_UPLOAD` | (none) | `false` | Set to `true` to enable uploading binary files to Langfuse. |
 | `MEDIA_MAX_BYTES` | (none) | `25_000_000` | Maximum size (in bytes) for a single file upload. Files larger than this will be omitted. |
 | `EXTENDED_MEDIA_SCAN_MAX_ASSETS` | (none) | `250` | Maximum number of binary assets to discover per node run from non-standard locations (e.g., data URLs). |
+
+---
+
+## Node Extraction Feature
+
+When `FILTER_AI_ONLY=true`, you can optionally extract input/output data from filtered-out (non-AI) nodes into the root span's metadata for debugging. This preserves visibility into tool calls and other nodes that would otherwise be excluded.
+
+### Configuration
+
+**`FILTER_AI_EXTRACTION_NODES`** - Specify which nodes to extract:
+- Comma-separated list of node names: `WebScraperTool,DatabaseQuery`
+- Wildcard patterns: `Tool*,*API*` (matches `ToolA`, `ToolB`, `MyAPI`, etc.)
+- Empty (default): No extraction
+
+**`FILTER_AI_EXTRACTION_INCLUDE_KEYS`** - Filter which data keys to include:
+- Patterns match **full flattened paths** like `main.0.0.json.url`
+- Example: `*url,*token*` includes any path containing "url" or "token"
+- Empty (default): Include all keys
+
+**`FILTER_AI_EXTRACTION_EXCLUDE_KEYS`** - Filter which data keys to exclude:
+- Applied AFTER include filter
+- Example: `*secret*,*password*` excludes sensitive fields
+- Patterns match full flattened paths like `main.0.0.json.secret_connection_string`
+- Empty (default): Exclude nothing
+
+**`FILTER_AI_EXTRACTION_MAX_VALUE_LEN`** - Limit extracted value size:
+- Maximum characters per extracted string value
+- Default: `10000` (10KB per field)
+- Prevents metadata bloat
+
+### Pattern Matching Rules
+
+**Critical:** Patterns match the **full flattened key path**, not just the field name.
+
+n8n stores node output as nested structures like:
+```json
+{
+  "main": [
+    [
+      {
+        "json": {
+          "url": "https://example.com",
+          "secret_token": "abc123"
+        }
+      }
+    ]
+  ]
+}
+```
+
+This flattens to:
+- `main.0.0.json.url`
+- `main.0.0.json.secret_token`
+
+To match these, use wildcards:
+- ✅ `*url` matches `main.0.0.json.url`
+- ✅ `*secret*` matches `main.0.0.json.secret_token`
+- ❌ `url` does NOT match (no wildcard for path prefix)
+- ❌ `secret_token` does NOT match (no wildcard for path prefix)
+
+### Example Configurations
+
+**Extract all data from tool nodes:**
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="WebScraperTool,DatabaseQueryTool"
+n8n-shipper backfill --no-dry-run
+```
+
+**Extract only URLs and response bodies, exclude secrets:**
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="*Tool*"
+export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*url,*response*"
+export FILTER_AI_EXTRACTION_EXCLUDE_KEYS="*secret*,*password*,*key*"
+n8n-shipper backfill --no-dry-run
+```
+
+**Extract specific fields with size limit:**
+```bash
+export FILTER_AI_ONLY=true
+export FILTER_AI_EXTRACTION_NODES="Agent*"
+export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*input*,*output*"
+export FILTER_AI_EXTRACTION_MAX_VALUE_LEN=5000
+n8n-shipper backfill --no-dry-run
+```
+
+### Metadata Structure
+
+Extracted data appears in root span metadata under `n8n.extracted_nodes`:
+
+```json
+{
+  "n8n.extracted_nodes": {
+    "_meta": {
+      "extracted_count": 2,
+      "nodes_requested": 2,
+      "extraction_config": {
+        "include_keys": ["*url", "*token*"],
+        "exclude_keys": ["*secret*"]
+      }
+    },
+    "WebScraperTool": {
+      "runs": [
+        {
+          "run_index": 0,
+          "execution_status": "success",
+          "input": null,
+          "output": {
+            "main": [
+              [
+                {
+                  "json": {
+                    "url": "https://example.com",
+                    "token_count": 150
+                  }
+                }
+              ]
+            ]
+          },
+          "_truncated": false
+        }
+      ]
+    }
+  }
+}
+```
+
+### Troubleshooting
+
+**Problem:** Extraction returns empty or missing data
+
+**Solutions:**
+1. **Check node names** - Must exactly match node names in workflow, or use wildcards (`Tool*`)
+2. **Verify patterns** - Use wildcards for paths: `*fieldname` not `fieldname`
+3. **Check filter order** - Include filter applied first, then exclude filter
+4. **Inspect flattened paths** - Enable debug logging to see actual flattened key names
+
+**Problem:** Too much data in metadata
+
+**Solutions:**
+1. Use `FILTER_AI_EXTRACTION_MAX_VALUE_LEN` to limit value sizes
+2. Use `FILTER_AI_EXTRACTION_INCLUDE_KEYS` to whitelist only needed fields
+3. Use `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` to blacklist verbose fields like `*html*`
+
+**Problem:** Sensitive data leaked
+
+**Solutions:**
+1. Always set `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` with patterns like `*secret*,*password*,*token*,*key*`
+2. Test patterns with `--dry-run` first
+3. Binary data is always automatically stripped before extraction
 
 ---
 
