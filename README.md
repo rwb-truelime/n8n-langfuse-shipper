@@ -282,27 +282,27 @@ To match these, use wildcards:
 ### Example Configurations
 
 **Extract all data from tool nodes:**
-```bash
-export FILTER_AI_ONLY=true
-export FILTER_AI_EXTRACTION_NODES="WebScraperTool,DatabaseQueryTool"
+```fish
+set -x FILTER_AI_ONLY true
+set -x FILTER_AI_EXTRACTION_NODES "WebScraperTool,DatabaseQueryTool"
 n8n-shipper backfill --no-dry-run
 ```
 
 **Extract only URLs and response bodies, exclude secrets:**
-```bash
-export FILTER_AI_ONLY=true
-export FILTER_AI_EXTRACTION_NODES="*Tool*"
-export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*url,*response*"
-export FILTER_AI_EXTRACTION_EXCLUDE_KEYS="*secret*,*password*,*key*"
+```fish
+set -x FILTER_AI_ONLY true
+set -x FILTER_AI_EXTRACTION_NODES "*Tool*"
+set -x FILTER_AI_EXTRACTION_INCLUDE_KEYS "*url,*response*"
+set -x FILTER_AI_EXTRACTION_EXCLUDE_KEYS "*secret*,*password*,*key*"
 n8n-shipper backfill --no-dry-run
 ```
 
 **Extract specific fields with size limit:**
-```bash
-export FILTER_AI_ONLY=true
-export FILTER_AI_EXTRACTION_NODES="Agent*"
-export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*input*,*output*"
-export FILTER_AI_EXTRACTION_MAX_VALUE_LEN=5000
+```fish
+set -x FILTER_AI_ONLY true
+set -x FILTER_AI_EXTRACTION_NODES "Agent*"
+set -x FILTER_AI_EXTRACTION_INCLUDE_KEYS "*input*,*output*"
+set -x FILTER_AI_EXTRACTION_MAX_VALUE_LEN 5000
 n8n-shipper backfill --no-dry-run
 ```
 
