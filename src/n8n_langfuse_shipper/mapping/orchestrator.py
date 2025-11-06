@@ -1027,6 +1027,30 @@ def _map_execution(
 
     flattened = _flatten_runs(run_data)
     collected_assets: list[Any] = []
+    # Root span I/O surfacing (configured via env). We resolve settings lazily
+    # here to avoid importing config at module import time (determinism & tests).
+    from ..config import get_settings  # local import to keep orchestrator pure until call
+    try:
+        _settings = get_settings()
+        # Pre-normalize case-insensitive targets (lower) for matching speed.
+        target_input = (
+            _settings.ROOT_SPAN_INPUT_NODE.lower()  # type: ignore[union-attr]
+            if _settings.ROOT_SPAN_INPUT_NODE
+            else None
+        )
+        target_output = (
+            _settings.ROOT_SPAN_OUTPUT_NODE.lower()  # type: ignore[union-attr]
+            if _settings.ROOT_SPAN_OUTPUT_NODE
+            else None
+        )
+    except Exception:  # pragma: no cover - defensive failure
+        target_input = None
+        target_output = None
+    # Track last matched run index & serialized input/output (post-normalization)
+    root_input_val: Any = None
+    root_input_run_index: Optional[int] = None
+    root_output_val: Any = None
+    root_output_run_index: Optional[int] = None
     for _start_ts_raw, node_name, idx, run in flattened:
         wf_meta = ctx.wf_node_lookup.get(node_name, {})
         node_type = wf_meta.get("type") or node_name
@@ -1272,6 +1296,14 @@ def _map_execution(
             prompt_version=prompt_version,
         )
         trace.spans.append(span)
+        # Capture last run input/output for configured nodes (case-insensitive).
+        lowered_name = node_name.lower()
+        if target_input and lowered_name == target_input:
+            root_input_val = input_str  # Already normalized/truncated
+            root_input_run_index = idx
+        if target_output and lowered_name == target_output:
+            root_output_val = output_str
+            root_output_run_index = idx
         ctx.last_span_for_node[node_name] = span_id
         try:
             size_guard_ok = True
@@ -1283,6 +1315,30 @@ def _map_execution(
                 size_guard_ok = len(str(raw_output_obj)) < ctx.truncate_limit * 2
             if isinstance(raw_output_obj, dict) and size_guard_ok:
                 ctx.last_output_data[node_name] = raw_output_obj
+        except Exception:
+            pass
+    # Populate root span input/output if configured and captured. We avoid any
+    # mutation earlier to keep mapping deterministic; this simple assignment is
+    # transparent and preserves original sanitization/truncation semantics.
+    try:
+        if target_input:
+            if root_input_run_index is not None:
+                root_span.input = root_input_val
+                # Emit traceability metadata keys (do not duplicate execution id invariant).
+                root_span.metadata["n8n.root.input_node"] = _settings.ROOT_SPAN_INPUT_NODE  # type: ignore[name-defined]
+                root_span.metadata["n8n.root.input_run_index"] = root_input_run_index
+            else:
+                root_span.metadata["n8n.root.input_node_not_found"] = True
+        if target_output:
+            if root_output_run_index is not None:
+                root_span.output = root_output_val
+                root_span.metadata["n8n.root.output_node"] = _settings.ROOT_SPAN_OUTPUT_NODE  # type: ignore[name-defined]
+                root_span.metadata["n8n.root.output_run_index"] = root_output_run_index
+            else:
+                root_span.metadata["n8n.root.output_node_not_found"] = True
+    except Exception:  # pragma: no cover - defensive; failure should not abort mapping
+        try:
+            root_span.metadata.setdefault("n8n.root.population_error", True)
         except Exception:
             pass
     return trace, collected_assets

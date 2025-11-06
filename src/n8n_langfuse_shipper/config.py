@@ -162,6 +162,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------------- Root Span I/O Surfacing -----------------
+    # User-configurable node names whose LAST run input/output are copied verbatim
+    # (already normalized/truncated/binary-sanitized) onto the root span.
+    # Empty / unset values disable each direction independently. Matching is
+    # case-insensitive with surrounding whitespace trimmed for ergonomic UX.
+    ROOT_SPAN_INPUT_NODE: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional node name whose LAST run input will populate the root span input. "
+            "Case-insensitive; surrounding whitespace ignored."
+        ),
+    )
+    ROOT_SPAN_OUTPUT_NODE: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional node name whose LAST run output will populate the root span output. "
+            "Case-insensitive; surrounding whitespace ignored."
+        ),
+    )
+
     # ---------------- Filtering (AI-only spans) -----------------
     FILTER_AI_ONLY: bool = Field(
         default=False,
@@ -253,6 +273,23 @@ class Settings(BaseSettings):
                 return []
             return [s.strip() for s in v.split(",") if s.strip()]
         return []
+
+    @field_validator("ROOT_SPAN_INPUT_NODE", "ROOT_SPAN_OUTPUT_NODE", mode="before")
+    @classmethod
+    def normalize_root_span_nodes(cls, v: Any) -> Optional[str]:
+        """Trim whitespace and normalize blank -> None for root span node names.
+
+        Matching later occurs case-insensitively. We retain original casing for
+        metadata transparency when a match occurs (source node name emitted).
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            trimmed = v.strip()
+            if not trimmed:
+                return None
+            return trimmed
+        return None
 
     @model_validator(mode="after")
     def build_dsn_if_needed(self) -> "Settings":
