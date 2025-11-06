@@ -172,6 +172,18 @@ class Settings(BaseSettings):
             "AI nodes export root only with n8n.filter.no_ai_spans=true."
         ),
     )
+    # General workflow id filtering (independent of AI-only). Optional list of
+    # workflowId values; when non-empty only executions whose workflowId is in
+    # this list are fetched. Empty list means no filtering (process all).
+    FILTER_WORKFLOW_IDS: Any = Field(
+        default_factory=list,
+        description=(
+            "Optional comma-separated list of workflowId values to restrict "
+            "processing to. Example: FILTER_WORKFLOW_IDS=abc123,def456. Empty "
+            "list (default) means no workflowId filtering. This filter applies "
+            "at DB fetch stage and is orthogonal to FILTER_AI_ONLY."
+        ),
+    )
 
     # ---------------- Node Extraction (for AI-only filtering) -----------------
     # Use Any type to prevent Pydantic Settings JSON decoding; validator converts to list[str]
@@ -217,6 +229,7 @@ class Settings(BaseSettings):
         "FILTER_AI_EXTRACTION_NODES",
         "FILTER_AI_EXTRACTION_INCLUDE_KEYS",
         "FILTER_AI_EXTRACTION_EXCLUDE_KEYS",
+        "FILTER_WORKFLOW_IDS",
         mode="before",
     )
     @classmethod

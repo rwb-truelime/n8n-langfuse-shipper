@@ -56,6 +56,7 @@ class ExecutionSource:
         schema: Optional[str] = None,
         table_prefix: Optional[str] = None,
         require_execution_metadata: bool = False,
+        filter_workflow_ids: Optional[List[str]] = None,
     ):
         """Initialize the execution source and resolve database configuration.
 
@@ -96,6 +97,10 @@ class ExecutionSource:
         self._data_table_name = f"{self._table_prefix}execution_data"
         self._metadata_table_name = f"{self._table_prefix}execution_metadata"
         self._require_execution_metadata = require_execution_metadata
+        # Optional workflow id allow-list filtering (empty or None = no filter)
+        self._filter_workflow_ids = [
+            w.strip() for w in (filter_workflow_ids or []) if w.strip()
+        ]
         logger.info(
             "DB init: schema=%s prefix=%r entity_table=%s data_table=%s metadata_table=%s require_exec_meta=%s (explicit_prefix=%s)",
             self._schema,
@@ -155,6 +160,14 @@ class ExecutionSource:
         # Table names with prefix
         entity_table = f'"{self._schema}"."{self._entity_table_name}"'
         data_table = f'"{self._schema}"."{self._data_table_name}"'
+        wf_filter_clause = ""
+        params: List[Any] = []
+        if self._filter_workflow_ids:
+            # Use = ANY(%s) style array matching for safety & simplicity.
+            # psycopg will adapt list to array automatically.
+            wf_filter_clause = ' AND e."workflowId" = ANY(%s)'
+            params.append(self._filter_workflow_ids)
+
         if self._require_execution_metadata:
             meta_table = f'"{self._schema}"."{self._metadata_table_name}"'
             # Only select executions that have at least one metadata row referencing them (ANY key/value).
@@ -165,11 +178,11 @@ class ExecutionSource:
                 f'd."workflowData" AS "workflowData", d."data" AS data '
                 f'FROM {entity_table} e '
                 f'JOIN {data_table} d ON e.id = d."executionId" '
-                f'WHERE e.id > %s AND EXISTS (SELECT 1 FROM {meta_table} m WHERE m."executionId" = e.id) '
+                f'WHERE e.id > %s AND EXISTS (SELECT 1 FROM {meta_table} m WHERE m."executionId" = e.id){wf_filter_clause} '
                 'ORDER BY e.id ASC '
                 'LIMIT %s'
             )
-            params = (last_id, limit)
+            params = [last_id] + params + [limit]
         else:
             sql = (
                 f'SELECT e.id, e."workflowId" AS "workflowId", e.status, '
@@ -177,14 +190,14 @@ class ExecutionSource:
                 f'd."workflowData" AS "workflowData", d."data" AS data '
                 f'FROM {entity_table} e '
                 f'JOIN {data_table} d ON e.id = d."executionId" '
-                'WHERE e.id > %s '
+                f'WHERE e.id > %s{wf_filter_clause} '
                 'ORDER BY e.id ASC '
                 'LIMIT %s'
             )
-            params = (last_id, limit)
+            params = [last_id] + params + [limit]
         async with conn.cursor(row_factory=dict_row) as cur:
             try:
-                await cur.execute(sql, params)
+                await cur.execute(sql, tuple(params))
             except Exception as ex:  # noqa: BLE001 broad for friendly diagnostics then re-raise
                 # Rollback transaction if it's in failed state to allow subsequent attempts
                 try:

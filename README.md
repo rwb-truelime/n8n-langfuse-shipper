@@ -222,6 +222,7 @@ The tool is configured via environment variables, which can be overridden by com
 | `DEBUG_DUMP_DIR` | `--debug-dump-dir` | (none) | Directory to dump raw execution data JSON files when `DEBUG=true`. |
 | `TRUNCATE_FIELD_LEN` | `--truncate-len` | `0` | Maximum length for input/output fields. `0` disables truncation. Binary data is always stripped regardless of this setting. |
 | `FILTER_AI_ONLY` | `--filter-ai-only / --no-filter-ai-only` | `false` | If `true`, exports only AI-related spans (LangChain nodes) and their ancestors. Root span always included. |
+| `FILTER_WORKFLOW_IDS` | (none) | `""` | Comma-separated workflowId allow-list to restrict processing. Example: `abc123,def456`. Empty = no workflowId filtering. |
 | `FILTER_AI_EXTRACTION_NODES` | (none) | `""` | Comma-separated node names or wildcard patterns for extracting node data to root metadata when `FILTER_AI_ONLY=true`. Example: `Tool*,Agent*`. Empty disables extraction. |
 | `FILTER_AI_EXTRACTION_INCLUDE_KEYS` | (none) | `""` | Comma-separated wildcard patterns for keys to include in extracted data. Patterns match full flattened paths like `main.0.0.json.fieldname`. Example: `*url,*token*`. Empty includes all keys. |
 | `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` | (none) | `""` | Comma-separated wildcard patterns for keys to exclude from extracted data. Applied after include filter. Example: `*secret*,*password*`. Empty excludes nothing. |

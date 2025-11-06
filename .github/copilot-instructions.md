@@ -623,6 +623,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `TRUNCATE_FIELD_LEN` | `0` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
 | `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |
+| `FILTER_WORKFLOW_IDS` | `` | Optional comma-separated allow-list of workflowId values to fetch (e.g. `abc123,def456`). Empty = no workflowId filtering. |
 | `FILTER_AI_EXTRACTION_NODES` | `""` | Comma-separated node names or wildcard patterns (`Tool*,Agent*`) for extracting node data to root metadata when `FILTER_AI_ONLY=true`. Empty disables extraction. |
 | `FILTER_AI_EXTRACTION_INCLUDE_KEYS` | `""` | Comma-separated wildcard patterns (`*url,*token*`) for keys to include in extracted data. Empty includes all. Patterns match full flattened paths like `main.0.0.json.fieldname`. |
 | `FILTER_AI_EXTRACTION_EXCLUDE_KEYS` | `""` | Comma-separated wildcard patterns (`*secret*,*password*`) for keys to exclude from extracted data. Applied after include filter. Patterns match full flattened paths. |
@@ -656,6 +657,10 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 2. `DB_TABLE_PREFIX` must be explicitly set (blank allowed = no prefix).
 3. `TRUNCATE_FIELD_LEN=0` means disabled (still strip binary); positive value triggers truncation & size guard.
 4. CLI flags override env values for that invocation.
+
+### Workflow ID Filtering
+
+`FILTER_WORKFLOW_IDS` provides a coarse-grained execution inclusion control independent of AI-only filtering. When set to one or more comma-separated identifiers, only executions whose `workflowId` matches a listed value are selected at the database layer (`WHERE e."workflowId" = ANY($1)`). An empty value (default) adds no clause and processes all executions (subject to other filters like `REQUIRE_EXECUTION_METADATA`). The mapping, parent resolution, and AI heuristics remain unaffected; this is purely a fetch-stage allow-list. Tests: `test_workflow_filtering.py`.
 
 ---
 
@@ -1016,10 +1021,21 @@ n8n-langfuse-shipper/
 * ❌ NEVER split documentation across multiple files
 
 **REQUIRED Process for ANY code change:**
-1. Implement the feature with tests
-2. Update **copilot-instructions.md** with technical details (algorithms, invariants, test requirements)
-3. Update **README.md** with user-facing information (configuration, usage, examples)
-4. ALL changes MUST happen in the SAME PR
+1. Implement the feature and its tests (code + tests only in the initial commit(s)).
+2. Run full quality gates (ruff, mypy, pytest) ensuring green state and no behavioral drift.
+3. Present a concise summary of proposed documentation changes (what sections, new env vars,
+    metadata keys, invariants) for explicit user approval BEFORE editing docs.
+4. After user approval, update **copilot-instructions.md** (technical details, invariants,
+    algorithms, test requirements) and then **README.md** (user-facing usage, env vars,
+    examples, troubleshooting). These doc edits MUST occur only after code stability is
+    confirmed, never interleaved with speculative implementation.
+5. Combine the finalized doc updates with the already-stable code in the SAME PR prior to
+    merge. If user requests revisions, repeat approval cycle for altered doc sections.
+6. Do NOT modify documentation pre-approval; partial or speculative doc edits are forbidden.
+
+This staged approach enforces clarity: code correctness first, then authoritative docs with
+explicit stakeholder confirmation. Any deviation (e.g., updating docs before tests pass or
+without user approval) is treated as an invariant violation.
 
 **Rationale:**
 * Single source of truth prevents documentation drift

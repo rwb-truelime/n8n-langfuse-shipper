@@ -81,6 +81,8 @@ def map_execution_to_langfuse(
         record, truncate_limit=truncate_limit, collect_binaries=False
     )
     if filter_ai_only:
+        # Retrieve settings (tests handle cache clearing explicitly). Avoid
+        # unconditional cache clearing here to prevent cross-test env leakage.
         settings = get_settings()
         _apply_ai_filter(
             trace=trace,

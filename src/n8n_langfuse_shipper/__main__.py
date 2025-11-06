@@ -471,6 +471,7 @@ def backfill(
         schema=settings.DB_POSTGRESDB_SCHEMA or None,
         table_prefix=settings.DB_TABLE_PREFIX if settings.DB_TABLE_PREFIX is not None else None,
         require_execution_metadata=require_meta_flag,
+        filter_workflow_ids=settings.FILTER_WORKFLOW_IDS,
     )
 
     cp_path = checkpoint_file or settings.CHECKPOINT_FILE
