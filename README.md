@@ -142,8 +142,9 @@ The shipper automatically links LLM generation spans to their corresponding Lang
    - Falls back to alphabetical ordering if no match is found
 
 3. **Environment-Aware Version Resolution**:
-   - **Production**: Uses the exact version number from the workflow execution (no API queries)
-   - **Dev/Staging**: Queries the Langfuse API to resolve version labels (e.g., "latest") to actual version numbers
+   - **Production**: Uses the exact version number from the workflow execution
+   - **Dev/Staging**: Automatically maps to the latest active version in your dev/staging
+     Langfuse environment (prevents linkage failures when production versions don't exist)
 
 4. **OTLP Attribute Emission**: The prompt name and resolved version number are attached to the generation span as OpenTelemetry attributes (`langfuse.observation.prompt.name` and `langfuse.observation.prompt.version`), enabling the Langfuse UI to display prompt metadata.
 
@@ -178,14 +179,26 @@ export LANGFUSE_ENV=staging
 **Important**:
 - The environment value is **case-sensitive** and must be lowercase.
 - In production, the shipper never queries the Langfuse API (for security and performance).
-- In dev/staging, API queries timeout after 5 seconds by default (configurable via `PROMPT_VERSION_API_TIMEOUT`).
+- In dev/staging, API queries timeout after 5 seconds by default (configurable via
+  `PROMPT_VERSION_API_TIMEOUT`).
+- If credentials are missing from environment, the shipper falls back to reading a `.env`
+  file in the current directory (format: `KEY=VALUE`, one per line).
+
+### Troubleshooting
+
+**Prompt version too high / not found in dev:**
+- Ensure `LANGFUSE_ENV=dev` (not production).
+- Confirm credentials are set (check logs for "Created prompt version resolver").
+- Verify `LANGFUSE_HOST` points to your dev environment.
 
 ### Debug Metadata
 
 The shipper always attaches debug metadata to generation spans for troubleshooting:
-- `n8n.prompt.resolution_method`: How the version was resolved (`exact_match`, `fallback_latest`, `production_passthrough`, etc.)
+- `n8n.prompt.resolution_method`: How the version was resolved (`env_latest`,
+  `production_passthrough`, etc.)
 - `n8n.prompt.confidence`: Confidence level (`high`, `medium`, `low`, `none`)
-- `n8n.prompt.ancestor_distance`: Number of workflow nodes between the generation and prompt fetch
+- `n8n.prompt.ancestor_distance`: Number of workflow nodes between the generation and
+  prompt fetch
 - `n8n.prompt.fetch_node_name`: Name of the node that fetched the prompt
 
 ---
@@ -207,8 +220,8 @@ The tool is configured via environment variables, which can be overridden by com
 | `DB_POSTGRESDB_SCHEMA` | (none) | `public` | The database schema where n8n tables reside. |
 | `DB_TABLE_PREFIX` | (none) | **(required)** | Table prefix for n8n tables (e.g., `n8n_`). Set to `""` for no prefix. |
 | `LANGFUSE_HOST` | (none) | `https://cloud.langfuse.com` | The base URL for your Langfuse instance. |
-| `LANGFUSE_PUBLIC_KEY` | (none) | **(required)** | Your Langfuse public key. |
-| `LANGFUSE_SECRET_KEY` | (none) | **(required)** | Your Langfuse secret key. |
+| `LANGFUSE_PUBLIC_KEY` | (none) | **(required)** | Your Langfuse public key. Falls back to `.env` file. |
+| `LANGFUSE_SECRET_KEY` | (none) | **(required)** | Your Langfuse secret key. Falls back to `.env` file. |
 
 ### Processing Controls
 

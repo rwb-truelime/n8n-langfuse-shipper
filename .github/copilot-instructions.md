@@ -432,11 +432,10 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
    - **Requirements:** Both input text and prompt fingerprints must be ≥50 chars; shorter text returns empty fingerprint
 
 4. **Version Resolution (Environment-Aware API Query):**
-   - **Production Environment:** Pass-through; exports `prompt_version` exactly as fetched (assumes production fetches stable versions)
-   - **Dev/Staging Environments:** Queries Langfuse API `/api/public/prompts/<name>` to resolve version label/placeholder
-     - Exact match: version label found in API response → use that version number
-     - Fallback to latest: version not found but prompt exists → use latest active version
-     - Not found: prompt doesn't exist in Langfuse → metadata flag `n8n.prompt.resolution_method=not_found`
+   - **Production Environment:** Pass-through; exports `prompt_version` exactly as fetched
+   - **Dev/Staging Environments:** Always maps to latest active version for the prompt name
+     (resolution_method=`env_latest`); prevents linkage failures when production versions
+     don't exist in dev
    - Per-run caching: single API query per unique (name, version_input) tuple per execution
    - Timeout: `PROMPT_VERSION_API_TIMEOUT` (default 5s); failures → fallback with error metadata
    - Environment detection via `LANGFUSE_ENV` (case-sensitive lowercase: `production`, `dev`, `staging`)
@@ -450,7 +449,7 @@ Tests: `test_lmchat_system_prompt_strip.py` (6 tests covering dict format, strin
 **Debug Metadata (Always Attached):**
 - `n8n.prompt.original_version`: raw version string from fetch node output
 - `n8n.prompt.resolved_version`: final integer version after resolution
-- `n8n.prompt.resolution_method`: one of `exact_match`, `fallback_latest`, `production_passthrough`, `not_found`, `api_error`
+- `n8n.prompt.resolution_method`: one of `env_latest`, `production_passthrough`, `not_found`, `api_error`
 - `n8n.prompt.confidence`: `high` (exact match), `medium` (fallback), `low` (passthrough), `none` (not found)
 - `n8n.prompt.ancestor_distance`: hops from generation to prompt fetch node
 - `n8n.prompt.fetch_node_name`: name of ancestor node that fetched prompt
@@ -611,8 +610,8 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `DB_POSTGRESDB_SCHEMA` | `public` | DB schema. |
 | `DB_TABLE_PREFIX` | (required) | Mandatory table prefix. Set `n8n_` explicitly or blank for none. |
 | `LANGFUSE_HOST` | "" | Base Langfuse host; exporter appends OTLP path if needed. |
-| `LANGFUSE_PUBLIC_KEY` | "" | Langfuse public key (Basic Auth). |
-| `LANGFUSE_SECRET_KEY` | "" | Langfuse secret key (Basic Auth). |
+| `LANGFUSE_PUBLIC_KEY` | "" | Langfuse public key (Basic Auth). Falls back to `.env` file if unset. |
+| `LANGFUSE_SECRET_KEY` | "" | Langfuse secret key (Basic Auth). Falls back to `.env` file if unset. |
 
 ### Processing & Truncation
 

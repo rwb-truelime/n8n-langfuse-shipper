@@ -102,7 +102,7 @@ def test_resolution_source_metadata():
     assert source == "passthrough"
     assert version == 42
 
-    # Dev: exact_match
+    # Dev: env_latest (always latest even if original matches)
     dev_resolver = PromptVersionResolver(
         langfuse_host="https://test.com",
         langfuse_public_key="pk",
@@ -120,8 +120,8 @@ def test_resolution_source_metadata():
 
     with patch("httpx.get", return_value=mock_response):
         version, source = dev_resolver.resolve_version("Test", 42)
-        assert source == "exact_match"
-        assert version == 42
+    assert source == "env_latest"
+    assert version == 42
 
 
 def test_fallback_latest_in_non_production():
@@ -145,7 +145,7 @@ def test_fallback_latest_in_non_production():
         version, source = resolver.resolve_version("Fallback Test", 100)
 
         assert version == 12  # Latest available
-        assert source == "fallback_latest"
+    assert source == "env_latest"
 
 
 def test_environment_case_insensitive():
@@ -171,7 +171,7 @@ def test_environment_case_insensitive():
 
         # Should query API (uppercase not recognized)
         assert mock_get.call_count == 1
-        assert source == "exact_match"  # Found version 10 in response
+    assert source == "env_latest"  # Found version 10 in response
 
 
 def test_unknown_environment_treated_as_non_production():
@@ -247,8 +247,8 @@ def test_multiple_environments_separate_resolvers():
         # Dev: API call
         dev_version, dev_source = dev.resolve_version("Test", 10)
         assert mock_get.call_count == 1
-        # Version 10 not in mock response (only 5), so fallback to latest
-        assert dev_source == "fallback_latest"
+        # Version 10 not in mock response (only 5), so latest override
+        assert dev_source == "env_latest"
         assert dev_version == 5  # Latest available
 
 

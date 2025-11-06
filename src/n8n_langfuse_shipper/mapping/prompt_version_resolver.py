@@ -59,15 +59,22 @@ class PromptVersionResolver:
     ) -> tuple[int, str]:
         """Resolve prompt version for target environment.
 
+        In production we passthrough the original version (deterministic
+        replay guarantee). In non-production (dev/staging) we **always**
+        map to the latest available version for the prompt name to ensure
+        a valid linkage even when the production version does not exist.
+
         Args:
             prompt_name: Name of the prompt
-            original_version: Version from source environment (production)
+            original_version: Version embedded in execution data
 
         Returns:
-            Tuple of (resolved_version, resolution_source)
-            resolution_source: "passthrough" | "exact_match" | "fallback_latest"
+            (resolved_version, resolution_source)
+            resolution_source values:
+            - "passthrough" (production, unchanged)
+            - "env_latest" (non-production mapped to latest available)
+            - "not_found" (no versions available in target env)
         """
-        # Production: always use original version (no resolution)
         if self.environment == "production":
             logger.debug(
                 f"Environment is production; using original version "
@@ -75,9 +82,7 @@ class PromptVersionResolver:
             )
             return original_version, "passthrough"
 
-        # Non-production: check if version exists in target environment
         available_versions = self._get_available_versions(prompt_name)
-
         if not available_versions:
             logger.warning(
                 f"No versions found for prompt '{prompt_name}' in "
@@ -86,22 +91,18 @@ class PromptVersionResolver:
             )
             return original_version, "not_found"
 
-        # Check for exact match
-        if original_version in available_versions:
-            logger.debug(
-                f"Exact version match: prompt '{prompt_name}' version "
-                f"{original_version} exists in '{self.environment}'"
-            )
-            return original_version, "exact_match"
-
-        # Fallback to latest available version
         latest_version = max(available_versions)
-        logger.info(
-            f"Version {original_version} of prompt '{prompt_name}' not "
-            f"found in '{self.environment}'. Falling back to latest "
-            f"available version: {latest_version}"
-        )
-        return latest_version, "fallback_latest"
+        if latest_version != original_version:
+            logger.info(
+                f"Mapping prompt '{prompt_name}' version {original_version} "
+                f"→ latest {latest_version} for env '{self.environment}'"
+            )
+        else:
+            logger.debug(
+                f"Prompt '{prompt_name}' original version {original_version} "
+                f"already equals latest for env '{self.environment}'"
+            )
+        return latest_version, "env_latest"
 
     def _get_available_versions(self, prompt_name: str) -> List[int]:
         """Query Langfuse API for available prompt versions.
@@ -182,7 +183,7 @@ class PromptVersionResolver:
             self._version_cache[prompt_name] = []
             return []
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """Clear version cache. Useful between export runs."""
         self._version_cache.clear()
 
@@ -206,11 +207,38 @@ def create_version_resolver_from_env() -> Optional[PromptVersionResolver]:
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY")
 
+    # Fallback: attempt lightweight .env parsing if any credential missing.
+    # This allows running CLI with a populated project .env file without
+    # explicit fish exports. We purposely avoid adding a dependency.
+    if not all([host, public_key, secret_key]):
+        env_path = os.path.join(os.getcwd(), ".env")
+        try:
+            if os.path.isfile(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:  # noqa: PTH123
+                    for line in f:
+                        # Ignore comments / blank lines
+                        if not line.strip() or line.strip().startswith("#"):
+                            continue
+                        if "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("\n\r")
+                        # Do not override existing env variables
+                        if k and v and k not in os.environ:
+                            os.environ[k] = v
+                # Re-fetch after parsing
+                host = os.getenv("LANGFUSE_HOST")
+                public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+                secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Failed to parse .env for Langfuse credentials: {e}")
+
     if not all([host, public_key, secret_key]):
         logger.warning(
             "Langfuse credentials not fully configured. Prompt version "
             "resolution disabled. Set LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, "
-            "and LANGFUSE_SECRET_KEY environment variables."
+            "and LANGFUSE_SECRET_KEY environment variables (or ensure .env is parsed)."
         )
         return None
 

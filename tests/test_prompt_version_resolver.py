@@ -49,15 +49,14 @@ def test_production_passthrough(mock_resolver):
     assert len(resolver._version_cache) == 0
 
 
-def test_exact_version_match(mock_resolver):
-    """Verify exact version match when version exists in target env."""
-    # Mock API response (v2 API returns single prompt object)
+def test_env_latest_override_even_when_match(mock_resolver):
+    """Non-production always maps to latest even if original matches."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Test Prompt",
         "version": 58,
-        "labels": ["production", "latest"],
+        "labels": ["latest"],
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -67,28 +66,27 @@ def test_exact_version_match(mock_resolver):
         )
 
     assert resolved_version == 58
-    assert source == "exact_match"
+    assert source == "env_latest"
 
 
-def test_fallback_to_latest(mock_resolver):
-    """Verify fallback to latest when original version missing."""
-    # Mock API response (v2 API returns latest version)
+def test_env_latest_override_when_missing(mock_resolver):
+    """Non-production maps to latest when original missing."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Test Prompt",
-        "version": 15,  # Latest available in dev
-        "labels": ["production", "latest"],
+        "version": 15,
+        "labels": ["latest"],
     }
 
     with patch("httpx.get", return_value=mock_response):
         resolved_version, source = mock_resolver.resolve_version(
             prompt_name="Test Prompt",
-            original_version=58,  # Not available
+            original_version=58,
         )
 
-    assert resolved_version == 15  # Latest available
-    assert source == "fallback_latest"
+    assert resolved_version == 15
+    assert source == "env_latest"
 
 
 def test_caching_behavior(mock_resolver):
@@ -186,13 +184,13 @@ def test_empty_versions_list(mock_resolver):
     assert source == "not_found"
 
 
-def test_single_version_format(mock_resolver):
-    """Verify handling of single version (non-array) response format."""
+def test_single_version_format_env_latest(mock_resolver):
+    """Single version response still produces env_latest source."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Single Version Prompt",
-        "version": 42,  # Single version, not array
+        "version": 42,
     }
 
     with patch("httpx.get", return_value=mock_response):
@@ -202,7 +200,7 @@ def test_single_version_format(mock_resolver):
         )
 
     assert resolved_version == 42
-    assert source == "exact_match"
+    assert source == "env_latest"
 
 
 def test_clear_cache(mock_resolver):
@@ -243,16 +241,16 @@ def test_create_from_env_with_all_vars():
     assert resolver.timeout == 10
 
 
-def test_create_from_env_missing_credentials():
-    """Verify factory returns None when credentials missing."""
+def test_create_from_env_missing_credentials(tmp_path, monkeypatch):
+    """Verify factory returns None when credentials missing and no .env fallback."""
     env_vars = {
         "LANGFUSE_HOST": "https://test.langfuse.com",
         # Missing PUBLIC_KEY and SECRET_KEY
     }
-
+    # Ensure working directory has NO .env file to prevent fallback
+    monkeypatch.chdir(tmp_path)
     with patch.dict("os.environ", env_vars, clear=True):
         resolver = create_version_resolver_from_env()
-
     assert resolver is None
 
 
@@ -273,26 +271,24 @@ def test_create_from_env_default_values():
     assert resolver.timeout == 5  # Default
 
 
-def test_version_sorting(mock_resolver):
-    """Verify v2 API returns single latest version (no array sorting)."""
+def test_version_sorting_env_latest(mock_resolver):
+    """Non-production always returns env_latest latest version."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "name": "Sorted Test",
-        "version": 100,  # v2 API returns highest/latest version only
-        "labels": ["latest", "production"]
+        "version": 100,
+        "labels": ["latest"],
     }
 
     with patch("httpx.get", return_value=mock_response):
-        # Request version that doesn't exist
         resolved_version, source = mock_resolver.resolve_version(
             prompt_name="Sorted Test",
             original_version=999,
         )
 
-    # v2 API always returns latest version (100)
     assert resolved_version == 100
-    assert source == "fallback_latest"
+    assert source == "env_latest"
 
 
 def test_auth_credentials_passed(mock_resolver):
