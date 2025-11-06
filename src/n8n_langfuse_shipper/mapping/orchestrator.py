@@ -47,7 +47,6 @@ import logging
 import re
 from datetime import timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-import os
 from uuid import uuid5
 
 from ..models.langfuse import LangfuseSpan, LangfuseTrace
@@ -802,22 +801,10 @@ def _apply_ai_filter(
     try:
         # Extract node data BEFORE filtering removes spans
         if extraction_nodes:
-            # Test isolation helper: if include patterns appear to be a lingering
-            # "binary metadata only" default and the env var was NOT explicitly
-            # set for this invocation, treat them as empty (capture all keys).
-            sentinel = {"*fileName*", "*mimeType*", "*fileSize*"}
-            if (
-                "FILTER_AI_EXTRACTION_INCLUDE_KEYS" not in os.environ
-                and include_patterns
-                and set(include_patterns).issubset(sentinel)
-            ):
-                include_effective: list[str] = []
-            else:
-                include_effective = include_patterns
             extracted_data = _extract_nodes_data(
                 run_data=run_data,
                 extraction_nodes=extraction_nodes,
-                include_patterns=include_effective,
+                include_patterns=include_patterns,
                 exclude_patterns=exclude_patterns,
                 max_value_len=max_value_len,
             )

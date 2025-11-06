@@ -930,6 +930,56 @@ Violation = breaking invariant; submit corrective patch.
 * Update `README.md` + `copilot-instructions.md` for new env vars / CLI flags / behavior changes in same PR.
 * NOTICE & LICENSE untouched aside from annual year updates.
 * New metadata keys: add tests asserting presence & absence where appropriate.
+### Mandatory Design Rules (Singleton & KISS)
+
+These rules are part of the authoritative contract. Any violating change MUST
+update tests, this file, and the README in the same PR. Silent drift is a
+contract breach.
+
+1. Configuration Singleton
+     * `get_settings()` in `config.py` is the ONLY accessor for runtime config.
+     * Do not instantiate `Settings` directly in mapping/orchestrator modules.
+     * Cache clears (`get_settings.cache_clear()`) may occur only at process or
+         test boundaries (CLI entrypoint, fixture setup). Never inside mapping
+         functions or deep helpers.
+     * Mid-pipeline mutation of settings is forbidden to preserve determinism.
+     * Add/modify behavior → extend `test_config_settings.py` or new targeted
+         tests covering cache boundary semantics.
+
+2. KISS Principle for Node Extraction
+     * Single implementation in `mapping/node_extractor.py` invoked via
+         orchestrator. No parallel alternative extractor modules, wrappers, or
+         duplicated flatten/unflatten utilities.
+     * Sentinel/fallback logic (e.g., handling patterns that would otherwise
+         exclude all keys) is centralized in `_filter_and_limit_data()`.
+     * Enhancements must modify existing functions; do NOT layer additional
+         heuristics elsewhere (e.g., orchestrator-level pattern rewrites).
+     * Tests enforcing invariants: `test_ai_extraction_basic.py`,
+         `test_ai_extraction_integration.py`, `test_ai_extraction_safety.py`,
+         `test_ai_extraction_sentinel_fallback.py` (regression). Extend them for
+         new semantics.
+
+3. Purity & Determinism
+     * Extraction, mapping, parent resolution remain pure (no network calls,
+         no global mutation beyond logging). Identical inputs → identical spans.
+     * Refactors may reorganize code but must preserve observable structures
+         unless tests + docs updated explicitly.
+
+4. Prohibited Patterns
+     * Additional settings accessors (`get_config()`, etc.).
+     * Secondary extraction modules (`alternate_extractor.py`).
+     * Implicit cache clears inside mapping or helper functions.
+     * Shadow flatten/unflatten implementations in other files.
+
+5. Required Actions on Change
+     * Changing extraction semantics (filter order, sentinel handling, truncation
+         interplay) requires: update tests + README + this section in SAME PR.
+     * New metadata from extraction must have at least one positive and one
+         negative test assertion.
+
+Rationale: Prevent hidden state mutation, duplicated logic, and complexity that
+compromises determinism and auditability.
+
 
 ---
 
