@@ -1,14 +1,14 @@
 {
   // VS Code debug configurations for n8n-langfuse-shipper
-  // Uses Python module entrypoint (python -m src backfill ...)
+  // Uses Python module entrypoint (python -m n8n-shipper backfill ...)
   // Loads environment variables from .env if present.
   "version": "0.2.0",
   "configurations": [
     {
       "name": "Backfill (Dry Run)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
-      "module": "src",
+      "module": "n8n_langfuse_shipper",  // Use actual package name for -m invocation
       "args": [
         "backfill",
         "--limit",
@@ -22,9 +22,9 @@
     },
     {
       "name": "Backfill (Real Export)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
-      "module": "src",
+      "module": "n8n_langfuse_shipper",
       "args": [
         "backfill",
         "--limit",
@@ -38,9 +38,9 @@
     },
     {
       "name": "Backfill (Start After ID)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
-      "module": "src",
+      "module": "n8n_langfuse_shipper",
       "args": [
         "backfill",
         "--start-after-id",
@@ -56,17 +56,33 @@
     },
     {
       "name": "Run Module (Custom Args Prompt)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
-      "module": "src",
+      "module": "n8n_langfuse_shipper",
       "args": [],
       "justMyCode": true,
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal"
     },
     {
+      "name": "Backfill (Entry Script)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/n8n_langfuse_shipper/__main__.py",
+      "args": [
+        "backfill",
+        "--limit",
+        "5",
+        "--dry-run",
+        "--debug"
+      ],
+      "justMyCode": true,
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "PyTest (All Tests)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
       "module": "pytest",
       "args": ["-q"],
@@ -76,7 +92,7 @@
     },
     {
       "name": "PyTest (Single File Prompt)",
-  "type": "debugpy",
+      "type": "debugpy",
       "request": "launch",
       "module": "pytest",
       "args": [],
