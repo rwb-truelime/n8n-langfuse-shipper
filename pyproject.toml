@@ -1,6 +1,6 @@
 [project]
 name = "n8n-langfuse-shipper"
-version = "0.4.1"
+version = "0.5.0"
 description = "High-throughput backfill service to ship n8n execution data to Langfuse via OpenTelemetry"
 authors = [ { name = "Rodger Blom", email = "rodger.blom@truelime.nl" } ]
 requires-python = ">=3.12"
