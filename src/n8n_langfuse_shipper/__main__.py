@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import typer
 from pydantic import ValidationError
@@ -103,11 +103,49 @@ def _build_execution_data(
         # Not implemented yet; placeholder for future extension.
         logger.debug("attempt_decompress flag set but decompression logic not implemented; skipping")
 
-    # Special case: some n8n instances store a pointer-compressed array (list) root instead of dict.
+    # Pointer-compressed (flatted) format: detect list root and attempt upstream flatted parse.
+    # If the DB driver already decoded JSON into a list, re-serialize for parser.
     if isinstance(raw_data, list):
-        decoded = _decode_compact_pointer_execution(raw_data, debug=debug, execution_id=execution_id)
-        if decoded is not None:
-            return decoded
+        try:
+            import json
+            from .vendor.flatted import parse as flatted_parse  # type: ignore
+            from .vendor import flatted as _flatted_mod  # for _String unwrap
+            def _sanitize_flatted(val: Any) -> Any:
+                # Recursively convert leftover _String wrapper instances to raw string values.
+                if isinstance(val, getattr(_flatted_mod, "_String")):
+                    return val.value
+                if isinstance(val, list):
+                    return [_sanitize_flatted(x) for x in val]
+                if isinstance(val, dict):
+                    return {k: _sanitize_flatted(v) for k, v in val.items()}
+                return val
+            serialized = json.dumps(raw_data)
+            parsed_root = flatted_parse(serialized)
+            parsed_root = _sanitize_flatted(parsed_root)
+            # Expect structure: root.resultData.runData
+            run_data = (
+                parsed_root.get("resultData", {})
+                .get("runData", {})
+            ) if isinstance(parsed_root, dict) else {}
+            if isinstance(run_data, dict) and run_data:
+                if debug:
+                    logger.info(
+                        "Execution %s: Parsed flatted pointer-compressed format with %d node keys",
+                        execution_id,
+                        len(run_data),
+                    )
+                return ExecutionData(
+                    executionData=ExecutionDataDetails(
+                        resultData=ResultData(runData=run_data)
+                    )
+                )
+        except Exception as e:  # pragma: no cover - fail open
+            if debug:
+                logger.warning(
+                    "Execution %s: flatted parse failed (%s); falling back to other paths",
+                    execution_id,
+                    e,
+                )
 
     if not raw_data or not isinstance(raw_data, dict):
         # Fallback: attempt to derive runData from workflowData raw if provided (edge cases / custom storage)
@@ -192,166 +230,6 @@ def _build_execution_data(
     return empty
 
 
-def _decode_compact_pointer_execution(
-    pool: list[Any],
-    debug: bool = False,
-    execution_id: Optional[int] = None,
-) -> Optional[ExecutionData]:
-    """Decode the "pointer-compressed" execution format into `ExecutionData`.
-
-    Some n8n versions store execution data in a compact format where the top-level
-    object is a list (the "pool"). Objects within this list reference each other
-    using stringified integer indices (e.g., a key with value "4" points to
-    `pool[4]`).
-
-    This function recursively resolves these pointers to reconstruct the full
-    `runData` structure. It includes memoization and cycle detection to handle
-    complex or malformed data safely.
-
-    Args:
-        pool: The top-level list from the `data` column.
-        debug: If True, enables verbose logging of the decoding process.
-        execution_id: The ID of the execution, for logging purposes.
-
-    Returns:
-        A parsed `ExecutionData` model if decoding is successful, otherwise None.
-    """
-    logger = logging.getLogger(__name__)
-    if not pool or not isinstance(pool, list) or not pool:
-        return None
-    if not isinstance(pool[0], dict):
-        return None
-
-    # Generic pointer resolver with memoization & cycle guard
-    memo: dict[int, Any] = {}
-    resolving: set[int] = set()
-
-    def resolve_index(i: int) -> Any:
-        if i in memo:
-            return memo[i]
-        if i < 0 or i >= len(pool):
-            return None
-        if i in resolving:  # cycle
-            return None
-        resolving.add(i)
-        obj = pool[i]
-        res = _resolve_value(obj)
-        resolving.remove(i)
-        memo[i] = res
-        return res
-
-    def _resolve_value(v: Any) -> Any:
-        if isinstance(v, str) and v.isdigit():
-            return resolve_index(int(v))
-        if isinstance(v, list):
-            return [_resolve_value(x) for x in v]
-        if isinstance(v, dict):
-            return {k: _resolve_value(val) for k, val in v.items()}
-        return v
-
-    root = pool[0]
-    # Locate resultData pointer (could be under 'resultData' key or nested variant)
-    result_ptr = root.get("resultData")
-    result_obj = _resolve_value(result_ptr) if result_ptr is not None else None
-    if not isinstance(result_obj, dict):
-        return None
-    run_data_ptr = result_obj.get("runData")
-    run_data_obj = _resolve_value(run_data_ptr) if run_data_ptr is not None else None
-    if not isinstance(run_data_obj, dict):
-        return None
-
-    # Collect NodeRun compatible structures
-    from .models.n8n import ExecutionData, ExecutionDataDetails, NodeRun, NodeRunSource, ResultData
-    node_run_map: dict[str, list[NodeRun]] = {}
-
-    def collect_runs(val: Any) -> List[dict[str, Any]]:
-        out: List[dict[str, Any]] = []
-        if isinstance(val, dict):
-            if "startTime" in val and "executionStatus" in val:
-                out.append(val)
-            else:
-                # explore values
-                for sub in val.values():
-                    out.extend(collect_runs(sub))
-        elif isinstance(val, list):
-            for item in val:
-                out.extend(collect_runs(item))
-        return out
-
-    total_runs = 0
-    for node, ref in run_data_obj.items():
-        resolved = _resolve_value(ref)
-        run_dicts = collect_runs(resolved)
-        node_runs: list[NodeRun] = []
-        for rd in run_dicts:
-            try:
-                start_time = int(rd.get("startTime", 0))
-                execution_time = int(rd.get("executionTime", rd.get("execution_time", 0)) or 0)
-                status = str(rd.get("executionStatus") or rd.get("status") or "unknown")
-                data_resolved = _resolve_value(rd.get("data"))
-                input_override_resolved = _resolve_value(rd.get("inputOverride")) if rd.get("inputOverride") else None
-                source_resolved = _resolve_value(rd.get("source"))
-                sources: list[NodeRunSource] = []
-                if isinstance(source_resolved, dict):
-                    if any(k.startswith("previousNode") for k in source_resolved.keys()):
-                        pn = source_resolved.get("previousNode")
-                        if not isinstance(pn, (str, type(None))):
-                            pn = None
-                        pnr = source_resolved.get("previousNodeRun")
-                        if isinstance(pnr, str) and pnr.isdigit():
-                            pnr = int(pnr)
-                        if not isinstance(pnr, (int, type(None))):
-                            pnr = None
-                        sources.append(NodeRunSource(previousNode=pn, previousNodeRun=pnr))
-                elif isinstance(source_resolved, list):
-                    for s in source_resolved:
-                        if isinstance(s, dict) and ("previousNode" in s or "previousNodeRun" in s):
-                            pn = s.get("previousNode")
-                            if not isinstance(pn, (str, type(None))):
-                                pn = None
-                            pnr = s.get("previousNodeRun")
-                            if isinstance(pnr, str) and pnr.isdigit():
-                                pnr = int(pnr)
-                            if not isinstance(pnr, (int, type(None))):
-                                pnr = None
-                            sources.append(NodeRunSource(previousNode=pn, previousNodeRun=pnr))
-                # Token usage may be referenced separately; attempt inline
-                token_usage = None
-                if isinstance(data_resolved, dict) and "tokenUsage" not in data_resolved:
-                    # Heuristic: rd may have tokenUsage pointer
-                    tu = _resolve_value(rd.get("tokenUsage"))
-                    if isinstance(tu, dict):
-                        data_resolved["tokenUsage"] = tu
-                node_run = NodeRun(
-                    startTime=start_time,
-                    executionTime=execution_time,
-                    executionStatus=status,
-                    data=data_resolved if isinstance(data_resolved, dict) else {"value": data_resolved},
-                    source=sources or None,
-                    inputOverride=input_override_resolved if isinstance(input_override_resolved, dict) else None,
-                    error=None,
-                )
-                node_runs.append(node_run)
-            except Exception as e:  # pragma: no cover - best effort decoding
-                logger.debug("Failed to decode compact run for node %s: %s", node, e)
-        if node_runs:
-            node_run_map[node] = node_runs
-            total_runs += len(node_runs)
-
-    if not node_run_map:
-        return None
-    if debug:
-        logger.info(
-            "Execution %s: Decoded compact pointer execution format: nodes=%d runs=%d",
-            execution_id,
-            len(node_run_map),
-            total_runs,
-        )
-    return ExecutionData(
-        executionData=ExecutionDataDetails(
-            resultData=ResultData(runData=node_run_map)
-        )
-    )
 
 
 @app.callback()
