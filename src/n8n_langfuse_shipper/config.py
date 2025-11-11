@@ -73,7 +73,7 @@ class Settings(BaseSettings):
 
     # Checkpointing
     CHECKPOINT_FILE: str = Field(
-        default=".backfill_checkpoint",
+        default=".shipper_checkpoint",
         description="Path to file storing last processed execution id",
     )
 

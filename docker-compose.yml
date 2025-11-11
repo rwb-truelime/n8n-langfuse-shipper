@@ -29,7 +29,7 @@ services:
       OTEL_SCHEDULED_DELAY_MILLIS: ${OTEL_SCHEDULED_DELAY_MILLIS:-200}
       EXPORT_QUEUE_SOFT_LIMIT: ${EXPORT_QUEUE_SOFT_LIMIT:-5000}
       EXPORT_SLEEP_MS: ${EXPORT_SLEEP_MS:-75}
-      CHECKPOINT_FILE: /data/.backfill_checkpoint
+      CHECKPOINT_FILE: /data/.shipper_checkpoint
     volumes:
       - shipper-checkpoint:/data
     # Override default dry-run to perform real export (remove --no-dry-run for dry runs)
@@ -39,7 +39,7 @@ services:
     # networks:
     #   - existing
 
-  # Optional local Postgres for experimentation (NOT for production backfill scale)
+  # Optional local Postgres for experimentation (NOT for production shipper scale)
   # postgres:
   #   image: postgres:16
   #   environment:

@@ -1,11 +1,11 @@
 [project]
 name = "n8n-langfuse-shipper"
 version = "0.5.0"
-description = "High-throughput backfill service to ship n8n execution data to Langfuse via OpenTelemetry"
+description = "High-throughput shipper service to ship n8n execution data to Langfuse via OpenTelemetry"
 authors = [ { name = "Rodger Blom", email = "rodger.blom@truelime.nl" } ]
 requires-python = ">=3.12"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 
 # Core runtime dependencies
 dependencies = [

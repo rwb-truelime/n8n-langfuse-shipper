@@ -1,6 +1,6 @@
 """Main CLI entry point for the n8n-langfuse-shipper.
 
-This module provides a command-line interface using Typer to run the backfill
+This module provides a command-line interface using Typer to run the shipper
 process. It orchestrates the entire ETL pipeline:
 1.  Loading configuration and checkpoints.
 2.  Streaming execution records from the database (n8n_langfuse_shipper.db).
@@ -47,7 +47,7 @@ from .models.n8n import (
 )
 from .shipper import export_trace, shutdown_exporter
 
-app = typer.Typer(help="n8n to Langfuse backfill shipper CLI")
+app = typer.Typer(help="n8n to Langfuse shipper shipper CLI")
 
 
 def _build_execution_data(
@@ -236,13 +236,13 @@ def _build_execution_data(
 def main() -> None:  # pragma: no cover - simple callback
     """n8n-langfuse-shipper CLI.
 
-    Use a subcommand like 'backfill' to run a process.
+    Use a subcommand like 'shipper' to run a process.
     """
     pass
 
 
-@app.command(help="Run a single backfill cycle (Iteration 2 basic mapping).")
-def backfill(
+@app.command(help="Run a single shipper cycle (Iteration 2 basic mapping).")
+def shipper(
     start_after_id: Optional[int] = typer.Option(
         None, help="Start processing executions with id greater than this value (overrides checkpoint)"
     ),
@@ -302,7 +302,7 @@ def backfill(
         ),
     ),
 ) -> None:
-    """Run a backfill cycle to process and export n8n executions.
+    """Run a shipper cycle to process and export n8n executions.
 
     This command orchestrates the ETL process:
     - Determines the starting execution ID from the checkpoint or CLI argument.
@@ -314,7 +314,7 @@ def backfill(
     logging.basicConfig(level=settings.LOG_LEVEL)
     if not os.getenv("SUPPRESS_SHIPPER_CREDIT"):
         typer.echo("Powered by n8n-langfuse-shipper (Apache 2.0) - https://github.com/rwb-truelime/n8n-langfuse-shipper")
-    typer.echo("Starting backfill with mapping...")
+    typer.echo("Starting shipper with mapping...")
 
     # Check sys.argv to detect if flags were explicitly provided
     # This allows respecting .env settings when flags are omitted

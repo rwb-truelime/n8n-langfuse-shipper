@@ -3,7 +3,7 @@
 ## Quick Reference (AI Agent Onboarding)
 
 **What**: Python ETL pipeline streaming n8n PostgreSQL execution history → Langfuse traces via OTLP
-**Why**: Backfill historical workflow executions for AI observability and debugging
+**Why**: shipper historical workflow executions for AI observability and debugging
 **Stack**: Python 3.12+, Pydantic models, OpenTelemetry SDK, psycopg3, Fish shell
 
 ### 5-Minute Orientation
@@ -42,7 +42,7 @@ pytest tests/test_mapper.py -v
 mypy src/n8n_langfuse_shipper/mapping/
 
 # Dry-run first 25 executions
-n8n-shipper backfill --limit 25 --dry-run
+n8n-shipper shipper --limit 25 --dry-run
 
 # Check for line length violations
 ruff check . --select E501
@@ -57,7 +57,7 @@ pytest tests/test_mapper.py -v
 mypy src/n8n_langfuse_shipper/mapping/
 
 # Dry-run first 25 executions
-n8n-shipper backfill --limit 25 --dry-run
+n8n-shipper shipper --limit 25 --dry-run
 
 # Check for line length violations
 ruff check . --select E501
@@ -71,7 +71,7 @@ Mapper logic extracted into `src/n8n_langfuse_shipper/mapping/` subpackage (comp
 ---
 
 ## Purpose
-Python-based microservice for high-throughput backfill of historical n8n execution data from PostgreSQL to Langfuse via OpenTelemetry (OTLP) endpoint. Focus: correctness, performance, robustness for large-scale data migration.
+Python-based microservice for high-throughput shipper of historical n8n execution data from PostgreSQL to Langfuse via OpenTelemetry (OTLP) endpoint. Focus: correctness, performance, robustness for large-scale data migration.
 
 ## Document Sync & Version Policy
 This file is a normative contract. Any behavioral change to mapping, identifiers, timestamps, parent resolution, truncation, binary stripping, generation detection, or environment semantics MUST be reflected here and in matching tests plus the README in the same pull request. Tests are the authority when ambiguity arises; if tests and this document diverge, update this document. Do not introduce silent behavior drift.
@@ -588,7 +588,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 
 **Checkpointing:** `checkpoint.py` module atomically stores last successfully processed `executionId` in file.
 
-**CLI Interface:** Use `Typer`. The `backfill` command supports:
+**CLI Interface:** Use `Typer`. The `shipper` command supports:
 * `--start-after-id`, `--limit`, `--dry-run`, `--debug`, `--debug-dump-dir`
 * `--truncate-len` (0 disables truncation)
 * `--require-execution-metadata` (only process if row exists in `<prefix>execution_metadata` with matching executionId)
@@ -618,7 +618,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FETCH_BATCH_SIZE` | `100` | Max executions fetched per DB batch. |
-| `CHECKPOINT_FILE` | `.backfill_checkpoint` | Path for last processed execution id. |
+| `CHECKPOINT_FILE` | `.shipper_checkpoint` | Path for last processed execution id. |
 | `TRUNCATE_FIELD_LEN` | `0` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
 | `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |

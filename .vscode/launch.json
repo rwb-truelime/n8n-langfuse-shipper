@@ -1,16 +1,16 @@
 {
   // VS Code debug configurations for n8n-langfuse-shipper
-  // Uses Python module entrypoint (python -m n8n-shipper backfill ...)
+  // Uses Python module entrypoint (python -m n8n-shipper shipper ...)
   // Loads environment variables from .env if present.
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Backfill (Dry Run)",
+      "name": "Shipper (Dry Run)",
       "type": "debugpy",
       "request": "launch",
       "module": "n8n_langfuse_shipper",  // Use actual package name for -m invocation
       "args": [
-        "backfill",
+        "shipper",
         "--limit",
         "25",
         "--dry-run",
@@ -21,12 +21,12 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Backfill (Real Export)",
+      "name": "Shipper (Real Export)",
       "type": "debugpy",
       "request": "launch",
       "module": "n8n_langfuse_shipper",
       "args": [
-        "backfill",
+        "shipper",
         "--limit",
         "100",
         "--no-dry-run",
@@ -37,12 +37,12 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Backfill (Start After ID)",
+      "name": "Shipper (Start After ID)",
       "type": "debugpy",
       "request": "launch",
       "module": "n8n_langfuse_shipper",
       "args": [
-        "backfill",
+        "shipper",
         "--start-after-id",
         "340344",
         "--limit",
@@ -65,12 +65,12 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "Backfill (Entry Script)",
+      "name": "Shipper (Entry Script)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/src/n8n_langfuse_shipper/__main__.py",
       "args": [
-        "backfill",
+        "shipper",
         "--limit",
         "5",
         "--dry-run",

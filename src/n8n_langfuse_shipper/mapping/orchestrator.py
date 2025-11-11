@@ -1162,7 +1162,7 @@ def _map_execution(
             # Acquire next tuple if available.
             # Note: using enumerate at top would require structural change; we
             # keep local search for minimal diff & clarity (list sizes are
-            # small enough for backfill throughput constraints).
+            # small enough for shipper throughput constraints).
             # Optimize early exit when first element mismatch.
             # This light linear scan stays bounded by node count (< few
             # hundred) and only executes for generation spans.

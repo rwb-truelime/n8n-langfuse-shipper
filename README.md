@@ -6,7 +6,7 @@
 ![Type Checking](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint](https://img.shields.io/badge/ruff-enabled-brightgreen)
 
-This is a high-performance tool for backfilling historical n8n workflow executions into [Langfuse](https://langfuse.com/) for observability. It reads execution data directly from your n8n PostgreSQL database, transforms it into Langfuse traces, and sends it to your Langfuse project.
+This is a high-performance tool for shippering historical n8n workflow executions into [Langfuse](https://langfuse.com/) for observability. It reads execution data directly from your n8n PostgreSQL database, transforms it into Langfuse traces, and sends it to your Langfuse project.
 
 It's designed for developers and teams who use n8n for AI-powered workflows and need to analyze, debug, or monitor their past executions in Langfuse.
 
@@ -14,7 +14,7 @@ It's designed for developers and teams who use n8n for AI-powered workflows and 
 
 ## Key Features
 
-- **High-Throughput Backfill**: Efficiently processes and exports thousands of n8n executions.
+- **High-Throughput shipper**: Efficiently processes and exports thousands of n8n executions.
 - **Rich Trace Data**: Intelligently maps n8n concepts to Langfuse, including:
     - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes.
     - **Generation Spans**: Automatically detects LLM calls, extracting model names and token usage.
@@ -75,17 +75,17 @@ Get up and running in a few steps.
     Process the first 25 executions without sending any data to Langfuse. This is great for testing your configuration.
 
     ```bash
-    n8n-shipper backfill --limit 25 --dry-run
+    n8n-shipper shipper --limit 25 --dry-run
     ```
 
 4.  **Run a Real Export**
     To perform a real export, use the `--no-dry-run` flag.
 
     ```bash
-    n8n-shipper backfill --limit 100 --no-dry-run
+    n8n-shipper shipper --limit 100 --no-dry-run
     ```
 
-The shipper creates a `.backfill_checkpoint` file to remember the last exported execution. The next time you run the command, it will automatically resume from where it left off.
+The shipper creates a `.shipper_checkpoint` file to remember the last exported execution. The next time you run the command, it will automatically resume from where it left off.
 
 ---
 
@@ -228,7 +228,7 @@ The tool is configured via environment variables, which can be overridden by com
 | Environment Variable | CLI Argument | Default | Description |
 |---|---|---|---|
 | `FETCH_BATCH_SIZE` | (none) | `100` | Number of executions to fetch from the database at once. |
-| `CHECKPOINT_FILE` | `--checkpoint-file` | `.backfill_checkpoint` | Path to the file that stores the last processed execution ID. |
+| `CHECKPOINT_FILE` | `--checkpoint-file` | `.shipper_checkpoint` | Path to the file that stores the last processed execution ID. |
 | `DRY_RUN` | `--dry-run / --no-dry-run` | `true` | If `true`, only mapping is performed (no export to Langfuse). Set to `false` or use `--no-dry-run` to actually export. |
 | `DEBUG` | `--debug / --no-debug` | `false` | Enable special debug features for execution data parsing (e.g., pointer decoding). **This is NOT the logging level.** |
 | `ATTEMPT_DECOMPRESS` | `--attempt-decompress / --no-attempt-decompress` | `false` | Attempt decompression of execution data payloads. |
@@ -331,14 +331,14 @@ To match these, use wildcards:
 ```fish
 set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "WebScraperTool,DatabaseQueryTool"
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 *Bash/Zsh:*
 ```bash
 export FILTER_AI_ONLY=true
 export FILTER_AI_EXTRACTION_NODES="WebScraperTool,DatabaseQueryTool"
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 **Extract only URLs and response bodies, exclude secrets:**
@@ -349,7 +349,7 @@ set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "*Tool*"
 set -x FILTER_AI_EXTRACTION_INCLUDE_KEYS "*url,*response*"
 set -x FILTER_AI_EXTRACTION_EXCLUDE_KEYS "*secret*,*password*,*key*"
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 *Bash/Zsh:*
@@ -358,7 +358,7 @@ export FILTER_AI_ONLY=true
 export FILTER_AI_EXTRACTION_NODES="*Tool*"
 export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*url,*response*"
 export FILTER_AI_EXTRACTION_EXCLUDE_KEYS="*secret*,*password*,*key*"
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 **Extract specific fields with size limit:**
@@ -369,7 +369,7 @@ set -x FILTER_AI_ONLY true
 set -x FILTER_AI_EXTRACTION_NODES "Agent*"
 set -x FILTER_AI_EXTRACTION_INCLUDE_KEYS "*input*,*output*"
 set -x FILTER_AI_EXTRACTION_MAX_VALUE_LEN 5000
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 *Bash/Zsh:*
@@ -378,7 +378,7 @@ export FILTER_AI_ONLY=true
 export FILTER_AI_EXTRACTION_NODES="Agent*"
 export FILTER_AI_EXTRACTION_INCLUDE_KEYS="*input*,*output*"
 export FILTER_AI_EXTRACTION_MAX_VALUE_LEN=5000
-n8n-shipper backfill --no-dry-run
+n8n-shipper shipper --no-dry-run
 ```
 
 ### Metadata Structure
@@ -450,7 +450,7 @@ Extracted data appears in root span metadata under `n8n.extracted_nodes`:
 
 ## Command-Line Usage
 
-The main command is `backfill`.
+The main command is `shipper`.
 
 ```bash
 # Show all available commands and options
@@ -461,44 +461,44 @@ n8n-shipper --help
 
 **Start a new export, processing up to 500 executions.**
 ```bash
-n8n-shipper backfill --limit 500 --no-dry-run
+n8n-shipper shipper --limit 500 --no-dry-run
 ```
 
 **Resume an export, starting after a specific execution ID.**
 This overrides the checkpoint file.
 ```bash
-n8n-shipper backfill --start-after-id 42000 --no-dry-run
+n8n-shipper shipper --start-after-id 42000 --no-dry-run
 ```
 
 **Export only executions that have metadata rows (selective processing).**
 ```bash
-n8n-shipper backfill --require-execution-metadata --no-dry-run
+n8n-shipper shipper --require-execution-metadata --no-dry-run
 ```
 
 **Export only AI-related spans (LangChain nodes).**
 ```bash
-n8n-shipper backfill --filter-ai-only --no-dry-run
+n8n-shipper shipper --filter-ai-only --no-dry-run
 ```
 
 **Combine filters: AI-only + metadata requirement.**
 ```bash
-n8n-shipper backfill --filter-ai-only --require-execution-metadata --no-dry-run
+n8n-shipper shipper --filter-ai-only --require-execution-metadata --no-dry-run
 ```
 
 **Enable verbose logging (shows detailed processing information).**
 ```bash
-LOG_LEVEL=DEBUG n8n-shipper backfill --limit 10 --dry-run
+LOG_LEVEL=DEBUG n8n-shipper shipper --limit 10 --dry-run
 ```
 
 **Enable debug mode (dumps raw execution data to files).**
 ```bash
-n8n-shipper backfill --limit 10 --debug --debug-dump-dir=./debug_dumps --dry-run
+n8n-shipper shipper --limit 10 --debug --debug-dump-dir=./debug_dumps --dry-run
 ```
 
 **Dry run (mapping only, no export) - default behavior.**
 ```bash
-n8n-shipper backfill --limit 10
-# Same as: n8n-shipper backfill --limit 10 --dry-run
+n8n-shipper shipper --limit 10
+# Same as: n8n-shipper shipper --limit 10 --dry-run
 ```
 
 ---

@@ -1,7 +1,7 @@
 """Checkpoint management for idempotent execution processing.
 
 This module provides simple, file-based checkpointing to track the last
-successfully processed n8n execution ID. This allows the backfill process to
+successfully processed n8n execution ID. This allows the shipper process to
 be stopped and resumed without reprocessing data.
 
 The store_checkpoint function uses an atomic write pattern (write to a
