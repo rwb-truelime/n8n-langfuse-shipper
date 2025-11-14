@@ -24,14 +24,14 @@ from pydantic import ValidationError
 
 # Load .env file if present (before any config access)
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, find_dotenv
 
-    env_path = Path(__file__).parent.parent / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
-        logging.debug(f"Loaded environment from {env_path}")
-except ImportError:
-    pass  # python-dotenv not installed; rely on system env vars
+    env_file = find_dotenv(usecwd=True) or find_dotenv()
+    if env_file:
+        load_dotenv(env_file)
+        logging.debug("Loaded environment from %s", env_file)
+except Exception:
+    pass
 
 from .checkpoint import load_checkpoint, store_checkpoint
 from .config import get_settings
