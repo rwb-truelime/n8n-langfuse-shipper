@@ -26,7 +26,6 @@ Usage Normalization:
 
 Output Text Extraction:
     - Gemini/Vertex: response.generations[0][0].text
-    - Limescape Docs: markdown field (post normalization)
     - Fallback: serialized JSON
 
 Design Note:
@@ -232,8 +231,7 @@ def extract_concise_output(candidate: Any, node_type: str) -> Optional[str]:
     Attempts ordered extraction strategies to obtain concise text output rather
     than full JSON serialization:
     1. Gemini/Vertex: response.generations[0][0].text
-    2. Limescape Docs: markdown field (when node type matches)
-    3. Generic AI channel: ai_* keys with nested text fields
+    2. Generic AI channel: ai_* keys with nested text fields
 
     Falls back to None if no clean text extraction succeeds.
 
@@ -257,14 +255,6 @@ def extract_concise_output(candidate: Any, node_type: str) -> Optional[str]:
                         txt = inner.get("text")
                         if isinstance(txt, str) and txt.strip():
                             extracted_text = txt
-        if (
-            extracted_text is None
-            and isinstance(candidate, dict)
-            and "limescape" in node_type.lower()
-        ):
-            md_val = candidate.get("markdown")
-            if isinstance(md_val, str) and md_val.strip():
-                extracted_text = md_val
         if extracted_text is None and isinstance(candidate, dict):
             for k, v in candidate.items():
                 if k.startswith("ai_") and isinstance(v, list) and v:

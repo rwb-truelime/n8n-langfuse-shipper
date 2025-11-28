@@ -362,8 +362,7 @@ Use `observation_mapper.py` to classify each node based on type and category. Fa
 
 **Generation Output Text Extraction (Concise Behavior):**
 1. Gemini/Vertex chat: first non-empty `response.generations[0][0].text`.
-2. Limescape Docs custom node: prefer top-level `markdown` field (post normalization) when non-empty.
-3. Fallback: serialized normalized JSON output.
+2. Fallback: serialized normalized JSON output.
 
 **Notes:**
 * Provider marker expansions MUST update this section, README, and `tests/test_generation_heuristic.py` in same PR.
