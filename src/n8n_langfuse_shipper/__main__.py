@@ -230,8 +230,6 @@ def _build_execution_data(
     return empty
 
 
-
-
 @app.callback()
 def main() -> None:  # pragma: no cover - simple callback
     """n8n-langfuse-shipper CLI.
@@ -432,7 +430,12 @@ def shipper(
                 logging.getLogger(__name__).debug(
                     "Execution %s mapped to %d spans", record.id, span_count
                 )
-            export_trace(trace, settings, dry_run=effective_dry_run)
+            export_trace(
+                trace,
+                settings,
+                dry_run=effective_dry_run,
+                langfuse_trace_id_field_name=settings.LANGFUSE_TRACE_ID_FIELD_NAME,
+            )
             if settings.ENABLE_MEDIA_UPLOAD and mapped is not None:
                 # Now that OTLP span ids are populated, perform media create + upload.
                 try:
