@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import time
 from typing import Any, Dict
 
@@ -187,6 +188,42 @@ _total_spans_created = 0
 _last_flushed_spans_created = 0
 
 
+def _extract_trace_id_from_workflow_data(
+    serialized_data: str,
+    langfuse_trace_id_field_name: str,
+) -> str:
+    """Extract custom trace ID from workflowData JSON field if specified.
+
+    The provided trace ID needs to be a valid hex string of length 16.
+
+    Args:
+        serialized_data: json serialized data to search within
+        langfuse_trace_id_field_name: Field name to extract trace ID from
+    """
+    match_pattern = re.compile(
+        r'"' + re.escape(langfuse_trace_id_field_name) + r'\\?"\s*:\s*\\?"([^\\"]+)\\?"'
+    )
+    match = match_pattern.search(serialized_data)
+    try:
+        trace_id = match.group(1)
+    except AttributeError:
+        raise ValueError(
+            f"Custom trace ID field '{langfuse_trace_id_field_name}' not found in workflow data."
+        )
+
+    try:
+        int(trace_id, 16)
+    except ValueError:
+        raise ValueError(
+            f"Extracted trace ID '{trace_id}' is not a valid hexadecimal string."
+        )
+
+    logger.debug(
+        "Extracted custom trace ID '%s' from field '%s'.", trace_id, langfuse_trace_id_field_name
+    )
+    return trace_id
+
+
 def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
     """Return (int_trace_id, hex_string) embedding the decimal execution id digits.
 
@@ -202,7 +239,7 @@ def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
     return int(hex_str, 16), hex_str
 
 
-def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool = True) -> None:
+def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool = True, langfuse_trace_id_field_name: str | None = None) -> None:
     """Export a LangfuseTrace object as a collection of OTLP spans.
 
     This function orchestrates the conversion of a single `LangfuseTrace` into
@@ -219,10 +256,25 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             backpressure configuration.
         dry_run: If True, logs the intent to export but does not send any data.
             If False, initializes OTLP (if needed) and exports the trace.
+        langfuse_trace_id_field_name: Optional field name of an externally provided langfuse trace ID
     """
+    trace_id = trace_model.id
+    if langfuse_trace_id_field_name:
+        try:
+            trace_id = _extract_trace_id_from_workflow_data(
+                trace_model.model_dump_json(), langfuse_trace_id_field_name
+            )
+        except ValueError as e:
+            logger.warning(
+                "Failed to extract custom trace ID from field '%s'. Defaulting to execution ID '%s' as trace ID. %s",
+                langfuse_trace_id_field_name,
+                trace_model.id,
+                e
+            )
+
     if dry_run:
         logging.getLogger(__name__).info(
-            "Dry-run export: trace_id=%s spans=%d", trace_model.id, len(trace_model.spans)
+            "Dry-run export: trace_id=%s spans=%d", trace_id, len(trace_model.spans)
         )
         return
     _init_otel(settings)
@@ -233,9 +285,15 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         return
     global _trace_export_count
     root_model = trace_model.spans[0]
-    # Build deterministic human-searchable trace id: 000...<executionId>
+
     try:
-        int_trace_id, hex_trace_id = _build_human_trace_id(trace_model.id)
+        if trace_id:
+            int_trace_id = int(trace_id, 16)
+            hex_trace_id = trace_id
+            logger.debug("Using user-provided trace ID: %s", trace_id)
+        else:
+            # Build deterministic human-searchable trace id: 000...<executionId>
+            int_trace_id, hex_trace_id = _build_human_trace_id(trace_model.id)
         try:
             trace_model.otel_trace_id_hex = hex_trace_id
         except Exception:  # pragma: no cover - defensive
