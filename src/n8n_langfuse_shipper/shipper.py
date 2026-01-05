@@ -290,7 +290,7 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         if trace_id:
             int_trace_id = int(trace_id, 16)
             hex_trace_id = trace_id
-            print(f"Using user-provided trace ID: {trace_id}")
+            logger.debug("Using user-provided trace ID: %s", trace_id)
         else:
             # Build deterministic human-searchable trace id: 000...<executionId>
             int_trace_id, hex_trace_id = _build_human_trace_id(trace_model.id)
