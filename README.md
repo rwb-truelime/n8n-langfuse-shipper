@@ -244,6 +244,7 @@ The tool is configured via environment variables, which can be overridden by com
 | `LOG_LEVEL` | (none) | `INFO` | **Logging verbosity level.** Values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Use `LOG_LEVEL=DEBUG` for detailed logs. |
 | `LANGFUSE_ENV` | (none) | `production` | Environment for prompt version resolution. Values: `production` (no API queries), `dev`, or `staging` (API queries enabled). Must be lowercase. |
 | `PROMPT_VERSION_API_TIMEOUT` | (none) | `5` | Timeout (seconds) for Langfuse prompt API queries in dev/staging environments. |
+| `LANGFUSE_TRACE_ID_FIELD_NAME` | (none) | (none) | Name of the field in execution metadata that contains the Langfuse trace ID in case you want to override the trace-id from execution data for cross system tracing. |
 
 ### Export Backpressure & Reliability
 
