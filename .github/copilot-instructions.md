@@ -10,26 +10,26 @@
 - **Entry point**: `src/n8n_langfuse_shipper/__main__.py` - Typer CLI orchestrating Extract→Transform→Load pipeline
 - **Core transform**: `src/n8n_langfuse_shipper/mapping/orchestrator.py` - maps n8n NodeRuns to Langfuse spans with deterministic IDs
 - **Models**: `src/n8n_langfuse_shipper/models/n8n.py` + `src/n8n_langfuse_shipper/models/langfuse.py` - Pydantic validation throughout
-- **Config**: `src/n8n_langfuse_shipper/config.py` - Pydantic Settings from env vars (see table line ~140)
-- **Tests**: Run `pytest` or `pytest -q` in Fish shell - 30+ test files assert invariants
+- **Config**: `src/n8n_langfuse_shipper/config.py` - Pydantic Settings from env vars (see "Environment Variables" section)
+- **Tests**: Run `pytest` or `pytest -q` in Fish shell - 45+ test files assert invariants
 - **Dev workflow**: `ruff check . && mypy src && pytest` before commits (line-length cap: 100 chars)
 
-### Critical Invariants (NEVER VIOLATE - See line ~115)
+### Critical Invariants (NEVER VIOLATE)
 1. **Deterministic IDs**: UUIDv5 with `SPAN_NAMESPACE` in `mapping/id_utils.py` - changing breaks idempotency
 2. **Execution ID appears once**: Root span metadata `n8n.execution.id` only (never duplicated)
-3. **Parent resolution**: 5-tier precedence (Agent Hierarchy → Runtime Exact → Runtime Last → Static Graph → Root) - see line ~390
-4. **Binary stripping**: ALWAYS unconditional (even when truncation disabled) - see line ~230
+3. **Parent resolution**: 5-tier precedence (Agent Hierarchy → Runtime Exact → Runtime Last → Static Graph → Root) - see "Parent Resolution" section
+4. **Binary stripping**: ALWAYS unconditional (even when truncation disabled) - see "Binary & Multimodality" section
 5. **Timezone aware**: All datetimes UTC-aware, NEVER use `datetime.utcnow()` (test enforces this)
 6. **Fish shell**: NO Bash heredocs/arrays; use `set -x VAR value` for exports; Python one-liners: `python -c "import sys; print('ok')"` pattern
 
-### Where to Look (Line References)
-- **Mapping modules**: `src/n8n_langfuse_shipper/mapping/` - 11 pure submodules (orchestrator, binary_sanitizer, generation, parent_resolution, etc.)
-- **Parent resolution rules**: Line ~390 (Precedence table) + line ~230 (Agent Hierarchy explanation)
-- **Generation detection heuristics**: Line ~290 (tokenUsage presence OR provider markers)
-- **Binary & Media handling**: Line ~340 (stripping) + line ~370 (media token flow when `ENABLE_MEDIA_UPLOAD=true`)
-- **Reserved metadata keys**: Line ~630 (root span, spans, Gemini anomaly, media flags)
-- **Testing contract**: Line ~540 (deterministic IDs, parent precedence, binary stripping, timezone tests)
-- **Environment variables**: Line ~140 (complete table with defaults)
+### Where to Look
+- **Mapping modules**: `src/n8n_langfuse_shipper/mapping/` - 13 pure submodules (orchestrator, binary_sanitizer, generation, parent_resolution, prompt_detection, prompt_resolution, prompt_version_resolver, etc.)
+- **Parent resolution rules**: "Parent Resolution" section (Precedence table) + "Agent/Tool Hierarchy" section
+- **Generation detection heuristics**: "Generation Detection" section (tokenUsage presence OR provider markers)
+- **Binary & Media handling**: "Binary & Multimodality" section (stripping + media token flow when `ENABLE_MEDIA_UPLOAD=true`)
+- **Reserved metadata keys**: "Reserved Metadata Keys" section (root span, spans, Gemini anomaly, media flags)
+- **Testing contract**: "Testing Contract" section (deterministic IDs, parent precedence, binary stripping, timezone tests)
+- **Environment variables**: "Environment Variables" section (complete table with defaults)
 
 ### Common Tasks
 
@@ -62,11 +62,8 @@ n8n-shipper shipper --limit 25 --dry-run
 # Check for line length violations
 ruff check . --select E501
 ```
-ruff check . --select E501
-```
-
-### Module Refactor Status (Line ~50)
-Mapper logic extracted into `src/n8n_langfuse_shipper/mapping/` subpackage (completed). Facade `src/n8n_langfuse_shipper/mapper.py` preserves public API for backward compatibility. Future extractions documented at line ~70.
+### Module Refactor Status
+Mapper logic extracted into `src/n8n_langfuse_shipper/mapping/` subpackage (completed). Facade `src/n8n_langfuse_shipper/mapper.py` preserves public API for backward compatibility.
 
 ---
 
@@ -127,18 +124,27 @@ graph TD
     CK -.-> A
 ```
 
-    ### Module Boundaries (Refactor Phase)
+    ### Module Boundaries (Completed Refactor)
 
-    Mapper logic is being decomposed into a `src/n8n_langfuse_shipper/mapping/` subpackage. Purity and
-    determinism MUST be preserved. New modules (initial tranche):
+    Mapper logic has been fully decomposed into `src/n8n_langfuse_shipper/mapping/` subpackage.
+    Purity and determinism are preserved. All 13 modules:
 
     * `mapping.time_utils` – epoch millisecond → UTC conversion helpers.
     * `mapping.id_utils` – deterministic UUIDv5 span id helpers (`SPAN_NAMESPACE`)
       – ID format MUST remain unchanged; tests assert stability.
-        * `mapping.binary_sanitizer` – binary/base64 detection & redaction utilities.
-        * `mapping.orchestrator` – procedural mapping loop (execution → spans), AI filtering
-            window logic, binary asset collection, IO prep, model & anomaly helpers; keeps
-            `mapper.py` as thin facade. No behavior drift allowed.
+    * `mapping.binary_sanitizer` – binary/base64 detection & redaction utilities.
+    * `mapping.orchestrator` – procedural mapping loop (execution → spans), AI filtering
+        window logic, binary asset collection, IO prep, model & anomaly helpers; keeps
+        `mapper.py` as thin facade. No behavior drift allowed.
+    * `mapping.io_normalizer` – IO normalization, wrapper unwrapping, system prompt stripping.
+    * `mapping.generation` – generation classification, usage extraction, concise output.
+    * `mapping.model_extractor` – model name extraction with parameter fallback.
+    * `mapping.parent_resolution` – 5-tier parent resolution precedence.
+    * `mapping.mapping_context` – mapping state holder (span cache, agent maps, parent output cache).
+    * `mapping.node_extractor` – node data extraction for AI-only filtering metadata.
+    * `mapping.prompt_detection` – prompt fetch node detection and fingerprinting.
+    * `mapping.prompt_resolution` – ancestor traversal, fingerprint matching, prompt linking.
+    * `mapping.prompt_version_resolver` – environment-aware Langfuse API version queries.
 
     Refactor Rules:
     1. Public API (`map_execution_to_langfuse`, `map_execution_with_assets`) stays in
@@ -152,10 +158,7 @@ graph TD
         `mapping.id_utils` and re-imported into facade to keep existing tests green.
     5. Binary stripping invariants unchanged: unconditional redaction prior to (optional)
         truncation.
-    6. Future planned extractions: IO normalization (`io_normalizer.py`), generation
-        classification (`generation.py`), model extraction (`model_extractor.py`), parent
-        resolution (`parent_resolution.py`), mapping context state holder (`mapping_context.py`).
-    7. Each extraction phase MUST run full test suite; snapshot (golden) comparison ensures
+    6. Each extraction phase MUST run full test suite; snapshot (golden) comparison ensures
         structural parity of spans & metadata.
 
     Violation of these rules (silent drift, dependency cycles, network calls) is a
@@ -179,7 +182,7 @@ graph TD
 
 ## Core Data Models (Pydantic)
 
-All internal structures defined with Pydantic models for type safety and validation. Canonical definitions live in `src/models/`.
+All internal structures defined with Pydantic models for type safety and validation. Canonical definitions live in `src/n8n_langfuse_shipper/models/`.
 
 ### N8N Models (`src/models/n8n.py`)
 
@@ -217,9 +220,12 @@ class WorkflowNode(BaseModel):
     name: str
     type: str
     category: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
 
 class WorkflowData(BaseModel):
-    nodes: List[WorkflowNode]
+    id: str
+    name: str
+    nodes: List[WorkflowNode] = Field(default_factory=list)
     connections: Dict[str, Any] = Field(default_factory=dict)
 
 class N8nExecutionRecord(BaseModel):
@@ -262,8 +268,13 @@ class LangfuseSpan(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
-    token_usage: Optional[LangfuseUsage] = None
+    usage: Optional[LangfuseUsage] = None
     status: Optional[str] = None
+    level: Optional[str] = None
+    status_message: Optional[str] = None
+    prompt_name: Optional[str] = None
+    prompt_version: Optional[int] = None
+    otel_span_id: Optional[str] = None
 
 class LangfuseTrace(BaseModel):
     id: str
@@ -271,6 +282,12 @@ class LangfuseTrace(BaseModel):
     timestamp: datetime
     metadata: Dict[str, Any] = Field(default_factory=dict)
     spans: List[LangfuseSpan] = Field(default_factory=list)
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    trace_input: Optional[Any] = None
+    trace_output: Optional[Any] = None
+    otel_trace_id_hex: Optional[str] = None
 ```
 
 ---
@@ -745,12 +762,12 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 
 | Area | Guarantee | Representative Tests |
 |------|-----------|----------------------|
-| Deterministic IDs | Same input → identical trace & span ids | `test_deterministic_ids.py` |
-| Parent Resolution | Precedence order enforced | `test_parent_resolution_*` |
-| Binary Stripping | All large/base64 & binary objects redacted | `test_binary_stripping.py` |
-| Truncation & Propagation | Size guard only active when >0; propagation always | `test_truncation_propagation.py` |
-| Generation Detection | Only spans meeting heuristics classified | `test_generation_detection.py` |
-| Pointer Decoding | Pointer-compressed arrays reconstructed | `test_pointer_decoding.py` |
+| Deterministic IDs | Same input → identical trace & span ids | `test_mapper.py` |
+| Parent Resolution | Precedence order enforced | `test_mapper.py`, `test_negative_inferred_parent.py` |
+| Binary Stripping | All large/base64 & binary objects redacted | `test_binary_and_truncation.py` |
+| Truncation & Propagation | Size guard only active when >0; propagation always | `test_binary_and_truncation.py`, `test_input_propagation.py` |
+| Generation Detection | Only spans meeting heuristics classified | `test_generation_heuristic.py` |
+| Pointer Decoding | Pointer-compressed arrays reconstructed | `test_pointer_decoding.py`, `test_flatted_parsing.py` |
 | Timezone Enforcement | No naive datetimes; normalization to UTC | `test_timezone_awareness.py` |
 | Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
 | AI-only Filtering | Root retention, ancestor preservation, metadata flags | `test_ai_filtering.py` |
@@ -804,7 +821,9 @@ Presigned upload required headers: `Content-Type`, `x-amz-checksum-sha256`.
 | Test File | Scenario |
 |-----------|----------|
 | `test_media_api_tokens.py` | Enabled vs disabled parity, token substitution, metadata flags, oversize skip, deduplicated create. |
-| `test_media_failure_and_oversize.py` | API failure path, error_codes, upload_failed, oversize skip. |
+| `test_media_upload_success.py` | Successful upload flow, presigned URL handling. |
+| `test_media_observation_link.py` | Observation linking invariant (observationId required). |
+| `test_media_disabled.py` | Disabled flag path parity with legacy redaction. |
 
 ### Timezone Policy
 
@@ -1030,24 +1049,43 @@ Before merging changes:
 
 ```
 n8n-langfuse-shipper/
-├── src/
-│   ├── __main__.py
-│   ├── config.py
-│   ├── db.py
-│   ├── mapper.py
-│   ├── observation_mapper.py
-│   ├── shipper.py
-│   ├── checkpoint.py
-│   ├── media_api.py
+├── src/n8n_langfuse_shipper/
+│   ├── __main__.py              # Typer CLI entry point, ETL orchestration
+│   ├── config.py                # Pydantic Settings singleton (get_settings)
+│   ├── db.py                    # PostgreSQL streaming (ExecutionSource)
+│   ├── mapper.py                # Public facade (map_execution_to_langfuse)
+│   ├── observation_mapper.py    # Node type → observation type classification
+│   ├── shipper.py               # OTLP span export to Langfuse
+│   ├── checkpoint.py            # Last-processed execution id persistence
+│   ├── media_api.py             # Langfuse Media API token flow
+│   ├── media_uploader.py        # Presigned URL upload logic
+│   ├── mapping/                 # Pure mapping subpackage (13 modules)
+│   │   ├── orchestrator.py      # Core mapping loop
+│   │   ├── id_utils.py          # Deterministic UUIDv5 span IDs
+│   │   ├── parent_resolution.py # 5-tier parent precedence
+│   │   ├── generation.py        # LLM generation detection & usage
+│   │   ├── binary_sanitizer.py  # Binary/base64 redaction
+│   │   ├── io_normalizer.py     # I/O normalization, system prompt strip
+│   │   ├── model_extractor.py   # Model name extraction
+│   │   ├── mapping_context.py   # Mapping state holder
+│   │   ├── node_extractor.py    # AI-only node data extraction
+│   │   ├── prompt_detection.py  # Prompt fetch node detection
+│   │   ├── prompt_resolution.py # Ancestor chain prompt linking
+│   │   ├── prompt_version_resolver.py # Env-aware API version queries
+│   │   └── time_utils.py        # Epoch ms → UTC helpers
 │   └── models/
-│       ├── __init__.py
-│       ├── n8n.py
-│       └── langfuse.py
-├── tests/
-│   ├── test_mapper.py
+│       ├── n8n.py               # N8nExecutionRecord, NodeRun, etc.
+│       └── langfuse.py          # LangfuseTrace, LangfuseSpan, etc.
+├── tests/                       # 45+ test files (pytest)
+│   ├── conftest.py
+│   ├── test_mapper.py           # Core mapping, deterministic IDs
 │   ├── test_generation_heuristic.py
-│   ├── test_media_api_tokens.py
+│   ├── test_binary_and_truncation.py
+│   ├── test_ai_filtering.py
+│   ├── test_prompt_*.py         # 7 prompt resolution test suites
+│   ├── test_media_*.py          # 9 media upload test suites
 │   └── ...
+├── infra/                       # Azure Bicep deployment
 ├── Dockerfile
 ├── pyproject.toml
 └── README.md
