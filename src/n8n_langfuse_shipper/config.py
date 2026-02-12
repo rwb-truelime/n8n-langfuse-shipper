@@ -133,6 +133,15 @@ class Settings(BaseSettings):
             "(backpressure throttle)"
         ),
     )
+    LANGFUSE_TRACE_ID_FIELD_NAME: str | None = Field(
+        default=None,
+        description=(
+            "Field name in n8n execution metadata storing custom Langfuse trace ID. "
+            "This is ideally a random or otherwise unique string to allow for deterministic extraction "
+            "of the value from arbitrary execution data. E.g. `custom_langfuse_trace_id` would be suitable. "
+            "The field value must be set to a valid 16-character hexadecimal string within the n8n workflow."
+        )
+    )
 
     # ---------------- Media / Binary Upload (Langfuse Media API) -----------------
     # BREAKING CHANGE: Azure Blob direct upload path removed. We now rely on
