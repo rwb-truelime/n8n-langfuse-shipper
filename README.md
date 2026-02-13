@@ -16,7 +16,9 @@ It's designed for developers and teams who use n8n for AI-powered workflows and 
 
 - **High-Throughput shipper**: Efficiently processes and exports thousands of n8n executions.
 - **Rich Trace Data**: Intelligently maps n8n concepts to Langfuse, including:
-    - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes, with automatic detection of any node used as a tool (via n8n's `usableAsTool` mechanism). Post-processing fixup handles timing inversions where tool spans start before their agent spans.
+    - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes.
+      - **Automatic Tool Detection**: Detects any node used as a tool via n8n's `usableAsTool` mechanism.
+      - **Timing Inversion Fixup**: Post-processing corrects parent assignments when tool spans start before their agent spans.
     - **Generation Spans**: Automatically detects LLM calls, extracting model names and token usage.
     - **Prompt Management Integration**: Links generation spans to Langfuse prompt versions, enabling prompt tracking and versioning.
     - **Error & Status**: Maps n8n node errors to Langfuse span statuses.

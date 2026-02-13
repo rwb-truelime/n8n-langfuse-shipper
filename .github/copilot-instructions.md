@@ -79,7 +79,7 @@ This file is a normative contract. Any behavioral change to mapping, identifiers
 
 Use these exact meanings in code comments, docs, and tests. Adding a new term? Update here in same PR.
 
-* **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent. Post-loop fixup corrects timing inversions where tool spans start before their agent.
+* **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent. See **Agent Parent Fixup** for timing inversion correction.
 * **Agent Parent Fixup:** Post-mapping phase re-parenting tool/component spans to agent spans when tool `startTime` precedes agent `startTime` (timing inversion). Deterministic: selects latest agent span starting at or before tool; if none exist, uses earliest agent span. Emits `n8n.agent.parent_fixup=true` metadata when fixup occurs.
 * **Backpressure:** Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) triggering exporter flush + sleep.
 * **Binary Stripping:** Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
@@ -368,7 +368,7 @@ If `NodeRun` lacks `inputOverride`, logical input inferred from cached raw outpu
 Use `observation_mapper.py` to classify each node based on type and category. Fallback chain: exact → regex → category → default span.
 
 **AI Node Classification:**
-Generic tool suffix detection: any node type ending with "Tool" (case-insensitive, after stripping package prefixes like `@n8n/n8n-nodes-base.`) is automatically classified as AI. This covers n8n's `usableAsTool` mechanism (`convertNodeToAiTool` function) which appends "Tool" to node names, enabling dynamic tool creation from any base package node (e.g., `microsoftSqlTool`, `postgresTool`, `httpRequestTool`). This replaces hardcoded tool type lists and ensures all converted tools are retained when `FILTER_AI_ONLY=true` (via connection-graph AI classification through `child_agent_map`).
+Generic tool suffix detection: any node type ending with "Tool" (case-insensitive, after stripping package prefixes like `@n8n/n8n-nodes-base.`) is automatically classified as AI. This covers n8n's `usableAsTool` mechanism (`convertNodeToAiTool` function), which appends "Tool" to node names for dynamic tool creation from any base package node (e.g., `microsoftSqlTool`, `postgresTool`, `httpRequestTool`). This classification replaces hardcoded tool type lists. When `FILTER_AI_ONLY=true`, all converted tools are retained via connection-graph AI classification through `child_agent_map`.
 
 ### Generation Detection
 
