@@ -287,7 +287,7 @@ def test_bedrock_model_from_parameters():
     # Model should be extracted from parameters as fallback
     assert span.model == model_id, "Model should be extracted from parameters"
     assert span.metadata.get("n8n.model.from_parameters") is True
-    assert span.metadata.get("n8n.model.parameter_key") == "model"
+    assert span.metadata.get("n8n.model.parameter_key") == "parameters.model"
 
 
 def test_bedrock_model_from_modelSource_parameter():
