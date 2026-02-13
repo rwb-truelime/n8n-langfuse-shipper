@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from importlib import reload
 
+import pytest
+
 from n8n_langfuse_shipper import config as config_module
 
 
@@ -16,6 +18,8 @@ def _reload_with_env(env: dict):
             pass
     # Ensure table prefix does not leak between scenarios unless explicitly set
     os.environ.pop("DB_TABLE_PREFIX", None)
+    # Ensure AI filter mode does not leak between scenarios unless explicitly set
+    os.environ.pop("FILTER_AI_MODE", None)
     for k, v in env.items():
         if v is None:
             os.environ.pop(k, None)
@@ -59,3 +63,25 @@ def test_required_prefix(monkeypatch):
         "DB_TABLE_PREFIX": "custom_",
     })
     assert s.DB_TABLE_PREFIX == "custom_"
+
+
+def test_filter_ai_mode_normalization():
+    s = _reload_with_env(
+        {
+            "PG_DSN": "postgresql://u@h:5432/db5",
+            "DB_TABLE_PREFIX": "n8n_",
+            "FILTER_AI_MODE": " STRICT ",
+        }
+    )
+    assert s.FILTER_AI_MODE == "strict"
+
+
+def test_filter_ai_mode_invalid_raises():
+    with pytest.raises(ValueError):
+        _reload_with_env(
+            {
+                "PG_DSN": "postgresql://u@h:5432/db6",
+                "DB_TABLE_PREFIX": "n8n_",
+                "FILTER_AI_MODE": "unsupported",
+            }
+        )

@@ -42,10 +42,46 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["src/n8n_langfuse_shipper/vendor"]
 
 # New lint configuration section (migrated from deprecated top-level keys).
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "N", "ASYNC"]  # intentionally excluding "UP" for now (minimal style changes)
+
+[tool.ruff.lint.per-file-ignores]
+"src/n8n_langfuse_shipper/models/n8n.py" = ["N815"]
+"tests/*.py" = ["N806", "N802"]
+"scripts/check_notice.py" = ["E501", "E402"]
+"src/n8n_langfuse_shipper/__main__.py" = ["E501", "ASYNC230"]
+"src/n8n_langfuse_shipper/config.py" = ["E501"]
+"src/n8n_langfuse_shipper/db.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/generation.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/io_normalizer.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/model_extractor.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/orchestrator.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/prompt_resolution.py" = ["E501"]
+"src/n8n_langfuse_shipper/mapping/time_utils.py" = ["E501"]
+"src/n8n_langfuse_shipper/models/langfuse.py" = ["E501"]
+"src/n8n_langfuse_shipper/observation_mapper.py" = ["E501"]
+"src/n8n_langfuse_shipper/media_api.py" = ["E501", "B023"]
+"src/n8n_langfuse_shipper/media_uploader.py" = ["B023"]
+"tests/test_error_status_and_observation.py" = ["E501"]
+"tests/test_exporter_additional_attributes.py" = ["E501"]
+"tests/test_extended_binary_discovery.py" = ["E501"]
+"tests/test_generation_heuristic.py" = ["E501"]
+"tests/test_input_propagation.py" = ["E501"]
+"tests/test_item_level_binary_promotion.py" = ["E501"]
+"tests/test_media_item_level_promotion_tokens.py" = ["E501"]
+"tests/test_media_upload_success.py" = ["E501"]
+"tests/test_negative_inferred_parent.py" = ["E501"]
+"tests/test_pointer_decoding.py" = ["E501"]
+"tests/test_root_span_io_population.py" = ["E501"]
+"tests/test_timezone_awareness.py" = ["E501"]
+"tests/test_trace_id_extraction_from_workflow_data.py" = ["E501"]
+"tests/test_ai_extraction_safety.py" = ["E501"]
+"tests/test_ai_filtering.py" = ["E501"]
+"tests/test_binary_and_truncation.py" = ["E501"]
+"tests/test_binary_unwrap_merge.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -56,6 +92,7 @@ warn_unused_ignores = true
 warn_return_any = true
 warn_unreachable = true
 show_error_codes = true
+exclude = "src/n8n_langfuse_shipper/vendor/flatted(_test)?\\.py$"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

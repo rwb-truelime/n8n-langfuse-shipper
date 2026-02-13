@@ -40,6 +40,63 @@ from opentelemetry.trace import (
 from .config import Settings
 from .models.langfuse import LangfuseSpan, LangfuseTrace
 
+
+def _order_children_for_export(
+    trace_model: LangfuseTrace, root_id: str
+) -> list[LangfuseSpan]:
+    """Return child spans ordered so known parents are emitted first.
+
+    Mapping preserves chronological ordering, but some valid parent spans
+    (especially agent hierarchy fixups) can start later than their children.
+    Exporting strictly in chronological order can therefore cause child spans
+    to fall back to root parent context. This helper performs a deterministic
+    dependency-first ordering over children while preserving original order when
+    dependencies do not require movement.
+
+    Args:
+        trace_model: Trace model containing root + child spans.
+        root_id: Root span id.
+
+    Returns:
+        Reordered list of child spans (excluding root).
+    """
+    original_children = list(trace_model.spans[1:])
+    if not original_children:
+        return []
+
+    by_id: Dict[str, LangfuseSpan] = {span.id: span for span in original_children}
+    pending = list(original_children)
+    ordered: list[LangfuseSpan] = []
+    created_ids: set[str] = {root_id}
+
+    while pending:
+        progressed = False
+        next_pending: list[LangfuseSpan] = []
+
+        for span in pending:
+            parent_id = span.parent_id
+            parent_known_child = parent_id in by_id if parent_id else False
+            parent_ready = (
+                parent_id is None
+                or parent_id in created_ids
+                or not parent_known_child
+            )
+            if parent_ready:
+                ordered.append(span)
+                created_ids.add(span.id)
+                progressed = True
+            else:
+                next_pending.append(span)
+
+        if not progressed:
+            # Defensive cycle-breaker: append remaining spans in original order.
+            ordered.extend(next_pending)
+            break
+
+        pending = next_pending
+
+    return ordered
+
 _initialized = False
 logger = logging.getLogger(__name__)
 __all__ = [
@@ -156,7 +213,7 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
             span_ot.set_attribute("gen_ai.usage.output_tokens", span_model.usage.output)
         if span_model.usage.total is not None:
             span_ot.set_attribute("gen_ai.usage.total_tokens", span_model.usage.total)
-        # Emit consolidated JSON usage_details with only present keys (Langfuse parity) using *_tokens names
+        # Emit consolidated usage_details JSON with only present *_tokens keys.
         usage_details = {}
         if span_model.usage.input is not None:
             usage_details["input_tokens"] = span_model.usage.input
@@ -166,7 +223,10 @@ def _apply_span_attributes(span_ot: Any, span_model: LangfuseSpan) -> None:
             usage_details["total_tokens"] = span_model.usage.total
         if usage_details:
             import json as _json
-            span_ot.set_attribute("langfuse.observation.usage_details", _json.dumps(usage_details, separators=(",", ":")))
+            span_ot.set_attribute(
+                "langfuse.observation.usage_details",
+                _json.dumps(usage_details, separators=(",", ":")),
+            )
     # Basic metadata mapping
     for k, v in (span_model.metadata or {}).items():
         if v is not None:
@@ -204,22 +264,23 @@ def _extract_trace_id_from_workflow_data(
         r'"' + re.escape(langfuse_trace_id_field_name) + r'\\?"\s*:\s*\\?"([^\\"]+)\\?"'
     )
     match = match_pattern.search(serialized_data)
-    try:
-        trace_id = match.group(1)
-    except AttributeError:
+    if match is None:
         raise ValueError(
             f"Custom trace ID field '{langfuse_trace_id_field_name}' not found in workflow data."
         )
+    trace_id = match.group(1)
 
     try:
         int(trace_id, 16)
-    except ValueError:
+    except ValueError as err:
         raise ValueError(
             f"Extracted trace ID '{trace_id}' is not a valid hexadecimal string."
-        )
+        ) from err
 
     logger.debug(
-        "Extracted custom trace ID '%s' from field '%s'.", trace_id, langfuse_trace_id_field_name
+        "Extracted custom trace ID '%s' from field '%s'.",
+        trace_id,
+        langfuse_trace_id_field_name,
     )
     return trace_id
 
@@ -239,7 +300,12 @@ def _build_human_trace_id(execution_id_str: str) -> tuple[int, str]:
     return int(hex_str, 16), hex_str
 
 
-def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool = True, langfuse_trace_id_field_name: str | None = None) -> None:
+def export_trace(
+    trace_model: LangfuseTrace,
+    settings: Settings,
+    dry_run: bool = True,
+    langfuse_trace_id_field_name: str | None = None,
+) -> None:
     """Export a LangfuseTrace object as a collection of OTLP spans.
 
     This function orchestrates the conversion of a single `LangfuseTrace` into
@@ -256,7 +322,8 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             backpressure configuration.
         dry_run: If True, logs the intent to export but does not send any data.
             If False, initializes OTLP (if needed) and exports the trace.
-        langfuse_trace_id_field_name: Optional field name of an externally provided langfuse trace ID
+        langfuse_trace_id_field_name: Optional field name of an externally
+            provided langfuse trace ID.
     """
     trace_id = trace_model.id
     if langfuse_trace_id_field_name:
@@ -266,7 +333,8 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             )
         except ValueError as e:
             logger.warning(
-                "Failed to extract custom trace ID from field '%s'. Defaulting to execution ID '%s' as trace ID. %s",
+                "Failed to extract custom trace ID from field '%s'. "
+                "Defaulting to execution ID '%s' as trace ID. %s",
                 langfuse_trace_id_field_name,
                 trace_model.id,
                 e
@@ -300,7 +368,9 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
             pass
         # Derive a deterministic parent span id seed from the hex trace id
         import hashlib
-        parent_seed = hashlib.sha256((hex_trace_id + ':parent').encode()).hexdigest()[:16]
+        parent_seed = hashlib.sha256(
+            (hex_trace_id + ':parent').encode()
+        ).hexdigest()[:16]
         parent_span_id = int(parent_seed, 16)
         parent_sc = SpanContext(
             trace_id=int_trace_id,
@@ -337,17 +407,26 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
         root_span.set_attribute("session.id", trace_model.session_id)
     if trace_model.tags:
         import json as _json
-        root_span.set_attribute("langfuse.trace.tags", _json.dumps(trace_model.tags, separators=(",", ":")))
+        root_span.set_attribute(
+            "langfuse.trace.tags",
+            _json.dumps(trace_model.tags, separators=(",", ":")),
+        )
     if trace_model.trace_input is not None:
         import json as _json
         try:
-            root_span.set_attribute("langfuse.trace.input", _json.dumps(trace_model.trace_input, separators=(",", ":")))
+            root_span.set_attribute(
+                "langfuse.trace.input",
+                _json.dumps(trace_model.trace_input, separators=(",", ":")),
+            )
         except Exception:
             root_span.set_attribute("langfuse.trace.input", str(trace_model.trace_input))
     if trace_model.trace_output is not None:
         import json as _json
         try:
-            root_span.set_attribute("langfuse.trace.output", _json.dumps(trace_model.trace_output, separators=(",", ":")))
+            root_span.set_attribute(
+                "langfuse.trace.output",
+                _json.dumps(trace_model.trace_output, separators=(",", ":")),
+            )
         except Exception:
             root_span.set_attribute("langfuse.trace.output", str(trace_model.trace_output))
     wf_id_val = trace_model.metadata.get("workflowId")
@@ -374,7 +453,8 @@ def export_trace(trace_model: LangfuseTrace, settings: Settings, dry_run: bool =
     ctx_lookup: Dict[str, SpanContext] = {root_model.id: root_span.get_span_context()}
 
     # Children
-    for child in trace_model.spans[1:]:
+    ordered_children = _order_children_for_export(trace_model, root_model.id)
+    for child in ordered_children:
         # Resolve parent span context (default to root if missing / None)
         if child.parent_id and child.parent_id in ctx_lookup:
             parent_span_context = ctx_lookup[child.parent_id]

@@ -201,6 +201,14 @@ class Settings(BaseSettings):
             "AI nodes export root only with n8n.filter.no_ai_spans=true."
         ),
     )
+    FILTER_AI_MODE: str = Field(
+        default="contextual",
+        description=(
+            "AI filtering mode. 'contextual' retains AI spans plus context window "
+            "and chain connectors. 'strict' retains AI spans plus required "
+            "ancestor closure only."
+        ),
+    )
     # General workflow id filtering (independent of AI-only). Optional list of
     # workflowId values; when non-empty only executions whose workflowId is in
     # this list are fetched. Empty list means no filtering (process all).
@@ -262,7 +270,7 @@ class Settings(BaseSettings):
         mode="before",
     )
     @classmethod
-    def parse_comma_separated(cls, v: str | list[str]) -> list[str]:
+    def parse_comma_separated(cls, v: Any) -> list[str]:
         """Parse comma-separated string into list of stripped strings.
 
         Supports both direct list input (from code/tests) and comma-separated
@@ -282,6 +290,19 @@ class Settings(BaseSettings):
                 return []
             return [s.strip() for s in v.split(",") if s.strip()]
         return []
+
+    @field_validator("FILTER_AI_MODE", mode="before")
+    @classmethod
+    def validate_filter_ai_mode(cls, v: Any) -> str:
+        """Normalize and validate AI filter mode."""
+        if v is None:
+            return "contextual"
+        mode = str(v).strip().lower()
+        if not mode:
+            return "contextual"
+        if mode not in {"contextual", "strict"}:
+            raise ValueError("FILTER_AI_MODE must be 'contextual' or 'strict'")
+        return mode
 
     @field_validator("ROOT_SPAN_INPUT_NODE", "ROOT_SPAN_OUTPUT_NODE", mode="before")
     @classmethod

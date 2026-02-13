@@ -307,9 +307,6 @@ def test_integration_with_ai_filtering(monkeypatch):
     # Patch config to specify extraction nodes
     from n8n_langfuse_shipper import config as config_module
 
-    # Store original function
-    original_get_settings = config_module.get_settings
-
     class MockSettings:
         FILTER_AI_EXTRACTION_NODES = ["WebhookTrigger"]
         FILTER_AI_EXTRACTION_INCLUDE_KEYS = []

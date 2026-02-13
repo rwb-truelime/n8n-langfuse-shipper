@@ -259,3 +259,98 @@ def test_media_token_not_double_stringified():
 
     # Token should be directly searchable (not nested in escaped string)
     assert media_token in output_attr
+
+
+def test_export_trace_preserves_parent_when_parent_listed_later():
+    """Exporter should not fallback to root when parent appears later in input list."""
+    now = datetime.now(timezone.utc)
+    root_span = LangfuseSpan(
+        id="root-span-id",
+        trace_id="00000000000000000000000000000001",
+        name="Root",
+        start_time=now,
+        end_time=now,
+        observation_type="span",
+        metadata={},
+    )
+    child_span = LangfuseSpan(
+        id="child-span-id",
+        trace_id="00000000000000000000000000000001",
+        parent_id="parent-span-id",
+        name="Child",
+        start_time=now,
+        end_time=now,
+        observation_type="span",
+        metadata={},
+    )
+    parent_span = LangfuseSpan(
+        id="parent-span-id",
+        trace_id="00000000000000000000000000000001",
+        parent_id="root-span-id",
+        name="Parent",
+        start_time=now,
+        end_time=now,
+        observation_type="span",
+        metadata={},
+    )
+    # Child intentionally appears before parent in the list.
+    trace = LangfuseTrace(
+        id="00000000000000000000000000000001",
+        name="Parent Order Test",
+        timestamp=now,
+        metadata={},
+        spans=[root_span, child_span, parent_span],
+    )
+
+    settings = Settings(
+        LANGFUSE_HOST="https://test.langfuse.com",
+        LANGFUSE_PUBLIC_KEY="test-key",
+        LANGFUSE_SECRET_KEY="test-secret",
+        DB_TABLE_PREFIX="test_",
+        TRUNCATE_FIELD_LEN=0,
+    )
+
+    root_ctx = MagicMock()
+    root_ctx.span_id = 0x1
+    parent_ctx = MagicMock()
+    parent_ctx.span_id = 0x2
+    child_ctx = MagicMock()
+    child_ctx.span_id = 0x3
+
+    root_otel = MagicMock()
+    root_otel.get_span_context.return_value = root_ctx
+    parent_otel = MagicMock()
+    parent_otel.get_span_context.return_value = parent_ctx
+    child_otel = MagicMock()
+    child_otel.get_span_context.return_value = child_ctx
+
+    start_calls = []
+
+    def _start_span_side_effect(*args, **kwargs):
+        name = kwargs.get("name")
+        start_calls.append((name, kwargs.get("context")))
+        if name == "Root":
+            return root_otel
+        if name == "Parent":
+            return parent_otel
+        if name == "Child":
+            return child_otel
+        raise AssertionError(f"Unexpected span name: {name}")
+
+    mock_tracer = MagicMock()
+    mock_tracer.start_span.side_effect = _start_span_side_effect
+
+    with patch("n8n_langfuse_shipper.shipper._init_otel", return_value=None):
+        with patch("n8n_langfuse_shipper.shipper.trace.get_tracer", return_value=mock_tracer):
+            with patch(
+                "n8n_langfuse_shipper.shipper.set_span_in_context",
+                side_effect=lambda span: span,
+            ):
+                export_trace(trace, settings, dry_run=False)
+
+    emitted_names = [name for name, _ctx in start_calls]
+    assert emitted_names == ["Root", "Parent", "Child"]
+
+    child_parent_ctx = start_calls[2][1]
+    assert child_parent_ctx is not None
+    assert child_parent_ctx.get_span_context().span_id == parent_ctx.span_id

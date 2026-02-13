@@ -5,9 +5,10 @@ and fallback behavior.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import Mock, patch
+
 import httpx
+import pytest
 
 from n8n_langfuse_shipper.mapping.prompt_version_resolver import (
     PromptVersionResolver,

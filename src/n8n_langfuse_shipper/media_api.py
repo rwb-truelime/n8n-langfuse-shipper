@@ -369,12 +369,6 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
                 span.metadata["n8n.media.upload_failed"] = True
                 span.metadata.setdefault("n8n.media.error_codes", []).append("create_api_error")
             continue
-            logger.debug(
-                "media create_resp media_id=%s observation_id_sent=%s resp_keys=%s",
-                create_resp.get("mediaId") or create_resp.get("id"),
-                getattr(span, "otel_span_id", None) or span.id,
-                list(create_resp.keys()),
-            )
         # Server may return either `mediaId` (docs) or legacy `id`
         media_id = (
             str(create_resp.get("mediaId"))

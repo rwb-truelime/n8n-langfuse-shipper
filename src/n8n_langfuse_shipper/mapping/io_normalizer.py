@@ -319,8 +319,8 @@ def extract_generation_input_and_params(
         Returns:
             Tuple of (dict_with_messages, depth_found) or (None, -1)
         """
-        MAX_DEPTH = 5
-        if depth > MAX_DEPTH:
+        max_depth = 5
+        if depth > max_depth:
             return None, -1
 
         if isinstance(obj, dict):
@@ -449,8 +449,6 @@ def strip_system_prompt_from_langchain_lmchat(input_obj: Any, node_type: str) ->
 
     Only consistent marker across all formats is "human:" (case-insensitive).
     """
-    if not isinstance(node_type, str):
-        return input_obj
     node_type_lower = node_type.lower()
     if "lmchat" not in node_type_lower:
         return input_obj

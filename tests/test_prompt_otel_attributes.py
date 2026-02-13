@@ -5,11 +5,10 @@ OTEL attributes on generation spans with proper debug metadata.
 """
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timezone
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
-from n8n_langfuse_shipper.models.langfuse import LangfuseSpan, LangfuseTrace
+from n8n_langfuse_shipper.models.langfuse import LangfuseSpan
 from n8n_langfuse_shipper.shipper import _apply_span_attributes
 
 

@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from datetime import datetime, timezone
+from typing import Any
 
-from n8n_langfuse_shipper.vendor.flatted import parse as flatted_parse
+from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
 from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
     ExecutionDataDetails,
     N8nExecutionRecord,
+    NodeRun,
     ResultData,
     WorkflowData,
     WorkflowNode,
-    NodeRun,
 )
-from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
+from n8n_langfuse_shipper.vendor.flatted import parse as flatted_parse
 
 
 def _build_execution_record(run_data_raw: dict[str, list[dict[str, Any]]]):
@@ -120,4 +120,4 @@ def test_flatted_malformed_fallback():
         flatted_parse(bad_raw)
     except Exception:  # Expected failure
         return
-    assert False, "Malformed flatted payload should raise an exception"
+    raise AssertionError("Malformed flatted payload should raise an exception")

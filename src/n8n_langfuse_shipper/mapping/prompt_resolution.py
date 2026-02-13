@@ -78,7 +78,7 @@ def _extract_ancestor_chain(
     Returns:
         List of (node_name, run_index, distance) tuples, ordered by distance
     """
-    ancestors = []
+    ancestors: List[Tuple[str, int, int]] = []
     visited: Set[Tuple[str, int]] = set()
     queue = [(node_name, run_index, 0)]  # (node, run, distance)
 
@@ -516,9 +516,9 @@ def _extract_prompt_text_from_input(agent_input: Any) -> Optional[str]:
     # If list: try each item
     if isinstance(agent_input, list):
         for item in agent_input:
-            text = _extract_prompt_text_from_input(item)
-            if text:
-                return text
+            extracted_text = _extract_prompt_text_from_input(item)
+            if extracted_text:
+                return extracted_text
 
     return None
 

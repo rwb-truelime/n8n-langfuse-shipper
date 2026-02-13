@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Tuple
+
 from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def _extract_prompt_metadata_from_output(
     if isinstance(output_data, dict):
         candidates.append(output_data)
         # Check json wrapper
-        if "json" in output_data:
+        if "json" in output_data and isinstance(output_data["json"], dict):
             candidates.append(output_data["json"])
         # Check n8n main wrapper
         if "main" in output_data:
@@ -142,7 +143,7 @@ def _extract_prompt_metadata_from_output(
                         for item in channel:
                             if isinstance(item, dict):
                                 candidates.append(item)
-                                if "json" in item:
+                                if "json" in item and isinstance(item["json"], dict):
                                     candidates.append(item["json"])
 
     # Array of items (common in n8n outputs)
@@ -150,13 +151,11 @@ def _extract_prompt_metadata_from_output(
         for item in output_data:
             if isinstance(item, dict):
                 candidates.append(item)
-                if "json" in item:
+                if "json" in item and isinstance(item["json"], dict):
                     candidates.append(item["json"])
 
     # Try to validate each candidate
     for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
 
         # Check for required fields
         if "name" not in candidate or "version" not in candidate:

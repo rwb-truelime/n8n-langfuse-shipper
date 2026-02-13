@@ -16,15 +16,14 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, cast
 
 import typer
 from pydantic import ValidationError
 
 # Load .env file if present (before any config access)
 try:
-    from dotenv import load_dotenv, find_dotenv
+    from dotenv import find_dotenv, load_dotenv
 
     env_file = find_dotenv(usecwd=True) or find_dotenv()
     if env_file:
@@ -108,11 +107,12 @@ def _build_execution_data(
     if isinstance(raw_data, list):
         try:
             import json
-            from .vendor.flatted import parse as flatted_parse  # type: ignore
+
             from .vendor import flatted as _flatted_mod  # for _String unwrap
+            from .vendor.flatted import parse as flatted_parse
             def _sanitize_flatted(val: Any) -> Any:
                 # Recursively convert leftover _String wrapper instances to raw string values.
-                if isinstance(val, getattr(_flatted_mod, "_String")):
+                if isinstance(val, _flatted_mod._String):
                     return val.value
                 if isinstance(val, list):
                     return [_sanitize_flatted(x) for x in val]
@@ -120,7 +120,8 @@ def _build_execution_data(
                     return {k: _sanitize_flatted(v) for k, v in val.items()}
                 return val
             serialized = json.dumps(raw_data)
-            parsed_root = flatted_parse(serialized)
+            parse_fn = cast(Callable[[str], Any], flatted_parse)
+            parsed_root = parse_fn(serialized)
             parsed_root = _sanitize_flatted(parsed_root)
             # Expect structure: root.resultData.runData
             run_data = (

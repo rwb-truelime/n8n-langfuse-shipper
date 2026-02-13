@@ -5,18 +5,16 @@ equal distance from a generation node.
 """
 from __future__ import annotations
 
-import pytest
-from typing import Any, Dict
+from typing import Dict
 
-from n8n_langfuse_shipper.mapping.prompt_resolution import (
-    PromptResolutionResult,
-    resolve_prompt_for_generation,
-    _compute_text_fingerprint,
-    _extract_prompt_text_from_input,
-)
 from n8n_langfuse_shipper.mapping.prompt_detection import (
     PromptMetadata,
     _compute_prompt_fingerprint,
+)
+from n8n_langfuse_shipper.mapping.prompt_resolution import (
+    _compute_text_fingerprint,
+    _extract_prompt_text_from_input,
+    resolve_prompt_for_generation,
 )
 
 
