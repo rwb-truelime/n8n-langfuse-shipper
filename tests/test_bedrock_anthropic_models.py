@@ -355,8 +355,10 @@ def test_bedrock_model_from_modelSource_parameter():
     assert span.metadata.get("n8n.model.from_parameters") is True, (
         "Should have n8n.model.from_parameters metadata"
     )
-    assert span.metadata.get("n8n.model.parameter_key") == "parameters.model", (
-        f"Expected parameter_key to be parameters.model, got {span.metadata.get('n8n.model.parameter_key')}"
+    param_key = span.metadata.get("n8n.model.parameter_key")
+    assert param_key == "parameters.model", (
+        "Expected parameter_key to be parameters.model, got "
+        f"{param_key}"
     )
 
 
