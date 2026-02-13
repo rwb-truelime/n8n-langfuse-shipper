@@ -208,19 +208,26 @@ __all__ = ["map_node_to_observation_type", "OBS_TYPES"]
 # AI Node Classification (Authoritative LangChain Package Mapping)
 # ---------------------------------------------------------------------------
 # All node *types* shipped inside the @n8n/n8n-nodes-langchain package are
-# considered "AI" for the purposes of optional span filtering. The list below
-# is derived from that package's package.json (nodes array). Keep the list
-# synchronized if upstream adds or removes nodes. Sorting is alphabetical for
-# deterministic diffs and easier visual scanning.
+# listed here for explicit AI membership.  Keep alphabetical for diffs.
 #
-# NOTE: Some names (e.g. Code) also exist in Core categories; only the
-# combination of type membership OR category "AI/LangChain Nodes" qualifies a
-# node as AI. Category check provides a future‑proof fast path when present.
+# GENERIC TOOL DETECTION (covers any package):
+# Any node whose normalized type ends with "tool" (case-insensitive) is
+# also classified as AI.  This is because n8n's ``usableAsTool``
+# mechanism appends ``Tool`` to the node name via ``convertNodeToAiTool``
+# (see ``packages/cli/src/tool-generation/ai-tools.ts`` in n8n source).
+# This means ALL n8n-nodes-base tool variants (e.g. microsoftSqlTool,
+# postgresTool, slackTool) and ALL community-package tool variants are
+# detected automatically — no manual enumeration required.
+#
+# PREFIX STRIPPING: Generic last-dot-segment extraction handles any
+# package prefix (``@n8n/n8n-nodes-langchain.Agent`` → ``Agent``,
+# ``communityPackage.coolTool`` → ``coolTool``).
 #
 # Invariants (documented in copilot-instructions.md):
 # * Adding / removing a type here requires test updates.
-# * Helper function `is_ai_node` is pure and side‑effect free.
-# * This module does NOT perform filtering; mapping layer consumes helper.
+# * Helper function ``is_ai_node`` is pure and side-effect free.
+# * This module does NOT perform filtering; mapping layer consumes
+#   helper.
 AI_NODE_TYPES: Set[str] = {
     # Agents & tools (agent ecosystem)
     "Agent",
@@ -350,27 +357,23 @@ AI_NODE_TYPES: Set[str] = {
 
 
 _AI_NODE_TYPES_LOWER: Set[str] = {t.lower() for t in AI_NODE_TYPES}
-_NAMESPACE_PREFIXES: tuple[str, ...] = (
-    "@n8n/n8n-nodes-langchain.",
-    "n8n-nodes-langchain.",
-    # Custom Limescape Docs package prefixes (ensure AI membership normalization)
-    "@n8n/n8n-nodes-limescape-docs.",
-    "n8n-nodes-limescape-docs.",
-)
 
 
 def _normalize_node_type(raw: str) -> str:
     """Normalize a raw node type for AI membership comparison.
 
-    Steps:
-    * Strip known namespace prefixes (JS package style).
-    * Return lowercase for case-insensitive matching.
-    * Preserve internal camel casing only for debugging purposes.
+    Extracts the unqualified node name from a fully-qualified n8n
+    type string by taking everything after the last dot.
+    This is generic: handles ANY package prefix without enumeration
+    (e.g. ``@n8n/n8n-nodes-langchain.Agent`` → ``agent``,
+    ``n8n-nodes-base.microsoftSqlTool`` → ``microsoftsqltool``,
+    ``communityPackage.coolTool`` → ``cooltool``).
+
+    For bare names without dots (e.g. ``Agent``), returns lowercase
+    as-is.
     """
-    for p in _NAMESPACE_PREFIXES:
-        if raw.startswith(p):  # exact prefix match
-            raw = raw[len(p) :]
-            break
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[1]
     return raw.lower()
 
 
@@ -379,14 +382,26 @@ def is_ai_node(node_type: Optional[str], category: Optional[str]) -> bool:
 
     Detection precedence:
     1. Category equals "AI/LangChain Nodes" (fast path, future proof).
-    2. Case-insensitive node type membership in `AI_NODE_TYPES`, allowing optional
-       namespace prefixes (e.g. @n8n/n8n-nodes-langchain.OpenAi -> OpenAi).
+    2. Case-insensitive node type membership in ``AI_NODE_TYPES``,
+       with generic package-prefix stripping (last-dot segment).
+    3. Normalized type ends with ``"tool"`` — covers ALL n8n
+       ``usableAsTool`` conversions which append ``Tool`` suffix
+       (e.g. ``n8n-nodes-base.microsoftSqlTool``,
+       ``communityPackage.whateverTool``).  This is the canonical
+       naming convention enforced by ``convertNodeToAiTool()`` in
+       n8n's source.
     """
     if not node_type:
         return False
     if category == "AI/LangChain Nodes":
         return True
-    return _normalize_node_type(node_type) in _AI_NODE_TYPES_LOWER
+    normalized = _normalize_node_type(node_type)
+    if normalized in _AI_NODE_TYPES_LOWER:
+        return True
+    # Generic: n8n appends "Tool" to usableAsTool node names.
+    if normalized.endswith("tool"):
+        return True
+    return False
 
 
 __all__.extend(["is_ai_node", "AI_NODE_TYPES"])

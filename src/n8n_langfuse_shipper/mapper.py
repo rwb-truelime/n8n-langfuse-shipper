@@ -25,15 +25,18 @@ from __future__ import annotations
 from typing import Optional
 
 from .config import get_settings
+from .mapping.id_utils import SPAN_NAMESPACE  # deterministic UUIDv5 namespace
 from .mapping.orchestrator import (
     _apply_ai_filter,
-    _map_execution,
-    _extract_model_and_metadata,
     _detect_gemini_empty_output_anomaly,
+    _extract_model_and_metadata,
     _flatten_runs,
+    _map_execution,
     _resolve_parent,  # re-export for tests relying on direct import
 )
-from .mapping.id_utils import SPAN_NAMESPACE  # deterministic UUIDv5 namespace
+from .mapping.parent_resolution import (
+    build_child_agent_map as _build_child_agent_map,
+)
 from .media_api import MappedTraceWithAssets
 from .models.langfuse import LangfuseTrace
 from .models.n8n import N8nExecutionRecord
@@ -84,6 +87,7 @@ def map_execution_to_langfuse(
         # Retrieve settings (tests handle cache clearing explicitly). Avoid
         # unconditional cache clearing here to prevent cross-test env leakage.
         settings = get_settings()
+        cam = _build_child_agent_map(record.workflowData)
         _apply_ai_filter(
             trace=trace,
             record=record,
@@ -92,6 +96,7 @@ def map_execution_to_langfuse(
             include_patterns=settings.FILTER_AI_EXTRACTION_INCLUDE_KEYS,
             exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
             max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
+            child_agent_map=cam,
         )
     return trace
 
@@ -128,6 +133,7 @@ def map_execution_with_assets(
     )
     if filter_ai_only:
         settings = get_settings()
+        cam = _build_child_agent_map(record.workflowData)
         _apply_ai_filter(
             trace=trace,
             record=record,
@@ -136,5 +142,6 @@ def map_execution_with_assets(
             include_patterns=settings.FILTER_AI_EXTRACTION_INCLUDE_KEYS,
             exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
             max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
+            child_agent_map=cam,
         )
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])

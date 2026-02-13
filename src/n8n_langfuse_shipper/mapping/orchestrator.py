@@ -763,6 +763,10 @@ def _apply_ai_filter(
     include_patterns: list[str],
     exclude_patterns: list[str],
     max_value_len: int,
+    *,
+    child_agent_map: Optional[
+        Dict[str, Tuple[str, str]]
+    ] = None,
 ) -> None:
     """Apply AI-only filtering with context window preservation (mutates trace in place).
 
@@ -796,6 +800,8 @@ def _apply_ai_filter(
         include_patterns: Wildcard patterns for keys to include in extraction
         exclude_patterns: Wildcard patterns for keys to exclude from extraction
         max_value_len: Maximum string length per extracted value
+        child_agent_map: Optional AI hierarchy map; nodes present as
+            keys are classified as AI regardless of type/category
     """
     extracted_data = None  # Initialize outside try for scope
     try:
@@ -826,11 +832,24 @@ def _apply_ai_filter(
         node_lookup: Dict[str, Tuple[Optional[str], Optional[str]]] = {
             n.name: (n.type, n.category) for n in record.workflowData.nodes
         }
+        # Build set of node names connected to agents via ai_*
+        # connections for graph-aware classification.
+        graph_ai_names: set[str] = set()
+        if child_agent_map:
+            graph_ai_names = set(child_agent_map.keys())
+            # Also include agent node names themselves.
+            for _child, (agent, _lt) in child_agent_map.items():
+                graph_ai_names.add(agent)
         for idx, span in enumerate(original_order):
             if span.id == root_span.id:
                 continue
-            node_type, node_cat = node_lookup.get(span.name, (None, None))
-            if is_ai_node(node_type, node_cat):
+            node_type, node_cat = node_lookup.get(
+                span.name, (None, None)
+            )
+            is_ai = is_ai_node(node_type, node_cat)
+            if not is_ai and span.name in graph_ai_names:
+                is_ai = True
+            if is_ai:
                 ai_span_ids.add(span.id)
                 ai_indices.append(idx)
         keep_ids: set[str] = {root_span.id}
@@ -925,6 +944,76 @@ def _apply_ai_filter(
             logger.warning("ai_filter_failed error=%s", e)
         except Exception:
             pass
+
+
+def _fixup_agent_parents(
+    trace: LangfuseTrace,
+    ctx: MappingContext,
+) -> None:
+    """Correct Tier-1 (Agent Hierarchy) parent assignments after all spans exist.
+
+    During chronological mapping, tool span start_time may precede its agent's
+    start_time (n8n records tool invocations from earlier loop iterations first).
+    This means last_span_for_node[agent] does not yet exist when the tool is
+    processed, causing resolve_parent to fall back to root.
+
+    This function performs a single post-loop pass over all spans:
+    1. Collects all spans that belong to known agent names (from child_agent_map)
+       and sorts them by start_time.
+    2. For each span whose metadata indicates an agent parent (n8n.agent.parent),
+       finds the *latest* agent span whose start_time <= tool span's start_time.
+       If none found (all agent spans start after the tool), uses the earliest
+       agent span.
+    3. If the resolved parent differs from the current parent_id, updates it and
+       emits n8n.agent.parent_fixup=True metadata.
+
+    This is deterministic: same input yields same fixup outcome.
+
+    Args:
+        trace: LangfuseTrace with all spans created (mutated in place)
+        ctx: MappingContext containing child_agent_map and root_span_id
+    """
+    if not ctx.child_agent_map:
+        return
+
+    # Collect agent names (values of child_agent_map).
+    agent_names: set[str] = set()
+    for _child, (agent, _lt) in ctx.child_agent_map.items():
+        agent_names.add(agent)
+
+    # Build agent_name -> sorted list of (start_time, span_id).
+    agent_spans: Dict[str, List[Tuple[Any, str]]] = {}
+    for span in trace.spans:
+        if span.name in agent_names:
+            agent_spans.setdefault(span.name, []).append(
+                (span.start_time, span.id)
+            )
+    for entries in agent_spans.values():
+        entries.sort(key=lambda e: e[0])
+
+    # Fixup pass: re-resolve parent for agent-hierarchy spans.
+    for span in trace.spans:
+        agent_parent = span.metadata.get("n8n.agent.parent")
+        if not agent_parent:
+            continue
+        candidates = agent_spans.get(agent_parent)
+        if not candidates:
+            continue
+
+        # Find latest agent span starting at or before this tool.
+        best_id: Optional[str] = None
+        for a_start, a_id in candidates:
+            if a_start <= span.start_time:
+                best_id = a_id
+            else:
+                break
+        # If no agent span starts before the tool, use earliest.
+        if best_id is None:
+            best_id = candidates[0][1]
+
+        if best_id != span.parent_id:
+            span.parent_id = best_id
+            span.metadata["n8n.agent.parent_fixup"] = True
 
 
 def _map_execution(
@@ -1317,6 +1406,14 @@ def _map_execution(
                 ctx.last_output_data[node_name] = raw_output_obj
         except Exception:
             pass
+    # ── Post-loop agent-hierarchy parent fixup ──────────────────────
+    # Tool node runs may start *before* their agent's run in n8n's
+    # execution model. During the chronological loop above, the agent
+    # span does not exist yet when we process such a tool, so
+    # resolve_parent falls back to root.  Now that ALL spans exist we
+    # can correct Tier-1 (Agent Hierarchy) parent assignments.
+    _fixup_agent_parents(trace, ctx)
+
     # Populate root span input/output if configured and captured. We avoid any
     # mutation earlier to keep mapping deterministic; this simple assignment is
     # transparent and preserves original sanitization/truncation semantics.
