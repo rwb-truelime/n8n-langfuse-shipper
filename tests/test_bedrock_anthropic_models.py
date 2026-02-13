@@ -228,8 +228,10 @@ def test_bedrock_model_from_parameters():
 
 
 def test_bedrock_model_from_modelSource_parameter():
-    """Test model extraction from modelSource parameter (real Bedrock node structure)."""
-    # Simulate real Bedrock node where model ID is in parameters.modelSource
+    """Test model extraction with real n8n Bedrock structure (both model and modelSource)."""
+    # Real n8n v2.6.4 Bedrock node structure where:
+    # - parameters.modelSource = "onDemand" (UI selector)
+    # - parameters.model = actual model ID
     now = datetime.now(timezone.utc)
     starter_run = NodeRun(
         startTime=int(now.timestamp() * 1000),
@@ -252,7 +254,7 @@ def test_bedrock_model_from_modelSource_parameter():
     
     runData = {"Starter": [starter_run], "Bedrock LLM": [bedrock_run]}
     
-    # Workflow node with modelSource parameter (matching real-world structure)
+    # Real n8n Bedrock node parameter structure (n8n v2.6.4)
     rec = N8nExecutionRecord(
         id=2001,
         workflowId="wf-bedrock-modelsource",
@@ -268,7 +270,8 @@ def test_bedrock_model_from_modelSource_parameter():
                     name="Bedrock LLM",
                     type="@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
                     parameters={
-                        "modelSource": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        "modelSource": "onDemand",  # UI selector value
+                        "model": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",  # Actual model ID
                         "region": "us-east-1",
                     },
                 ),
@@ -282,15 +285,15 @@ def test_bedrock_model_from_modelSource_parameter():
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
     span = next(s for s in trace.spans if s.name == "Bedrock LLM")
     
-    # Verify model extracted from parameters.modelSource
-    assert span.model == "anthropic.claude-3-5-sonnet-20241022-v2:0", (
-        f"Expected model from parameters.modelSource, got {span.model}"
+    # Verify model extracted from parameters.model (NOT parameters.modelSource="onDemand")
+    assert span.model == "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", (
+        f"Expected model from parameters.model, got {span.model}"
     )
     assert span.metadata.get("n8n.model.from_parameters") is True, (
         "Should have n8n.model.from_parameters metadata"
     )
-    assert span.metadata.get("n8n.model.parameter_key") == "parameters.modelSource", (
-        f"Expected parameter_key to be parameters.modelSource, got {span.metadata.get('n8n.model.parameter_key')}"
+    assert span.metadata.get("n8n.model.parameter_key") == "parameters.model", (
+        f"Expected parameter_key to be parameters.model, got {span.metadata.get('n8n.model.parameter_key')}"
     )
 
 

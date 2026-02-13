@@ -227,18 +227,19 @@ def extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str
                         meta_pk["n8n.model.is_deployment"] = True
                     result = (v, f"{path}.{pk}", meta_pk)
                     break
-        for k, v in current.items():
-            if (
-                isinstance(v, str)
-                and v
-                and not v.startswith("={{")
-                and looks_like_model_param_key(k)
-            ):
-                meta_k: Dict[str, Any] = {}
-                if azure_flag:
-                    meta_k["n8n.model.is_deployment"] = True
-                result = (v, f"{path}.{k}", meta_k)
-                break
+        if result is None:
+            for k, v in current.items():
+                if (
+                    isinstance(v, str)
+                    and v
+                    and not v.startswith("={{")
+                    and looks_like_model_param_key(k)
+                ):
+                    meta_k: Dict[str, Any] = {}
+                    if azure_flag:
+                        meta_k["n8n.model.is_deployment"] = True
+                    result = (v, f"{path}.{k}", meta_k)
+                    break
         if depth < 25:
             for k, v in current.items():
                 if isinstance(v, dict):
