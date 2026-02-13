@@ -69,13 +69,13 @@ from .generation import (
 )
 from .id_utils import SPAN_NAMESPACE
 from .io_normalizer import (
+    extract_generation_input_and_params as _extract_generation_input_and_params,
+)
+from .io_normalizer import (
     normalize_node_io as _normalize_node_io,
 )
 from .io_normalizer import (
     strip_system_prompt_from_langchain_lmchat as _strip_system_prompt_from_langchain_lmchat,
-)
-from .io_normalizer import (
-    extract_generation_input_and_params as _extract_generation_input_and_params,
 )
 from .mapping_context import MappingContext
 from .model_extractor import (
@@ -543,7 +543,8 @@ def _discover_additional_binary_assets(
     def _add(base64_str: str, mime: str | None, fname: str | None, path: str) -> None:
         nonlocal limit_hit
         if max_assets > 0 and len(found) >= max_assets:
-            limit_hit = True; return
+            limit_hit = True
+            return
         try:
             if len(base64_str) < 64:
                 return
@@ -574,7 +575,8 @@ def _discover_additional_binary_assets(
     def _walk(o: Any, path: str, parent: Any | None) -> None:  # noqa: C901
         nonlocal limit_hit
         if max_assets > 0 and len(found) >= max_assets:
-            limit_hit = True; return
+            limit_hit = True
+            return
         if isinstance(o, dict):
             mime = o.get("mimeType") or o.get("mime_type") or o.get("fileType")
             fname = o.get("fileName") or o.get("name")
@@ -641,7 +643,7 @@ def _collect_binary_assets(
     cloned = copy.deepcopy(run_data_obj)
     if "binary" not in cloned:
         aggregated: dict[str, Any] = {}
-        for k, v in list(cloned.items())[:20]:
+        for _k, v in list(cloned.items())[:20]:
             if not isinstance(v, list):
                 continue
             stack: list[tuple[Any, int]] = [(v, 0)]
@@ -735,7 +737,8 @@ def _collect_binary_assets(
                         nxt = cursor.get(seg)
                         cursor = nxt if isinstance(nxt, dict) else None
                     else:
-                        cursor = None; break
+                        cursor = None
+                        break
                 if not isinstance(cursor, dict):
                     continue
                 leaf = segments[-1]
@@ -767,6 +770,7 @@ def _apply_ai_filter(
     child_agent_map: Optional[
         Dict[str, Tuple[str, str]]
     ] = None,
+    filter_mode: str = "contextual",
 ) -> None:
     """Apply AI-only filtering with context window preservation (mutates trace in place).
 
@@ -853,12 +857,14 @@ def _apply_ai_filter(
                 ai_span_ids.add(span.id)
                 ai_indices.append(idx)
         keep_ids: set[str] = {root_span.id}
+        normalized_mode = (filter_mode or "contextual").strip().lower()
         if not ai_indices:
             for s in original_order:
                 if s.id != root_span.id:
                     s.metadata.setdefault("n8n.filter.no_ai_spans", True)
             trace.spans = [root_span]
             root_span.metadata["n8n.filter.ai_only"] = True
+            root_span.metadata["n8n.filter.mode"] = normalized_mode
             root_span.metadata.setdefault("n8n.filter.excluded_node_count", len(original_order) - 1)
             root_span.metadata["n8n.filter.no_ai_spans"] = True
             # Attach extracted data even when no AI spans
@@ -868,31 +874,50 @@ def _apply_ai_filter(
         first_ai_idx = ai_indices[0]
         last_ai_idx = ai_indices[-1]
         keep_ids.update(ai_span_ids)
-        if first_ai_idx - 1 >= 1:
-            keep_ids.add(original_order[first_ai_idx - 1].id)
-        if first_ai_idx - 2 >= 1:
-            keep_ids.add(original_order[first_ai_idx - 2].id)
-        index_by_id = {s.id: i for i, s in enumerate(original_order)}
-        def _is_on_chain(span: LangfuseSpan) -> bool:
-            cur = span; hops = 0
-            while cur.parent_id and hops < 200:
-                hops += 1
-                if cur.parent_id in ai_span_ids:
-                    return True
-                cur = spans_by_id.get(cur.parent_id) or cur
-                if cur.id == root_span.id:
-                    break
-            return False
-        for i in range(first_ai_idx + 1, last_ai_idx):
-            s = original_order[i]
-            if s.id == root_span.id:
-                continue
-            if _is_on_chain(s):
-                keep_ids.add(s.id)
-        if last_ai_idx + 1 < len(original_order):
-            keep_ids.add(original_order[last_ai_idx + 1].id)
-        if last_ai_idx + 2 < len(original_order):
-            keep_ids.add(original_order[last_ai_idx + 2].id)
+        if normalized_mode == "strict":
+            # Keep AI spans plus required ancestor closure up to root.
+            for ai_id in ai_span_ids:
+                cur = spans_by_id.get(ai_id)
+                hops = 0
+                while cur and cur.parent_id and hops < 300:
+                    hops += 1
+                    parent_id = cur.parent_id
+                    if parent_id == root_span.id:
+                        break
+                    parent_span = spans_by_id.get(parent_id)
+                    if parent_span is None:
+                        break
+                    keep_ids.add(parent_id)
+                    cur = parent_span
+        else:
+            # Contextual mode: AI spans + pre/post window + chain connectors.
+            if first_ai_idx - 1 >= 1:
+                keep_ids.add(original_order[first_ai_idx - 1].id)
+            if first_ai_idx - 2 >= 1:
+                keep_ids.add(original_order[first_ai_idx - 2].id)
+
+            def _is_on_chain(span: LangfuseSpan) -> bool:
+                cur = span
+                hops = 0
+                while cur.parent_id and hops < 200:
+                    hops += 1
+                    if cur.parent_id in ai_span_ids:
+                        return True
+                    cur = spans_by_id.get(cur.parent_id) or cur
+                    if cur.id == root_span.id:
+                        break
+                return False
+
+            for i in range(first_ai_idx + 1, last_ai_idx):
+                s = original_order[i]
+                if s.id == root_span.id:
+                    continue
+                if _is_on_chain(s):
+                    keep_ids.add(s.id)
+            if last_ai_idx + 1 < len(original_order):
+                keep_ids.add(original_order[last_ai_idx + 1].id)
+            if last_ai_idx + 2 < len(original_order):
+                keep_ids.add(original_order[last_ai_idx + 2].id)
         new_spans: List[LangfuseSpan] = []
         excluded = 0
         for s in original_order:
@@ -901,6 +926,7 @@ def _apply_ai_filter(
             else:
                 excluded += 1
         root_span.metadata["n8n.filter.ai_only"] = True
+        root_span.metadata["n8n.filter.mode"] = normalized_mode
         root_span.metadata["n8n.filter.excluded_node_count"] = excluded
         # Window metadata reconstruction
         window_start_span = original_order[first_ai_idx].id
@@ -930,6 +956,10 @@ def _apply_ai_filter(
                 pre_context_count = 2
             if post_context_count > 2:
                 post_context_count = 2
+        if normalized_mode == "strict":
+            pre_context_count = 0
+            post_context_count = 0
+            chain_context_count = 0
         root_span.metadata["n8n.filter.pre_context_count"] = pre_context_count
         root_span.metadata["n8n.filter.post_context_count"] = post_context_count
         root_span.metadata["n8n.filter.chain_context_count"] = chain_context_count
@@ -1119,17 +1149,21 @@ def _map_execution(
     # Root span I/O surfacing (configured via env). We resolve settings lazily
     # here to avoid importing config at module import time (determinism & tests).
     from ..config import get_settings  # local import to keep orchestrator pure until call
+    target_input_name: Optional[str] = None
+    target_output_name: Optional[str] = None
     try:
         _settings = get_settings()
+        target_input_name = _settings.ROOT_SPAN_INPUT_NODE
+        target_output_name = _settings.ROOT_SPAN_OUTPUT_NODE
         # Pre-normalize case-insensitive targets (lower) for matching speed.
         target_input = (
-            _settings.ROOT_SPAN_INPUT_NODE.lower()  # type: ignore[union-attr]
-            if _settings.ROOT_SPAN_INPUT_NODE
+            target_input_name.lower()
+            if target_input_name
             else None
         )
         target_output = (
-            _settings.ROOT_SPAN_OUTPUT_NODE.lower()  # type: ignore[union-attr]
-            if _settings.ROOT_SPAN_OUTPUT_NODE
+            target_output_name.lower()
+            if target_output_name
             else None
         )
     except Exception:  # pragma: no cover - defensive failure
@@ -1157,7 +1191,6 @@ def _map_execution(
             reverse_edges=ctx.reverse_edges,
             root_span_id=ctx.root_span_id,
         )
-        usage = _extract_usage(run)
         is_generation = _detect_generation(node_type, run)
         observation_type = obs_type_guess or ("generation" if is_generation else "span")
         raw_input_obj: Any = None
@@ -1422,14 +1455,14 @@ def _map_execution(
             if root_input_run_index is not None:
                 root_span.input = root_input_val
                 # Emit traceability metadata keys (do not duplicate execution id invariant).
-                root_span.metadata["n8n.root.input_node"] = _settings.ROOT_SPAN_INPUT_NODE  # type: ignore[name-defined]
+                root_span.metadata["n8n.root.input_node"] = target_input_name
                 root_span.metadata["n8n.root.input_run_index"] = root_input_run_index
             else:
                 root_span.metadata["n8n.root.input_node_not_found"] = True
         if target_output:
             if root_output_run_index is not None:
                 root_span.output = root_output_val
-                root_span.metadata["n8n.root.output_node"] = _settings.ROOT_SPAN_OUTPUT_NODE  # type: ignore[name-defined]
+                root_span.metadata["n8n.root.output_node"] = target_output_name
                 root_span.metadata["n8n.root.output_run_index"] = root_output_run_index
             else:
                 root_span.metadata["n8n.root.output_node_not_found"] = True

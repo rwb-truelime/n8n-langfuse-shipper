@@ -5,7 +5,6 @@ dev/staging environments properly query the API with correct metadata.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import Mock, patch
 
 from n8n_langfuse_shipper.mapping.prompt_version_resolver import PromptVersionResolver

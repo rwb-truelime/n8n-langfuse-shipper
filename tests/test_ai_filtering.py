@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from n8n_langfuse_shipper.config import Settings
 from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
 from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
@@ -387,3 +388,71 @@ def test_filter_disabled_no_changes():
     root_filtered = next(s for s in filtered_trace.spans if s.parent_id is None)
     assert root_filtered.metadata.get("n8n.filter.ai_only") is True
     assert any(s.metadata.get("n8n.filter.ai_only") for s in filtered_trace.spans if s.parent_id is None)
+
+
+def test_filter_strict_mode_keeps_only_ai_and_ancestor_closure(monkeypatch):
+    nodes = [
+        WorkflowNode(name="Start", type="ManualTrigger", category="Trigger Nodes"),
+        WorkflowNode(name="Prep", type="Set", category="Core Nodes"),
+        WorkflowNode(name="Agent", type="Agent", category="AI/LangChain Nodes"),
+        WorkflowNode(name="LLM", type="LmChatOpenAi", category="AI/LangChain Nodes"),
+        WorkflowNode(name="Post", type="Merge", category="Core Nodes"),
+    ]
+    run_map = {
+        "Start": [
+            NodeRun(startTime=1000, executionTime=5, executionStatus="success", data={"main": [[{"json": {}}]]})
+        ],
+        "Prep": [
+            NodeRun(
+                startTime=1100,
+                executionTime=5,
+                executionStatus="success",
+                data={"main": [[{"json": {"prep": True}}]]},
+                source=[NodeRunSource(previousNode="Start")],
+            )
+        ],
+        "Agent": [
+            NodeRun(
+                startTime=1200,
+                executionTime=5,
+                executionStatus="success",
+                data={"main": [[{"json": {"agent": True}}]]},
+                source=[NodeRunSource(previousNode="Prep")],
+            )
+        ],
+        "LLM": [
+            NodeRun(
+                startTime=1300,
+                executionTime=5,
+                executionStatus="success",
+                data={
+                    "main": [[{"json": {"text": "ok"}}]],
+                    "tokenUsage": {"input": 1, "output": 1},
+                },
+                source=[NodeRunSource(previousNode="Agent")],
+            )
+        ],
+        "Post": [
+            NodeRun(
+                startTime=1400,
+                executionTime=5,
+                executionStatus="success",
+                data={"main": [[{"json": {"post": True}}]]},
+                source=[NodeRunSource(previousNode="LLM")],
+            )
+        ],
+    }
+    rec = _base_record(nodes, run_map, exec_id=1005)
+    settings = Settings(DB_TABLE_PREFIX="n8n_", FILTER_AI_MODE="strict")
+    monkeypatch.setattr("n8n_langfuse_shipper.mapper.get_settings", lambda: settings)
+
+    trace = map_execution_to_langfuse(rec, filter_ai_only=True)
+    names = [s.name for s in trace.spans]
+    assert "Post" not in names
+    assert {"Start", "Prep", "Agent", "LLM"}.issubset(set(names))
+
+    root = next(s for s in trace.spans if "n8n.execution.id" in s.metadata)
+    assert root.metadata.get("n8n.filter.mode") == "strict"
+    assert root.metadata.get("n8n.filter.pre_context_count") == 0
+    assert root.metadata.get("n8n.filter.post_context_count") == 0
+    assert root.metadata.get("n8n.filter.chain_context_count") == 0

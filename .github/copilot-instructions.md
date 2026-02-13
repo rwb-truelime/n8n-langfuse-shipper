@@ -308,9 +308,10 @@ class LangfuseTrace(BaseModel):
 8. All internal data structures defined with Pydantic models (validation + type safety mandatory).
 9. Database access is read-only (SELECTs only); respects dynamic table prefix logic.
 10. Determinism: identical input rows yield identical span/trace ids & structures.
-11. AI-only filtering (when enabled) must preserve root span, retain all AI node spans, and include
-    ancestor chain context; executions with no AI nodes produce root-only trace flagged via
-    `n8n.filter.no_ai_spans=true`.
+11. AI-only filtering (when enabled) must preserve root span and retain all AI node spans.
+    `FILTER_AI_MODE=contextual` keeps additional context window + chain spans;
+    `FILTER_AI_MODE=strict` keeps only AI spans + required ancestor closure.
+    Executions with no AI nodes produce root-only trace flagged via `n8n.filter.no_ai_spans=true`.
 
 ---
 
@@ -596,7 +597,8 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 
 **Notes:**
 * Root span metadata holds `n8n.execution.id`; not duplicated on trace metadata.
-* Export order mirrors creation order; parents precede children.
+* Export uses deterministic dependency-aware child ordering so mapped parents are emitted
+    before children even when parent start times are later than child start times.
 * Dry-run mode constructs spans but does not send them.
 * Media upload (if enabled) occurs before shipper export; span outputs already patched with tokens so exporter remains oblivious to raw binaries.
 * Human-readable OTLP trace id embedding: exporter derives deterministic 32-hex trace id ending with zero-padded execution id digits (function `_build_human_trace_id`). Logical `LangfuseTrace.id` stays raw execution id string.
@@ -643,6 +645,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | `TRUNCATE_FIELD_LEN` | `0` | Max chars for input/output before truncation. `0` ⇒ disabled (binary still stripped). |
 | `REQUIRE_EXECUTION_METADATA` | `false` | Only include executions having row in `<prefix>execution_metadata`. |
 | `FILTER_AI_ONLY` | `false` | Export only AI node spans plus ancestor chain; root span always retained; adds metadata flags. |
+| `FILTER_AI_MODE` | `contextual` | AI filter behavior mode. `contextual` keeps AI + context window and chain connectors; `strict` keeps AI + required ancestor closure only. |
 | `FILTER_WORKFLOW_IDS` | `` | Optional comma-separated allow-list of workflowId values to fetch (e.g. `abc123,def456`). Empty = no workflowId filtering. |
 | `FILTER_AI_EXTRACTION_NODES` | `""` | Comma-separated node names or wildcard patterns (`Tool*,Agent*`) for extracting node data to root metadata when `FILTER_AI_ONLY=true`. Empty disables extraction. |
 | `FILTER_AI_EXTRACTION_INCLUDE_KEYS` | `""` | Comma-separated wildcard patterns (`*url,*token*`) for keys to include in extracted data. Empty includes all. Patterns match full flattened paths like `main.0.0.json.fieldname`. |
@@ -697,7 +700,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.agent.parent`, `n8n.agent.link_type`
 * `n8n.agent.parent_fixup` – boolean flag (true when post-loop fixup re-parents tool/component to agent due to timing inversion)
 * `n8n.truncated.input`, `n8n.truncated.output`
-* `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
+* `n8n.filter.ai_only`, `n8n.filter.mode`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
 
 **Node extraction metadata (within `n8n.extracted_nodes`):**
 * `_meta.extracted_count` – number of nodes successfully extracted
@@ -770,6 +773,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 |------|-----------|----------------------|
 | Deterministic IDs | Same input → identical trace & span ids | `test_mapper.py` |
 | Parent Resolution | Precedence order enforced; timing inversion fixup deterministic | `test_mapper.py`, `test_negative_inferred_parent.py`, `test_agent_tool_parenting.py` |
+| Export Parent Preservation | Children with later-listed mapped parents are not reparented to root during export | `test_media_token_json_serialization.py` |
 | Agent Parent Fixup | Tool spans re-parented when tool startTime < agent startTime | `test_agent_tool_parenting.py` (tests 311-351, 353-372) |
 | Generic Tool Detection | Node types ending with "Tool" classified as AI | `test_agent_tool_parenting.py` (test 642-692) |
 | Binary Stripping | All large/base64 & binary objects redacted | `test_binary_and_truncation.py` |
@@ -778,7 +782,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Pointer Decoding | Pointer-compressed arrays reconstructed | `test_pointer_decoding.py`, `test_flatted_parsing.py` |
 | Timezone Enforcement | No naive datetimes; normalization to UTC | `test_timezone_awareness.py` |
 | Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
-| AI-only Filtering | Root retention, ancestor preservation, metadata flags | `test_ai_filtering.py` |
+| AI-only Filtering | Root retention, mode-specific retention, metadata flags | `test_ai_filtering.py` |
 | Node Extraction | Wildcard patterns match full flattened paths; flatten/unflatten preserves structure | `test_ai_extraction_*` |
 
 ### Parent Resolution Precedence (Authoritative Table)

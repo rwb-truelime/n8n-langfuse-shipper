@@ -5,16 +5,12 @@ and fingerprint-based disambiguation.
 """
 from __future__ import annotations
 
-import pytest
-from typing import Any, Dict, List
-
+from n8n_langfuse_shipper.mapping.prompt_detection import PromptMetadata
 from n8n_langfuse_shipper.mapping.prompt_resolution import (
-    PromptResolutionResult,
-    resolve_prompt_for_generation,
     _compute_text_fingerprint,
     _extract_ancestor_chain,
+    resolve_prompt_for_generation,
 )
-from n8n_langfuse_shipper.mapping.prompt_detection import PromptMetadata
 
 
 def test_resolve_immediate_parent_prompt():

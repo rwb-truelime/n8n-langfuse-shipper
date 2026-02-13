@@ -56,9 +56,8 @@ Design Invariants:
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from n8n_langfuse_shipper.mapping.binary_sanitizer import strip_binary_payload
 from n8n_langfuse_shipper.models.n8n import NodeRun
@@ -183,7 +182,6 @@ def _unflatten_dict(flat_dict: dict[str, Any], sep: str = ".") -> dict[str, Any]
             if is_last:
                 cur[part] = value
             else:
-                nxt = parts[i + 1]
                 if part not in cur or not isinstance(cur[part], dict):
                     cur[part] = {}
                 cur = cur[part]
@@ -198,7 +196,7 @@ def _unflatten_dict(flat_dict: dict[str, Any], sep: str = ".") -> dict[str, Any]
             return [_convert(v) for v in node]
         return node
 
-    return _convert(tree)
+    return cast(dict[str, Any], _convert(tree))
 
 
 def _apply_size_limit(value: Any, max_len: int) -> tuple[Any, bool]:

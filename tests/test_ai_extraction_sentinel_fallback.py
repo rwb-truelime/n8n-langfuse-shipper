@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from n8n_langfuse_shipper.config import get_settings
 from n8n_langfuse_shipper.mapper import map_execution_to_langfuse
 from n8n_langfuse_shipper.models.n8n import (
     ExecutionData,
@@ -10,7 +11,6 @@ from n8n_langfuse_shipper.models.n8n import (
     WorkflowData,
     WorkflowNode,
 )
-from n8n_langfuse_shipper.config import get_settings
 
 
 def _build_record():

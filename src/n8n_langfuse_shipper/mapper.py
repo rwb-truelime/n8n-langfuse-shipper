@@ -32,10 +32,12 @@ from .mapping.orchestrator import (
     _extract_model_and_metadata,
     _flatten_runs,
     _map_execution,
-    _resolve_parent,  # re-export for tests relying on direct import
 )
 from .mapping.parent_resolution import (
     build_child_agent_map as _build_child_agent_map,
+)
+from .mapping.parent_resolution import (
+    resolve_parent as _resolve_parent,
 )
 from .media_api import MappedTraceWithAssets
 from .models.langfuse import LangfuseTrace
@@ -97,6 +99,7 @@ def map_execution_to_langfuse(
             exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
             max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
             child_agent_map=cam,
+            filter_mode=settings.FILTER_AI_MODE,
         )
     return trace
 
@@ -143,5 +146,6 @@ def map_execution_with_assets(
             exclude_patterns=settings.FILTER_AI_EXTRACTION_EXCLUDE_KEYS,
             max_value_len=settings.FILTER_AI_EXTRACTION_MAX_VALUE_LEN,
             child_agent_map=cam,
+            filter_mode=settings.FILTER_AI_MODE,
         )
     return MappedTraceWithAssets(trace=trace, assets=assets if collect_binaries else [])

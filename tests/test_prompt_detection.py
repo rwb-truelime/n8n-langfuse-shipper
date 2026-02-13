@@ -8,13 +8,9 @@ Validates metadata extraction from various output schemas and edge cases.
 """
 from __future__ import annotations
 
-import pytest
-
 from n8n_langfuse_shipper.mapping.prompt_detection import (
-    PromptMetadata,
-    PromptSourceInfo,
-    detect_prompt_fetch_node,
     build_prompt_registry,
+    detect_prompt_fetch_node,
 )
 
 
