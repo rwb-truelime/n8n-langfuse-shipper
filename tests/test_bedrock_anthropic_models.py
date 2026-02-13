@@ -210,21 +210,84 @@ def test_bedrock_model_extraction_claude_opus_4_6():
 
 def test_bedrock_model_from_parameters():
     """Test model extraction from static parameters when not in runtime data."""
-    rec = _build_bedrock_record(
-        node_name="Test Node",
-        node_type="@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
-        model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
-        include_output=False,
-        parameters={
-            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "region": "us-east-1",
+    model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    now = datetime.now(timezone.utc)
+
+    starter_run = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=5,
+        executionStatus="success",
+        data={"main": [[{"json": {"input": "test prompt"}}]]},
+    )
+
+    # Runtime data intentionally omits any "model" field to force parameter fallback
+    bedrock_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 10,
+        executionTime=1500,
+        executionStatus="success",
+        data={
+            "response": {"generations": [[{"text": "Test response"}]]},
+            "tokenUsage": {
+                "promptTokens": 10,
+                "completionTokens": 20,
+                "totalTokens": 30,
+            },
+        },
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+
+    workflow = WorkflowData(
+        id="1",
+        name="Test Workflow",
+        nodes=[
+            WorkflowNode(
+                name="Starter",
+                type="n8n-nodes-base.start",
+            ),
+            WorkflowNode(
+                name="Test Node",
+                type="@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+                parameters={
+                    "model": model_id,
+                    "region": "us-east-1",
+                },
+            ),
+        ],
+        connections={
+            "Starter": {
+                "main": [[{"node": "Test Node", "type": "main", "index": 0}]],
+            },
         },
     )
+
+    execution_data = ExecutionData(
+        executionData=ExecutionDataDetails(
+            resultData=ResultData(
+                runData={
+                    "Starter": [starter_run],
+                    "Test Node": [bedrock_run],
+                },
+            ),
+        ),
+    )
+
+    rec = N8nExecutionRecord(
+        id=1,
+        workflowId="wf1",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=workflow,
+        data=execution_data,
+    )
+
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
+
     span = next(s for s in trace.spans if s.name == "Test Node")
     # Model should be extracted from parameters as fallback
-    assert span.model is not None, "Model should be extracted from parameters"
+    assert span.model == model_id, "Model should be extracted from parameters"
+    assert span.metadata.get("n8n.model.from_parameters") is True
+    assert span.metadata.get("n8n.model.parameter_key") == "model"
 
 
 def test_bedrock_model_from_modelSource_parameter():
