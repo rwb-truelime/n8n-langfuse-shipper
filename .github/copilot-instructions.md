@@ -79,7 +79,8 @@ This file is a normative contract. Any behavioral change to mapping, identifiers
 
 Use these exact meanings in code comments, docs, and tests. Adding a new term? Update here in same PR.
 
-* **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent.
+* **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent. Post-loop fixup corrects timing inversions where tool spans start before their agent.
+* **Agent Parent Fixup:** Post-mapping phase re-parenting tool/component spans to agent spans when tool `startTime` precedes agent `startTime` (timing inversion). Deterministic: selects latest agent span starting at or before tool; if none exist, uses earliest agent span. Emits `n8n.agent.parent_fixup=true` metadata when fixup occurs.
 * **Backpressure:** Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) triggering exporter flush + sleep.
 * **Binary Stripping:** Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
 * **Checkpoint:** Persistent last processed execution id stored on successful export; guarantees idempotent resume.
@@ -93,6 +94,7 @@ Use these exact meanings in code comments, docs, and tests. Adding a new term? U
 * **Node Extraction:** Feature-flag gated mechanism to copy input/output data from specified nodes into root span metadata when `FILTER_AI_ONLY=true`. Applies binary stripping, wildcard key filtering (include/exclude patterns matching flattened paths), and size limiting before attaching to `n8n.extracted_nodes`. Preserves data from filtered-out (non-AI) nodes for debugging.
 * **NodeRun:** Runtime execution instance of a workflow node (timing, status, source chain, outputs, error).
 * **Observation Type:** Semantic classification (agent/tool/chain/etc.) via fallback chain: exact → regex → category → default span.
+* **Tool Suffix Detection:** Generic AI classification mechanism: any node type ending with "Tool" (case-insensitive) is classified as AI, covering n8n's `usableAsTool` mechanism that appends "Tool" to converted node names (e.g., `microsoftSqlTool`, `httpRequestTool`). Replaces hardcoded tool lists.
 * **Parent Resolution Precedence:** Ordered strategy: Agent Hierarchy → Runtime exact run → Runtime last span → Static reverse graph → Root.
 * **Pointer-Compressed Execution:** Alternative list-based JSON encoding using index string references; reconstructed into canonical `runData`.
 * **Prompt Resolution:** Identifying Langfuse prompt fetch nodes via 3-stage detection (node type, HTTP API pattern, output schema), resolving prompt metadata (name, version) from generation span ancestor chains, with environment-aware Langfuse API version queries in dev/staging only.
@@ -352,7 +354,7 @@ n8n pattern (especially LangChain nodes): "Agent" node uses other nodes as "Tool
 * `LangfuseSpan.id` deterministic: UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"`.
 
 **Parent Resolution (Multi-tier precedence):**
-1. **Agent Hierarchy:** Check `workflowData.connections`. If node connected to Agent via non-`main` `ai_*` type → parent is most recent Agent span. Sets metadata: `n8n.agent.parent`, `n8n.agent.link_type`.
+1. **Agent Hierarchy:** Check `workflowData.connections`. If node connected to Agent via non-`main` `ai_*` type → parent is most recent Agent span. Sets metadata: `n8n.agent.parent`, `n8n.agent.link_type`. **Post-loop fixup** corrects timing inversions: when tool span `startTime` precedes agent `startTime`, re-parents to the latest agent span starting at or before tool (or earliest agent if none qualify). Emits `n8n.agent.parent_fixup=true` when fixup occurs.
 2. **Runtime Sequential (Exact Run):** Use `run.source[0].previousNode` + `previousNodeRun` → link to exact run index. Sets: `n8n.node.previous_node_run`.
 3. **Runtime Sequential (Last Seen):** `previousNode` without run index → last seen span for that node. Sets: `n8n.node.previous_node`.
 4. **Static Graph Fallback:** Reverse-edge map from `workflowData.connections` infers likely parent. Sets: `n8n.graph.inferred_parent=true`.
@@ -364,6 +366,9 @@ If `NodeRun` lacks `inputOverride`, logical input inferred from cached raw outpu
 ### Observation Type Mapping
 
 Use `observation_mapper.py` to classify each node based on type and category. Fallback chain: exact → regex → category → default span.
+
+**AI Node Classification:**
+Generic tool suffix detection: any node type ending with "Tool" (case-insensitive, after stripping package prefixes like `@n8n/n8n-nodes-base.`) is automatically classified as AI. This covers n8n's `usableAsTool` mechanism (`convertNodeToAiTool` function) which appends "Tool" to node names, enabling dynamic tool creation from any base package node (e.g., `microsoftSqlTool`, `postgresTool`, `httpRequestTool`). This replaces hardcoded tool type lists and ensures all converted tools are retained when `FILTER_AI_ONLY=true` (via connection-graph AI classification through `child_agent_map`).
 
 ### Generation Detection
 
@@ -690,6 +695,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.node.previous_node`, `n8n.node.previous_node_run`
 * `n8n.graph.inferred_parent`
 * `n8n.agent.parent`, `n8n.agent.link_type`
+* `n8n.agent.parent_fixup` – boolean flag (true when post-loop fixup re-parents tool/component to agent due to timing inversion)
 * `n8n.truncated.input`, `n8n.truncated.output`
 * `n8n.filter.ai_only`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
 
@@ -763,7 +769,9 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Area | Guarantee | Representative Tests |
 |------|-----------|----------------------|
 | Deterministic IDs | Same input → identical trace & span ids | `test_mapper.py` |
-| Parent Resolution | Precedence order enforced | `test_mapper.py`, `test_negative_inferred_parent.py` |
+| Parent Resolution | Precedence order enforced; timing inversion fixup deterministic | `test_mapper.py`, `test_negative_inferred_parent.py`, `test_agent_tool_parenting.py` |
+| Agent Parent Fixup | Tool spans re-parented when tool startTime < agent startTime | `test_agent_tool_parenting.py` (tests 311-351, 353-372) |
+| Generic Tool Detection | Node types ending with "Tool" classified as AI | `test_agent_tool_parenting.py` (test 642-692) |
 | Binary Stripping | All large/base64 & binary objects redacted | `test_binary_and_truncation.py` |
 | Truncation & Propagation | Size guard only active when >0; propagation always | `test_binary_and_truncation.py`, `test_input_propagation.py` |
 | Generation Detection | Only spans meeting heuristics classified | `test_generation_heuristic.py` |
@@ -777,7 +785,7 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 
 | Priority | Strategy | Description | Metadata Signals |
 |----------|----------|-------------|------------------|
-| 1 | Agent Hierarchy | Non-`main` connection with `ai_*` type makes agent parent | `n8n.agent.parent`, `n8n.agent.link_type` |
+| 1 | Agent Hierarchy | Non-`main` connection with `ai_*` type makes agent parent; post-loop fixup corrects timing inversions | `n8n.agent.parent`, `n8n.agent.link_type`, `n8n.agent.parent_fixup` (when fixup applied) |
 | 2 | Runtime Sequential (Exact Run) | previousNode + previousNodeRun points to exact span | `n8n.node.previous_node_run` |
 | 3 | Runtime Sequential (Last Seen) | previousNode without run index → last span for node | `n8n.node.previous_node` |
 | 4 | Static Reverse Graph Fallback | Reverse edge from workflow connections | `n8n.graph.inferred_parent=true` |

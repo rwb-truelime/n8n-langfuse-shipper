@@ -16,13 +16,13 @@ It's designed for developers and teams who use n8n for AI-powered workflows and 
 
 - **High-Throughput shipper**: Efficiently processes and exports thousands of n8n executions.
 - **Rich Trace Data**: Intelligently maps n8n concepts to Langfuse, including:
-    - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes.
+    - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes, with automatic detection of any node used as a tool (via n8n's `usableAsTool` mechanism). Post-processing fixup handles timing inversions where tool spans start before their agent spans.
     - **Generation Spans**: Automatically detects LLM calls, extracting model names and token usage.
     - **Prompt Management Integration**: Links generation spans to Langfuse prompt versions, enabling prompt tracking and versioning.
     - **Error & Status**: Maps n8n node errors to Langfuse span statuses.
 - **Idempotent & Resumable**: Uses deterministic IDs and a checkpoint file to prevent duplicate data and allow you to safely resume exports.
 - **Media Uploads**: Can upload binary files (images, documents) from your workflows to Langfuse and link them to your traces.
-- **AI-Only Filtering**: Option to export only AI-related spans and their direct ancestors, cutting down on noise.
+- **AI-Only Filtering**: Option to export only AI-related spans and their direct ancestors, cutting down on noise. Automatically includes tools converted via n8n's `usableAsTool` feature.
 - **Resilient**: Handles various n8n data formats and recovers from transient database errors.
 
 ---
@@ -117,6 +117,46 @@ graph TD
 1.  **Extract**: It connects to your PostgreSQL database and streams n8n execution records in batches.
 2.  **Transform**: For each execution, it creates a Langfuse trace. It analyzes the workflow structure (`workflowData`) and the runtime output (`runData`) to map each executed node to a Langfuse span. This is where it identifies generations, token usage, and agent/tool relationships.
 3.  **Load**: It sends the fully formed traces to the Langfuse OTLP endpoint.
+
+---
+
+## Agent & Tool Hierarchy
+
+The shipper intelligently maps n8n's LangChain agent/tool patterns to Langfuse parent-child span relationships, ensuring your traces accurately reflect how agents orchestrate tool calls and LLM interactions.
+
+### Automatic Tool Detection
+
+**Generic Tool Recognition**: Any node whose type ends with "Tool" (case-insensitive) is automatically classified as an AI component. This covers n8n's `usableAsTool` feature, which converts any base package node (like Microsoft SQL, HTTP Request, Postgres) into an AI tool by appending "Tool" to its name.
+
+**Examples of automatically detected tools:**
+- `n8n-nodes-base.microsoftSqlTool` (SQL database tool)
+- `n8n-nodes-base.httpRequestTool` (HTTP API tool)
+- `n8n-nodes-base.postgresTool` (Postgres tool)
+- Any custom node converted via `usableAsTool` (e.g., `myCustomNodeTool`)
+
+This eliminates the need for hardcoded tool lists and ensures all tools—whether from official packages, community nodes, or future n8n releases—are correctly classified and retained when using AI-only filtering (`FILTER_AI_ONLY=true`).
+
+### Parent-Child Relationship Resolution
+
+The shipper uses a multi-tier strategy to determine parent-child relationships:
+
+1. **Agent Hierarchy** (highest priority): Identifies connections between agents and their tools/LLMs via n8n's `ai_*` connection types (e.g., `ai_tool`, `ai_languageModel`)
+2. **Runtime Sequential**: Uses execution chain data to link consecutive node runs
+3. **Static Graph Fallback**: Uses workflow structure when runtime data is incomplete
+4. **Root Fallback**: Links to the root execution span if no parent can be determined
+
+### Timing Inversion Fixup
+
+**The Challenge**: In n8n workflows with multiple agent iterations, tool spans may be recorded with earlier timestamps than their parent agent spans. This happens because n8n processes tool invocations from iteration N before starting iteration N+1, causing chronological mapping to initially assign tools to the root span instead of their agent.
+
+**The Solution**: After all spans are created, the shipper performs a post-processing fixup pass:
+
+1. Identifies all spans that should be parented to an agent (via connection graph analysis)
+2. For each tool/component span, finds the agent span whose start time is closest to (but not after) the tool's start time
+3. Re-parents the tool span to the correct agent span if the initial assignment was incorrect
+4. Adds metadata flag `n8n.agent.parent_fixup=true` to document the correction
+
+**Result**: Tool spans are always correctly nested under their agent spans in Langfuse, regardless of n8n's internal execution ordering. The fixup is deterministic—re-processing the same execution always produces the same hierarchy.
 
 ---
 
