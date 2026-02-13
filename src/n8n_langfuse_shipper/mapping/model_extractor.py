@@ -12,7 +12,7 @@ Search Strategy:
 
 Model Key Variants:
     - model, model_name, modelId, model_id (runtime)
-    - model, customModel, deploymentName, deployment, modelName (parameters)
+    - model, customModel, modelSource, deploymentName, deployment, modelName (parameters)
 
 Azure Special Handling:
     When node type contains "azure", deployment names flagged with
@@ -179,7 +179,7 @@ def extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str
     dict using priority key list and breadth-first traversal.
 
     Priority keys (checked first):
-    - model, customModel, deploymentName, deployment, modelName, model_id, modelId
+    - model, customModel, modelSource, deploymentName, deployment, modelName, model_id, modelId
 
     Azure special handling:
     When node.type contains "azure", attaches n8n.model.is_deployment=true metadata
@@ -204,6 +204,7 @@ def extract_model_from_parameters(node: WorkflowNode) -> Optional[Tuple[str, str
     priority_keys = [
         "model",
         "customModel",
+        "modelSource",
         "deploymentName",
         "deployment",
         "modelName",

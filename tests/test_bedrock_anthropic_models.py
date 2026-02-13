@@ -227,6 +227,73 @@ def test_bedrock_model_from_parameters():
     assert span.model is not None, "Model should be extracted from parameters"
 
 
+def test_bedrock_model_from_modelSource_parameter():
+    """Test model extraction from modelSource parameter (real Bedrock node structure)."""
+    # Simulate real Bedrock node where model ID is in parameters.modelSource
+    now = datetime.now(timezone.utc)
+    starter_run = NodeRun(
+        startTime=int(now.timestamp() * 1000),
+        executionTime=5,
+        executionStatus="success",
+        data={"main": [[{"json": {"input": "test prompt"}}]]},
+    )
+    
+    # Runtime data without model field (forcing parameter fallback)
+    bedrock_run = NodeRun(
+        startTime=int(now.timestamp() * 1000) + 10,
+        executionTime=1500,
+        executionStatus="success",
+        data={
+            "response": {"generations": [[{"text": "Test response"}]]},
+            "tokenUsage": {"promptTokens": 10, "completionTokens": 20, "totalTokens": 30},
+        },
+        source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
+    )
+    
+    runData = {"Starter": [starter_run], "Bedrock LLM": [bedrock_run]}
+    
+    # Workflow node with modelSource parameter (matching real-world structure)
+    rec = N8nExecutionRecord(
+        id=2001,
+        workflowId="wf-bedrock-modelsource",
+        status="success",
+        startedAt=now,
+        stoppedAt=now,
+        workflowData=WorkflowData(
+            id="wf-bedrock-modelsource",
+            name="Bedrock ModelSource Test",
+            nodes=[
+                WorkflowNode(name="Starter", type="ToolWorkflow"),
+                WorkflowNode(
+                    name="Bedrock LLM",
+                    type="@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+                    parameters={
+                        "modelSource": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        "region": "us-east-1",
+                    },
+                ),
+            ],
+        ),
+        data=ExecutionData(
+            executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
+        ),
+    )
+    
+    trace = map_execution_to_langfuse(rec, truncate_limit=None)
+    span = next(s for s in trace.spans if s.name == "Bedrock LLM")
+    
+    # Verify model extracted from parameters.modelSource
+    assert span.model == "anthropic.claude-3-5-sonnet-20241022-v2:0", (
+        f"Expected model from parameters.modelSource, got {span.model}"
+    )
+    assert span.metadata.get("n8n.model.from_parameters") is True, (
+        "Should have n8n.model.from_parameters metadata"
+    )
+    assert span.metadata.get("n8n.model.parameter_key") == "parameters.modelSource", (
+        f"Expected parameter_key to be parameters.modelSource, got {span.metadata.get('n8n.model.parameter_key')}"
+    )
+
+
 def test_bedrock_generation_without_explicit_token_usage():
     """Test that Bedrock nodes are still classified as generation by type marker."""
     # Build record without tokenUsage - should still be detected via 'bedrock' marker
