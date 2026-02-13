@@ -14,7 +14,6 @@ if str(ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def _isolate_filter_ai_mode_env(monkeypatch):
     monkeypatch.delenv("FILTER_AI_MODE", raising=False)
-    try:
-        get_settings.cache_clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    cache_clear = getattr(get_settings, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
