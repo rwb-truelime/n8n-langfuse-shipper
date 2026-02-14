@@ -34,7 +34,7 @@ def _build_bedrock_record(
     parameters: dict | None = None,
 ):
     """Build test execution record for Bedrock Anthropic node.
-    
+
     Args:
         node_name: Name of the test node
         node_type: Node type identifier (e.g., @n8n/n8n-nodes-langchain.lmChatAwsBedrock)
@@ -42,7 +42,7 @@ def _build_bedrock_record(
         include_token_usage: Whether to include tokenUsage in output
         include_output: Whether to include response output
         parameters: Optional static parameters dict for the workflow node
-    
+
     Returns:
         N8nExecutionRecord with simulated Bedrock Anthropic execution
     """
@@ -53,24 +53,24 @@ def _build_bedrock_record(
         executionStatus="success",
         data={"main": [[{"json": {"input": "test prompt"}}]]},
     )
-    
+
     # Build output data structure mimicking real Bedrock responses
     output_data: dict = {}
     if include_output:
         output_data["response"] = {
             "generations": [[{"text": "This is a test response from Claude."}]],
         }
-    
+
     if include_token_usage:
         output_data["tokenUsage"] = {
             "promptTokens": 15,
             "completionTokens": 25,
             "totalTokens": 40,
         }
-    
+
     # Add model identifier to output (Bedrock includes this in response metadata)
     output_data["model"] = model_id
-    
+
     bedrock_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
         executionTime=1500,
@@ -78,16 +78,16 @@ def _build_bedrock_record(
         data=output_data,
         source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
     )
-    
+
     runData = {"Starter": [starter_run], node_name: [bedrock_run]}
-    
+
     # Build workflow node with optional parameters
     workflow_node = WorkflowNode(
         name=node_name,
         type=node_type,
         parameters=parameters or {},
     )
-    
+
     rec = N8nExecutionRecord(
         id=1000,
         workflowId="wf-bedrock-anthropic",
@@ -117,8 +117,8 @@ def test_bedrock_claude_3_5_sonnet_v2_generation_detection():
         model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Claude 3.5 Sonnet v2")
+
+    span = next(s for s in trace.spans if s.name == "Claude 3.5 Sonnet v2 #0")
     assert span.observation_type == "generation", (
         "Claude 3.5 Sonnet v2 on Bedrock should be classified as generation"
     )
@@ -136,8 +136,8 @@ def test_bedrock_claude_sonnet_4_5_generation_detection():
         model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Claude Sonnet 4.5")
+
+    span = next(s for s in trace.spans if s.name == "Claude Sonnet 4.5 #0")
     assert span.observation_type == "generation", (
         "Claude Sonnet 4.5 on Bedrock should be classified as generation"
     )
@@ -155,8 +155,8 @@ def test_bedrock_claude_opus_4_6_generation_detection():
         model_id="anthropic.claude-opus-4-6-v1",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Claude Opus 4.6")
+
+    span = next(s for s in trace.spans if s.name == "Claude Opus 4.6 #0")
     assert span.observation_type == "generation", (
         "Claude Opus 4.6 on Bedrock should be classified as generation"
     )
@@ -171,8 +171,8 @@ def test_bedrock_model_extraction_claude_3_5_sonnet_v2():
         model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Test Node")
+
+    span = next(s for s in trace.spans if s.name == "Test Node #0")
     assert span.model == "anthropic.claude-3-5-sonnet-20241022-v2:0", (
         "Model ID should be extracted from Bedrock response"
     )
@@ -186,8 +186,8 @@ def test_bedrock_model_extraction_claude_sonnet_4_5():
         model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Test Node")
+
+    span = next(s for s in trace.spans if s.name == "Test Node #0")
     assert span.model == "anthropic.claude-sonnet-4-5-20250929-v1:0", (
         "Model ID should be extracted from Bedrock response"
     )
@@ -201,8 +201,8 @@ def test_bedrock_model_extraction_claude_opus_4_6():
         model_id="anthropic.claude-opus-4-6-v1",
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
-    span = next(s for s in trace.spans if s.name == "Test Node")
+
+    span = next(s for s in trace.spans if s.name == "Test Node #0")
     assert span.model == "anthropic.claude-opus-4-6-v1", (
         "Model ID should be extracted from Bedrock response"
     )
@@ -283,7 +283,7 @@ def test_bedrock_model_from_parameters():
 
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
 
-    span = next(s for s in trace.spans if s.name == "Test Node")
+    span = next(s for s in trace.spans if s.name == "Test Node #0")
     # Model should be extracted from parameters as fallback
     assert span.model == model_id, "Model should be extracted from parameters"
     assert span.metadata.get("n8n.model.from_parameters") is True
@@ -302,7 +302,7 @@ def test_bedrock_model_from_modelSource_parameter():
         executionStatus="success",
         data={"main": [[{"json": {"input": "test prompt"}}]]},
     )
-    
+
     # Runtime data without model field (forcing parameter fallback)
     bedrock_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
@@ -314,9 +314,9 @@ def test_bedrock_model_from_modelSource_parameter():
         },
         source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
     )
-    
+
     runData = {"Starter": [starter_run], "Bedrock LLM": [bedrock_run]}
-    
+
     # Real n8n Bedrock node parameter structure (n8n v2.6.4)
     rec = N8nExecutionRecord(
         id=2001,
@@ -344,10 +344,10 @@ def test_bedrock_model_from_modelSource_parameter():
             executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
         ),
     )
-    
+
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "Bedrock LLM")
-    
+    span = next(s for s in trace.spans if s.name == "Bedrock LLM #0")
+
     # Verify model extracted from parameters.model (NOT parameters.modelSource="onDemand")
     assert span.model == "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", (
         f"Expected model from parameters.model, got {span.model}"
@@ -372,7 +372,7 @@ def test_bedrock_generation_without_explicit_token_usage():
         executionStatus="success",
         data={"main": [[{"json": {"input": "test"}}]]},
     )
-    
+
     bedrock_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
         executionTime=1200,
@@ -380,7 +380,7 @@ def test_bedrock_generation_without_explicit_token_usage():
         data={"response": {"generations": [[{"text": "response"}]]}},
         source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
     )
-    
+
     runData = {"Starter": [starter_run], "Bedrock Node": [bedrock_run]}
     rec = N8nExecutionRecord(
         id=1001,
@@ -403,9 +403,9 @@ def test_bedrock_generation_without_explicit_token_usage():
             executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
         ),
     )
-    
+
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "Bedrock Node")
+    span = next(s for s in trace.spans if s.name == "Bedrock Node #0")
     assert span.observation_type == "generation", (
         "Bedrock nodes should be classified as generation even without tokenUsage"
     )
@@ -420,7 +420,7 @@ def test_bedrock_anthropic_with_nested_ai_channel():
         executionStatus="success",
         data={"main": [[{"json": {"input": "test"}}]]},
     )
-    
+
     # Simulate nested ai_languageModel channel output
     bedrock_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
@@ -445,7 +445,7 @@ def test_bedrock_anthropic_with_nested_ai_channel():
         },
         source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
     )
-    
+
     runData = {"Starter": [starter_run], "Nested Bedrock": [bedrock_run]}
     rec = N8nExecutionRecord(
         id=1002,
@@ -468,9 +468,9 @@ def test_bedrock_anthropic_with_nested_ai_channel():
             executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
         ),
     )
-    
+
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "Nested Bedrock")
+    span = next(s for s in trace.spans if s.name == "Nested Bedrock #0")
     assert span.observation_type == "generation"
     assert span.usage is not None
     assert span.usage.input == 20
@@ -488,7 +488,7 @@ def test_bedrock_multiple_anthropic_models_in_workflow():
         executionStatus="success",
         data={"main": [[{"json": {"input": "start"}}]]},
     )
-    
+
     # Claude 3.5 Sonnet v2
     claude_35_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 10,
@@ -500,7 +500,7 @@ def test_bedrock_multiple_anthropic_models_in_workflow():
         },
         source=[NodeRunSource(previousNode="Starter", previousNodeRun=0)],
     )
-    
+
     # Claude Sonnet 4.5
     claude_45_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 1020,
@@ -512,7 +512,7 @@ def test_bedrock_multiple_anthropic_models_in_workflow():
         },
         source=[NodeRunSource(previousNode="Claude 3.5 Sonnet v2", previousNodeRun=0)],
     )
-    
+
     # Claude Opus 4.6
     claude_46_run = NodeRun(
         startTime=int(now.timestamp() * 1000) + 2130,
@@ -524,14 +524,14 @@ def test_bedrock_multiple_anthropic_models_in_workflow():
         },
         source=[NodeRunSource(previousNode="Claude Sonnet 4.5", previousNodeRun=0)],
     )
-    
+
     runData = {
         "Starter": [starter_run],
         "Claude 3.5 Sonnet v2": [claude_35_run],
         "Claude Sonnet 4.5": [claude_45_run],
         "Claude Opus 4.6": [claude_46_run],
     }
-    
+
     rec = N8nExecutionRecord(
         id=1003,
         workflowId="wf-bedrock-multi",
@@ -561,21 +561,21 @@ def test_bedrock_multiple_anthropic_models_in_workflow():
             executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))
         ),
     )
-    
+
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    
+
     # Verify all three models are correctly detected and processed
-    claude_35_span = next(s for s in trace.spans if s.name == "Claude 3.5 Sonnet v2")
+    claude_35_span = next(s for s in trace.spans if s.name == "Claude 3.5 Sonnet v2 #0")
     assert claude_35_span.observation_type == "generation"
     assert claude_35_span.model == "anthropic.claude-3-5-sonnet-20241022-v2:0"
     assert claude_35_span.usage.total == 30
-    
-    claude_45_span = next(s for s in trace.spans if s.name == "Claude Sonnet 4.5")
+
+    claude_45_span = next(s for s in trace.spans if s.name == "Claude Sonnet 4.5 #0")
     assert claude_45_span.observation_type == "generation"
     assert claude_45_span.model == "anthropic.claude-sonnet-4-5-20250929-v1:0"
     assert claude_45_span.usage.total == 50
-    
-    claude_46_span = next(s for s in trace.spans if s.name == "Claude Opus 4.6")
+
+    claude_46_span = next(s for s in trace.spans if s.name == "Claude Opus 4.6 #0")
     assert claude_46_span.observation_type == "generation"
     assert claude_46_span.model == "anthropic.claude-opus-4-6-v1"
     assert claude_46_span.usage.total == 100

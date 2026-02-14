@@ -79,7 +79,9 @@ This file is a normative contract. Any behavioral change to mapping, identifiers
 
 Use these exact meanings in code comments, docs, and tests. Adding a new term? Update here in same PR.
 
+* **Agent Envelope Expansion:** Post-fixup phase widening agent span timing boundaries to fully contain all child spans. n8n records agent `executionTime` covering only the final loop iteration, so children from earlier iterations extend outside the agent's raw boundaries. Expansion computes `min(child.start_time)` / `max(child.end_time)` and widens when any child falls outside. Original timing preserved in metadata (`n8n.agent.original_start_time`, `n8n.agent.original_execution_time_ms`). Flag `n8n.agent.envelope_expanded=true` emitted when expansion occurs.
 * **Agent Hierarchy:** Parent-child relationship inferred from any non-`main` workflow connection whose type starts with `ai_` making the agent span the parent. See **Agent Parent Fixup** for timing inversion correction.
+* **Agent Iteration Assignment:** Post-envelope-expansion phase assigning 0-based iteration indices to agent children. Uses generation spans as iteration boundaries: each generation span starts a new iteration. Non-generation children between generations inherit the earlier iteration index. Sets `n8n.agent.iteration` metadata on each child.
 * **Agent Parent Fixup:** Post-mapping phase re-parenting tool/component spans to agent spans when tool `startTime` precedes agent `startTime` (timing inversion). Deterministic: selects latest agent span starting at or before tool; if none exist, uses earliest agent span. Emits `n8n.agent.parent_fixup=true` metadata when fixup occurs.
 * **Backpressure:** Soft limiting mechanism (queue size vs `EXPORT_QUEUE_SOFT_LIMIT`) triggering exporter flush + sleep.
 * **Binary Stripping:** Unconditional replacement of binary/base64-like payloads with stable placeholders prior to (optional) truncation.
@@ -100,6 +102,7 @@ Use these exact meanings in code comments, docs, and tests. Adding a new term? U
 * **Prompt Resolution:** Identifying Langfuse prompt fetch nodes via 3-stage detection (node type, HTTP API pattern, output schema), resolving prompt metadata (name, version) from generation span ancestor chains, with environment-aware Langfuse API version queries in dev/staging only.
 * **Root Span:** Span representing entire execution; holds execution id metadata; parent of all top-level node spans.
 * **runData:** Canonical dict mapping node name → list[NodeRun] reconstructed or parsed from execution data JSON.
+* **Span Name Run-Index Suffix:** Every non-root span display name includes a `#N` suffix (e.g., `"AI Agent #0"`, `"HTTP Tool #1"`). The bare original node name is preserved in `n8n.node.name` metadata for internal lookups (AI filter, agent fixup, media patching). Deterministic span IDs still use unsuffixed node name.
 * **Truncation:** Optional length limiting of stringified input/output fields when `TRUNCATE_FIELD_LEN > 0`; does not disable binary stripping.
 * **Usage Extraction:** Normalize `tokenUsage` variants into canonical `input`, `output`, `total` counts (synthesizing `total` as input+output when absent).
 
@@ -352,10 +355,12 @@ n8n pattern (especially LangChain nodes): "Agent" node uses other nodes as "Tool
 ### Span Mapping
 
 * Each `NodeRun` → `LangfuseSpan`.
-* `LangfuseSpan.id` deterministic: UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"`.
+* `LangfuseSpan.id` deterministic: UUIDv5 hash of `f"{trace_id}:{node_name}:{run_index}"` (bare node name, no suffix).
+* `LangfuseSpan.name` includes run-index suffix: `f"{node_name} #{run_index}"` (e.g., `"AI Agent #0"`, `"HTTP Tool #1"`). Root span name is unsuffixed.
+* Bare node name stored in metadata `n8n.node.name` for all non-root spans. Internal lookups (AI filter, agent fixup, media patching) use this metadata field, not `span.name`.
 
 **Parent Resolution (Multi-tier precedence):**
-1. **Agent Hierarchy:** Check `workflowData.connections`. If node connected to Agent via non-`main` `ai_*` type → parent is most recent Agent span. Sets metadata: `n8n.agent.parent`, `n8n.agent.link_type`. **Post-loop fixup** corrects timing inversions: when tool span `startTime` precedes agent `startTime`, re-parents to the latest agent span starting at or before tool (or earliest agent if none qualify). Emits `n8n.agent.parent_fixup=true` when fixup occurs.
+1. **Agent Hierarchy:** Check `workflowData.connections`. If node connected to Agent via non-`main` `ai_*` type → parent is most recent Agent span. Sets metadata: `n8n.agent.parent`, `n8n.agent.link_type`. **Post-loop fixup** corrects timing inversions: when tool span `startTime` precedes agent `startTime`, re-parents to the latest agent span starting at or before tool (or earliest agent if none qualify). Emits `n8n.agent.parent_fixup=true` when fixup occurs. **Post-fixup envelope expansion** widens agent timing to cover all children. **Post-expansion iteration assignment** tags children with `n8n.agent.iteration`.
 2. **Runtime Sequential (Exact Run):** Use `run.source[0].previousNode` + `previousNodeRun` → link to exact run index. Sets: `n8n.node.previous_node_run`.
 3. **Runtime Sequential (Last Seen):** `previousNode` without run index → last seen span for that node. Sets: `n8n.node.previous_node`.
 4. **Static Graph Fallback:** Reverse-edge map from `workflowData.connections` infers likely parent. Sets: `n8n.graph.inferred_parent=true`.
@@ -694,11 +699,16 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 * `n8n.extracted_nodes` – dict containing extracted node data when `FILTER_AI_EXTRACTION_NODES` configured
 
 **All spans (optional context):**
+* `n8n.node.name` – bare node name without `#N` display suffix; used for internal lookups
 * `n8n.node.type`, `n8n.node.category`, `n8n.node.run_index`, `n8n.node.execution_time_ms`, `n8n.node.execution_status`
 * `n8n.node.previous_node`, `n8n.node.previous_node_run`
 * `n8n.graph.inferred_parent`
 * `n8n.agent.parent`, `n8n.agent.link_type`
 * `n8n.agent.parent_fixup` – boolean flag (true when post-loop fixup re-parents tool/component to agent due to timing inversion)
+* `n8n.agent.envelope_expanded` – boolean flag (true when agent timing widened to cover children)
+* `n8n.agent.original_start_time` – ISO 8601 UTC timestamp of agent's original start time before envelope expansion
+* `n8n.agent.original_execution_time_ms` – original execution time in ms before envelope expansion
+* `n8n.agent.iteration` – 0-based iteration index for children of agent spans (generation spans mark iteration boundaries)
 * `n8n.truncated.input`, `n8n.truncated.output`
 * `n8n.filter.ai_only`, `n8n.filter.mode`, `n8n.filter.excluded_node_count`, `n8n.filter.no_ai_spans`
 
@@ -784,12 +794,15 @@ The `shipper.py` module converts internal `LangfuseTrace` model into OTel spans 
 | Trace ID Embedding | Embedded OTLP hex trace id matches expected format | `test_trace_id_embedding.py` |
 | AI-only Filtering | Root retention, mode-specific retention, metadata flags | `test_ai_filtering.py` |
 | Node Extraction | Wildcard patterns match full flattened paths; flatten/unflatten preserves structure | `test_ai_extraction_*` |
+| Span Name Indexing | All non-root spans have `#N` suffix; bare name in metadata; ID stability | `test_span_name_indexing.py` |
+| Agent Envelope Expansion | Agent timing expanded to cover children; originals preserved in metadata | `test_agent_envelope_expansion.py` |
+| Agent Iteration Metadata | Generation-boundary iteration indices assigned to agent children | `test_agent_iteration_metadata.py` |
 
 ### Parent Resolution Precedence (Authoritative Table)
 
 | Priority | Strategy | Description | Metadata Signals |
 |----------|----------|-------------|------------------|
-| 1 | Agent Hierarchy | Non-`main` connection with `ai_*` type makes agent parent; post-loop fixup corrects timing inversions | `n8n.agent.parent`, `n8n.agent.link_type`, `n8n.agent.parent_fixup` (when fixup applied) |
+| 1 | Agent Hierarchy | Non-`main` connection with `ai_*` type makes agent parent; post-loop fixup corrects timing inversions; envelope expansion widens agent timing; iteration assignment tags children | `n8n.agent.parent`, `n8n.agent.link_type`, `n8n.agent.parent_fixup`, `n8n.agent.envelope_expanded`, `n8n.agent.original_start_time`, `n8n.agent.original_execution_time_ms`, `n8n.agent.iteration` |
 | 2 | Runtime Sequential (Exact Run) | previousNode + previousNodeRun points to exact span | `n8n.node.previous_node_run` |
 | 3 | Runtime Sequential (Last Seen) | previousNode without run index → last span for node | `n8n.node.previous_node` |
 | 4 | Static Reverse Graph Fallback | Reverse edge from workflow connections | `n8n.graph.inferred_parent=true` |

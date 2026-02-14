@@ -78,7 +78,7 @@ def test_generation_detection_provider_matrix():
 def test_generation_excludes_embeddings():
     rec = _build_record([("EmbeddingsNode", "EmbeddingsOpenAI")])
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "EmbeddingsNode")
+    span = next(s for s in trace.spans if s.name == "EmbeddingsNode #0")
     assert span.observation_type != "generation", "Embeddings should not be classified as generation"
 
 
@@ -128,7 +128,7 @@ def test_generation_detection_nested_token_usage():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "NestedModel")
+    span = next(s for s in trace.spans if s.name == "NestedModel #0")
     assert span.observation_type == "generation", "Nested tokenUsage not detected"
     assert span.usage is not None
     assert span.usage.input == 12 and span.usage.output == 3 and span.usage.total == 15
@@ -179,7 +179,7 @@ def test_nested_model_extraction():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "NestedModel")
+    span = next(s for s in trace.spans if s.name == "NestedModel #0")
     assert span.model == "gpt-4o-mini"
 
 
@@ -228,7 +228,7 @@ def test_model_extraction_variant_keys():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "VariantNode")
+    span = next(s for s in trace.spans if s.name == "VariantNode #0")
     assert span.model == "cohere-command-r-plus"
 
 
@@ -274,7 +274,7 @@ def test_limescape_docs_custom_generation_and_flat_usage():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    ls_span = next(s for s in trace.spans if s.name == "Limescape Docs")
+    ls_span = next(s for s in trace.spans if s.name == "Limescape Docs #0")
     assert ls_span.observation_type == "generation", "Limescape Docs node not classified as generation"
     assert ls_span.usage is not None, "Flattened usage counters not extracted"
     assert ls_span.usage.input == 5683 and ls_span.usage.output == 4160 and ls_span.usage.total == 9843
@@ -322,7 +322,7 @@ def test_model_priority_over_model_provider():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "Limescape Docs")
+    span = next(s for s in trace.spans if s.name == "Limescape Docs #0")
     assert span.model == "gpt-4.1", f"Unexpected model chosen: {span.model}"
 
 
@@ -376,5 +376,5 @@ def test_model_extraction_ai_languageModel_options_path():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "Google Gemini Chat Model")
+    span = next(s for s in trace.spans if s.name == "Google Gemini Chat Model #0")
     assert span.model == "gemini-2.5-pro"

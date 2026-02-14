@@ -187,7 +187,7 @@ def test_extraction_with_ai_filtering_enabled(
     # The tool nodes are kept as post-context, but also extracted
     assert len(trace.spans) >= 3  # At least root, AI node, and context
     span_names = {s.name for s in trace.spans}
-    assert "AIChatNode" in span_names  # AI node is present
+    assert "AIChatNode #0" in span_names  # AI node is present
 
     # Find root span (parent_id is None)
     root_span = next(s for s in trace.spans if s.parent_id is None)
@@ -253,8 +253,8 @@ def test_extraction_without_ai_filtering(monkeypatch, ai_execution_with_chat_and
     # Should have root span + all 4 nodes
     assert len(trace.spans) == 5
     span_names = {s.name for s in trace.spans}
-    assert "WebScraperTool" in span_names  # Not filtered
-    assert "DatabaseQueryTool" in span_names
+    assert "WebScraperTool #0" in span_names  # Not filtered
+    assert "DatabaseQueryTool #0" in span_names
 
     # Root span should NOT have extraction metadata
     root_span = next(s for s in trace.spans if s.parent_id is None)

@@ -55,7 +55,7 @@ def _sample_exec() -> N8nExecutionRecord:
 def test_media_observation_id_included(monkeypatch):
     rec = _sample_exec()
     mapped = map_execution_with_assets(rec, collect_binaries=True)
-    span = next(s for s in mapped.trace.spans if s.name == "ReadImage")
+    span = next(s for s in mapped.trace.spans if s.name == "ReadImage #0")
     created_payloads: list[dict] = []
 
     class _Resp:

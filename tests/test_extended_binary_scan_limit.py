@@ -48,7 +48,7 @@ def _record(payload):
 
 
 def _extract_output_span(trace):
-    return next(s for s in trace.spans if s.name == "NodeCap")
+    return next(s for s in trace.spans if s.name == "NodeCap #0")
 
 
 def test_extended_scan_limit_triggers_error_code(monkeypatch):

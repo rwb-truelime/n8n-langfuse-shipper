@@ -54,7 +54,7 @@ def test_input_propagation_basic():
     }
     rec = _base(now, run_data)
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    child_span = next(s for s in trace.spans if s.name == "Child")
+    child_span = next(s for s in trace.spans if s.name == "Child #0")
     assert child_span.input is not None and "inferredFrom" in child_span.input
 
 
@@ -82,6 +82,6 @@ def test_input_propagation_size_guard_blocks_large_parent():
     }
     rec = _base(now, run_data)
     trace = map_execution_to_langfuse(rec, truncate_limit=100)  # activates size guard path
-    child_span = next(s for s in trace.spans if s.name == "Child")
+    child_span = next(s for s in trace.spans if s.name == "Child #0")
     # Input should be None or not contain inferredFrom due to size guard
     assert not child_span.input or "inferredFrom" not in child_span.input

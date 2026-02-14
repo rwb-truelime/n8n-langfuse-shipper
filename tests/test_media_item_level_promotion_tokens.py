@@ -99,7 +99,7 @@ def test_media_token_substitution_with_item_level_promotion(monkeypatch):
     # Create dummy index for patch phase
     settings = Settings()
     patch_and_upload_media(mapped, settings)
-    span = next(s for s in trace.spans if s.name == "NodePromote")
+    span = next(s for s in trace.spans if s.name == "NodePromote #0")
     assert span.metadata.get("n8n.io.promoted_item_binary") is True
     assert span.metadata.get("n8n.media.asset_count") == 2
     assert span.output is not None

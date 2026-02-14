@@ -59,7 +59,7 @@ def _make_run() -> N8nExecutionRecord:
 def test_binary_preserved_after_unwrap_merge():
     rec = _make_run()
     mapped = map_execution_with_assets(rec, collect_binaries=True)
-    span = next(s for s in mapped.trace.spans if s.name == "NodeA")
+    span = next(s for s in mapped.trace.spans if s.name == "NodeA #0")
     assert span.output is not None
     parsed = json.loads(str(span.output))
     # Assert unwrapped json content present

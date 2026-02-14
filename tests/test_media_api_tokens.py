@@ -117,7 +117,7 @@ def test_media_api_token_patch():
         LANGFUSE_SECRET_KEY="sk",
     )
     patch_and_upload_media(mapped, settings)
-    span = next(s for s in mapped.trace.spans if s.name == "BinNode")
+    span = next(s for s in mapped.trace.spans if s.name == "BinNode #0")
     assert span.output is not None
     assert span.output is not None
     parsed = json.loads(str(span.output))
@@ -154,7 +154,7 @@ def test_media_api_token_patch_deduplicated(monkeypatch):
         LANGFUSE_SECRET_KEY="sk",
     )
     patch_and_upload_media(mapped, settings)
-    span = next(s for s in mapped.trace.spans if s.name == "BinNode")
+    span = next(s for s in mapped.trace.spans if s.name == "BinNode #0")
     # Ensure non-None then cast to string for static type checkers (span.output: Any|None)
     assert span.output is not None
     parsed = json.loads(str(span.output))

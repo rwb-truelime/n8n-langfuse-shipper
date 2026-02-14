@@ -19,6 +19,9 @@ It's designed for developers and teams who use n8n for AI-powered workflows and 
     - **Agent & Tool Hierarchy**: Correctly identifies parent-child relationships in LangChain nodes.
       - **Automatic Tool Detection**: Detects any node used as a tool via n8n's `usableAsTool` mechanism.
       - **Timing Inversion Fixup**: Post-processing corrects parent assignments when tool spans start before their agent spans.
+      - **Agent Envelope Expansion**: Expands agent span timing to fully cover all child spans for correct Langfuse timeline rendering.
+      - **Agent Iteration Metadata**: Tags child spans with 0-based iteration indices using LLM generation spans as boundaries.
+    - **Span Name Indexing**: Every span includes a `#N` run-index suffix (e.g., `AI Agent #0`, `HTTP Tool #1`) for disambiguation.
     - **Generation Spans**: Automatically detects LLM calls, extracting model names and token usage.
     - **Prompt Management Integration**: Links generation spans to Langfuse prompt versions, enabling prompt tracking and versioning.
     - **Error & Status**: Maps n8n node errors to Langfuse span statuses.
@@ -159,6 +162,29 @@ The shipper uses a multi-tier strategy to determine parent-child relationships:
 4. Adds metadata flag `n8n.agent.parent_fixup=true` to document the correction
 
 **Result**: Tool spans are always correctly nested under their agent spans in Langfuse, regardless of n8n's internal execution ordering. The fixup is deterministic—re-processing the same execution always produces the same hierarchy.
+
+### Agent Envelope Expansion
+
+n8n records the agent's `executionTime` covering only the final loop iteration. Children from earlier iterations have timestamps that extend outside the agent's raw time boundaries, causing broken timelines in Langfuse where tools appear to execute outside their agent.
+
+After the timing inversion fixup, the shipper expands each agent span's time boundaries to fully contain all its children:
+
+1. Groups all child spans by their agent parent
+2. Computes `min(child.start_time)` and `max(child.end_time)` across all children
+3. If any child falls outside the agent's boundaries, expands the agent's timing
+4. Preserves original timing in metadata:
+   - `n8n.agent.original_start_time` — ISO 8601 UTC timestamp
+   - `n8n.agent.original_execution_time_ms` — original duration in milliseconds
+   - `n8n.agent.envelope_expanded=true` — flag indicating expansion occurred
+
+### Agent Iteration Metadata
+
+For agent spans with multiple loop iterations, the shipper assigns a 0-based iteration index to each child span:
+
+- Generation (LLM) spans mark iteration boundaries — each generation starts a new iteration
+- Non-generation children between generations inherit the earlier iteration's index
+- The index is stored as `n8n.agent.iteration` metadata on each child
+- If no generations exist, all children receive iteration `0`
 
 ---
 

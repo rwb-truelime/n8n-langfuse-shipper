@@ -81,7 +81,7 @@ def test_flatted_parsing_basic():
     record = _build_execution_record(run_data_raw)
     trace = map_execution_to_langfuse(record, truncate_limit=None)
     span_names = [s.name for s in trace.spans]
-    assert "NodeA" in span_names
+    assert "NodeA #0" in span_names
 
 
 def test_flatted_numeric_literal_preserved():

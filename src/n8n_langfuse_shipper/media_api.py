@@ -294,12 +294,24 @@ def patch_and_upload_media(mapped: MappedTraceWithAssets, settings: _SettingsPro
         secret_key=settings.LANGFUSE_SECRET_KEY,
         timeout=settings.OTEL_EXPORTER_OTLP_TIMEOUT,
     )
-    # Index spans by (node, run_index)
+    # Index spans by (bare node name, run_index).
+    # Use n8n.node.name metadata (bare name without run suffix) when
+    # available so asset.node_name lookups match after span naming
+    # added the "#N" display suffix.
     span_index: Dict[tuple[str, int], Any] = {}
     for s in mapped.trace.spans:
-        run_index = s.metadata.get("n8n.node.run_index") if s.metadata else None
+        run_index = (
+            s.metadata.get("n8n.node.run_index")
+            if s.metadata
+            else None
+        )
         if isinstance(run_index, int):
-            span_index[(s.name, run_index)] = s
+            bare = (
+                s.metadata.get("n8n.node.name", s.name)
+                if s.metadata
+                else s.name
+            )
+            span_index[(bare, run_index)] = s
 
     # Always operate in simplified in-place surfacing mode (legacy modes removed).
     for asset in mapped.assets:

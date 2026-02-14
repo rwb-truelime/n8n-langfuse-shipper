@@ -96,7 +96,7 @@ def test_lmchat_strips_system_prompt_from_input():
 
     # Find the lmChat span
     lmchat_span = next(
-        s for s in trace.spans if s.name == "GoogleVertexChat"
+        s for s in trace.spans if s.name == "GoogleVertexChat #0"
     )
 
     # Verify it's classified as generation
@@ -164,7 +164,7 @@ def test_lmchat_handles_missing_split_marker():
 
     # Find the lmChat span
     lmchat_span = next(
-        s for s in trace.spans if s.name == "OpenAIChat"
+        s for s in trace.spans if s.name == "OpenAIChat #0"
     )
 
     # Verify input is unchanged (original message preserved)
@@ -222,7 +222,7 @@ def test_non_lmchat_node_unaffected():
 
     # Find the other span
     other_span = next(
-        s for s in trace.spans if s.name == "OtherNode"
+        s for s in trace.spans if s.name == "OtherNode #0"
     )
 
     # Verify input is completely unchanged (includes full original text)
@@ -286,7 +286,7 @@ def test_lmchat_multiple_messages_with_marker():
 
     # Find the lmChat span
     lmchat_span = next(
-        s for s in trace.spans if s.name == "AnthropicChat"
+        s for s in trace.spans if s.name == "AnthropicChat #0"
     )
 
     # Verify input exists
@@ -362,7 +362,7 @@ def test_lmchat_strips_system_from_string_messages():
 
     # Find the lmChat span
     lmchat_span = next(
-        s for s in trace.spans if s.name == "GeminiChat"
+        s for s in trace.spans if s.name == "GeminiChat #0"
     )
 
     # Verify input exists
@@ -457,7 +457,7 @@ def test_lmchat_strips_system_from_deeply_nested_structure():
 
     # Find the lmChat span
     lmchat_span = next(
-        s for s in trace.spans if s.name == "Google Vertex Chat Model"
+        s for s in trace.spans if s.name == "Google Vertex Chat Model #0"
     )
 
     # Verify input exists

@@ -56,7 +56,7 @@ def test_model_parameter_fallback_basic():
     )
     rec = _base_record(node, run)
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == node.name)
+    span = next(s for s in trace.spans if s.name == f"{node.name} #0")
     assert span.model == "gpt-5-standard"
     assert span.metadata.get("n8n.model.from_parameters") is True
     assert span.metadata.get("n8n.model.parameter_key") == "parameters.model"
@@ -79,7 +79,7 @@ def test_model_parameter_fallback_nested_options():
     )
     rec = _base_record(node, run)
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == node.name)
+    span = next(s for s in trace.spans if s.name == f"{node.name} #0")
     assert span.model == "custom-deploy-1"
     assert span.metadata.get("n8n.model.parameter_key") == "parameters.options.deploymentName"
 
@@ -99,7 +99,7 @@ def test_model_parameter_fallback_does_not_override_runtime():
     )
     rec = _base_record(node, run)
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == node.name)
+    span = next(s for s in trace.spans if s.name == f"{node.name} #0")
     assert span.model == "gpt-4-real"  # runtime value prevails
     assert span.metadata.get("n8n.model.from_parameters") is None
 
@@ -119,6 +119,6 @@ def test_model_parameter_fallback_ignores_expression():
     )
     rec = _base_record(node, run)
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == node.name)
+    span = next(s for s in trace.spans if s.name == f"{node.name} #0")
     assert span.model is None
     assert span.metadata.get("n8n.model.missing") is True

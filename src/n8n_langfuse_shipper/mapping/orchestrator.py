@@ -847,11 +847,14 @@ def _apply_ai_filter(
         for idx, span in enumerate(original_order):
             if span.id == root_span.id:
                 continue
+            bare_name = span.metadata.get(
+                "n8n.node.name", span.name
+            )
             node_type, node_cat = node_lookup.get(
-                span.name, (None, None)
+                bare_name, (None, None)
             )
             is_ai = is_ai_node(node_type, node_cat)
-            if not is_ai and span.name in graph_ai_names:
+            if not is_ai and bare_name in graph_ai_names:
                 is_ai = True
             if is_ai:
                 ai_span_ids.add(span.id)
@@ -1014,8 +1017,11 @@ def _fixup_agent_parents(
     # Build agent_name -> sorted list of (start_time, span_id).
     agent_spans: Dict[str, List[Tuple[Any, str]]] = {}
     for span in trace.spans:
-        if span.name in agent_names:
-            agent_spans.setdefault(span.name, []).append(
+        bare_name = span.metadata.get(
+            "n8n.node.name", span.name
+        )
+        if bare_name in agent_names:
+            agent_spans.setdefault(bare_name, []).append(
                 (span.start_time, span.id)
             )
     for entries in agent_spans.values():
@@ -1044,6 +1050,176 @@ def _fixup_agent_parents(
         if best_id != span.parent_id:
             span.parent_id = best_id
             span.metadata["n8n.agent.parent_fixup"] = True
+
+
+def _expand_agent_envelopes(
+    trace: LangfuseTrace,
+    ctx: MappingContext,
+) -> None:
+    """Expand agent span timing to encompass all child spans.
+
+    n8n records agent executionTime covering only the final
+    loop iteration while child LLM/tool runs span all iterations.
+    This creates children whose timing extends beyond their
+    parent agent's boundary, producing confusing Langfuse timelines.
+
+    For each agent span, computes min(start_time) and max(end_time)
+    across all direct children. If any child extends beyond the
+    agent's boundary, expands the agent's timing and stores the
+    original values in metadata for debugging.
+
+    Args:
+        trace: LangfuseTrace with fully resolved parents
+        ctx: MappingContext containing child_agent_map
+    """
+    if not ctx.child_agent_map:
+        return
+
+    # Index spans by id for parent lookup.
+    spans_by_id: Dict[str, LangfuseSpan] = {
+        s.id: s for s in trace.spans
+    }
+
+    # Collect children grouped by parent agent span id.
+    agent_children: Dict[str, List[LangfuseSpan]] = {}
+    agent_names: set[str] = set()
+    for _child, (agent, _lt) in ctx.child_agent_map.items():
+        agent_names.add(agent)
+
+    agent_span_ids: set[str] = set()
+    for span in trace.spans:
+        bare = span.metadata.get("n8n.node.name", span.name)
+        if bare in agent_names:
+            agent_span_ids.add(span.id)
+
+    for span in trace.spans:
+        if (
+            span.parent_id
+            and span.parent_id in agent_span_ids
+        ):
+            agent_children.setdefault(
+                span.parent_id, []
+            ).append(span)
+
+    # Expand each agent span to envelope its children.
+    for agent_id, children in agent_children.items():
+        agent_span = spans_by_id.get(agent_id)
+        if agent_span is None or not children:
+            continue
+
+        child_min_start = min(c.start_time for c in children)
+        child_max_end = max(c.end_time for c in children)
+
+        expanded = False
+        original_start = agent_span.start_time
+        original_end = agent_span.end_time
+
+        if child_min_start < agent_span.start_time:
+            agent_span.start_time = child_min_start
+            expanded = True
+        if child_max_end > agent_span.end_time:
+            agent_span.end_time = child_max_end
+            expanded = True
+
+        if expanded:
+            agent_span.metadata[
+                "n8n.agent.envelope_expanded"
+            ] = True
+            agent_span.metadata[
+                "n8n.agent.original_start_time"
+            ] = original_start.isoformat()
+            orig_ms = int(
+                (original_end - original_start).total_seconds()
+                * 1000
+            )
+            agent_span.metadata[
+                "n8n.agent.original_execution_time_ms"
+            ] = orig_ms
+            logger.debug(
+                "agent_envelope_expanded agent=%s "
+                "original_ms=%s expanded_start=%s "
+                "expanded_end=%s children=%d",
+                agent_span.metadata.get(
+                    "n8n.node.name", agent_span.name
+                ),
+                orig_ms,
+                agent_span.start_time.isoformat(),
+                agent_span.end_time.isoformat(),
+                len(children),
+            )
+
+
+def _assign_agent_iterations(
+    trace: LangfuseTrace,
+    ctx: MappingContext,
+) -> None:
+    """Assign agent loop iteration index to child spans.
+
+    For each agent span, identifies child spans belonging to
+    successive iterations. Iteration boundaries are inferred from
+    generation (LLM) child spans: each generation child marks the
+    start of a new iteration. Non-generation children (tools,
+    memory) between two generation children belong to the earlier
+    iteration.
+
+    Sets n8n.agent.iteration (0-based int) on each child span's
+    metadata.
+
+    Args:
+        trace: LangfuseTrace with resolved parents and envelopes
+        ctx: MappingContext containing child_agent_map
+    """
+    if not ctx.child_agent_map:
+        return
+
+    agent_names: set[str] = set()
+    for _child, (agent, _lt) in ctx.child_agent_map.items():
+        agent_names.add(agent)
+
+    agent_span_ids: set[str] = set()
+    for span in trace.spans:
+        bare = span.metadata.get("n8n.node.name", span.name)
+        if bare in agent_names:
+            agent_span_ids.add(span.id)
+
+    # Group children by parent agent span.
+    agent_children: Dict[str, List[LangfuseSpan]] = {}
+    for span in trace.spans:
+        if (
+            span.parent_id
+            and span.parent_id in agent_span_ids
+        ):
+            agent_children.setdefault(
+                span.parent_id, []
+            ).append(span)
+
+    for _agent_id, children in agent_children.items():
+        # Sort children by start_time for iteration inference.
+        sorted_children = sorted(
+            children, key=lambda s: s.start_time
+        )
+        # Find generation spans (iteration boundaries).
+        gen_indices: List[int] = []
+        for i, child in enumerate(sorted_children):
+            if child.observation_type == "generation":
+                gen_indices.append(i)
+
+        if not gen_indices:
+            # No generations: assign iteration 0 to all.
+            for child in sorted_children:
+                child.metadata["n8n.agent.iteration"] = 0
+            continue
+
+        # Assign iterations: each generation starts a new one.
+        # Children before the first generation get iteration 0.
+        iteration = 0
+        gen_set = set(gen_indices)
+        next_gen_ptr = 0
+        for i, child in enumerate(sorted_children):
+            if i in gen_set and next_gen_ptr < len(gen_indices):
+                iteration = next_gen_ptr
+                next_gen_ptr += 1
+            child.metadata["n8n.agent.iteration"] = iteration
 
 
 def _map_execution(
@@ -1215,7 +1391,9 @@ def _map_execution(
         status_norm = (run.executionStatus or "").lower()
         if run.error:
             status_norm = "error"
+        display_name = f"{node_name} #{idx}"
         metadata: Dict[str, Any] = {
+            "n8n.node.name": node_name,
             "n8n.node.type": node_type,
             "n8n.node.category": category,
             "n8n.node.run_index": idx,
@@ -1403,7 +1581,7 @@ def _map_execution(
             id=span_id,
             trace_id=ctx.trace_id,
             parent_id=parent_id,
-            name=node_name,
+            name=display_name,
             start_time=start_time,
             end_time=end_time,
             observation_type=observation_type,
@@ -1446,6 +1624,17 @@ def _map_execution(
     # resolve_parent falls back to root.  Now that ALL spans exist we
     # can correct Tier-1 (Agent Hierarchy) parent assignments.
     _fixup_agent_parents(trace, ctx)
+    # ── Agent envelope expansion ────────────────────────────────────
+    # n8n records agent executionTime covering only the final loop
+    # iteration, while child LLM/tool runs span all iterations. This
+    # causes children to overflow the agent's time boundary, producing
+    # confusing Langfuse timelines. Expand agent spans to encompass all
+    # children, preserving original timing in metadata.
+    _expand_agent_envelopes(trace, ctx)
+    # ── Agent iteration assignment ──────────────────────────────────
+    # Assign n8n.agent.iteration metadata to child spans within each
+    # agent cluster, enabling iteration-level grouping in Langfuse UI.
+    _assign_agent_iterations(trace, ctx)
 
     # Populate root span input/output if configured and captured. We avoid any
     # mutation earlier to keep mapping deterministic; this simple assignment is

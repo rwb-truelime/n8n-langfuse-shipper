@@ -135,7 +135,7 @@ def test_filter_keeps_root_and_ai_only():
     # Excluded node count should reflect any nodes dropped (none dropped here).
     assert root.metadata.get("n8n.filter.excluded_node_count") == 0
     names = [s.name for s in trace.spans]
-    assert {"Start", "Prep", "LLM", "Vector"}.issubset(set(names))
+    assert {"Start #0", "Prep #0", "LLM #0", "Vector #0"}.issubset(set(names))
 @pytest.fixture
 def sample_execution_record_ai() -> N8nExecutionRecord:
     """Representative execution containing:
@@ -265,8 +265,9 @@ def test_no_excessive_pre_context(sample_execution_record_ai):
     first_ai_full_idx = None
     for idx, span in enumerate(full_trace.spans[1:], start=1):
         # Use workflow classification via span name mapping from the record
-        # (span.name matches WorkflowNode.name)
-        node = next((n for n in sample_execution_record_ai.workflowData.nodes if n.name == span.name), None)
+        # (span metadata n8n.node.name matches WorkflowNode.name)
+        bare = span.metadata.get("n8n.node.name", span.name)
+        node = next((n for n in sample_execution_record_ai.workflowData.nodes if n.name == bare), None)
         if node and is_ai_node(node.type, node.category):
             first_ai_full_idx = idx
             break
@@ -274,7 +275,8 @@ def test_no_excessive_pre_context(sample_execution_record_ai):
     # Find first non-root span in filtered trace that is AI (window start)
     first_ai_filtered_idx = None
     for idx, span in enumerate(filtered.spans[1:], start=1):
-        node = next((n for n in sample_execution_record_ai.workflowData.nodes if n.name == span.name), None)
+        bare = span.metadata.get("n8n.node.name", span.name)
+        node = next((n for n in sample_execution_record_ai.workflowData.nodes if n.name == bare), None)
         if node and is_ai_node(node.type, node.category):
             first_ai_filtered_idx = idx
             break
@@ -358,7 +360,7 @@ def test_filter_preserves_ancestor_chain():
     trace = map_execution_to_langfuse(rec, filter_ai_only=True)
     names = [s.name for s in trace.spans]
     # Root + Start + Prep + AgentNode retained (Start ancestor)
-    assert {trace.spans[0].name, "Start", "Prep", "AgentNode"} == set(names)
+    assert {trace.spans[0].name, "Start #0", "Prep #0", "AgentNode #0"} == set(names)
 
 
 def test_filter_disabled_no_changes():
@@ -383,8 +385,8 @@ def test_filter_disabled_no_changes():
     filtered_trace = map_execution_to_langfuse(rec, filter_ai_only=True)
     # Filtering retains Set because it's an ancestor of an AI node; counts equal
     assert len(full_trace.spans) == len(filtered_trace.spans) == 3
-    assert any(s.name == "Set" for s in full_trace.spans)
-    assert any(s.name == "Set" for s in filtered_trace.spans)
+    assert any(s.name == "Set #0" for s in full_trace.spans)
+    assert any(s.name == "Set #0" for s in filtered_trace.spans)
     root_filtered = next(s for s in filtered_trace.spans if s.parent_id is None)
     assert root_filtered.metadata.get("n8n.filter.ai_only") is True
     assert any(s.metadata.get("n8n.filter.ai_only") for s in filtered_trace.spans if s.parent_id is None)
@@ -448,8 +450,8 @@ def test_filter_strict_mode_keeps_only_ai_and_ancestor_closure(monkeypatch):
 
     trace = map_execution_to_langfuse(rec, filter_ai_only=True)
     names = [s.name for s in trace.spans]
-    assert "Post" not in names
-    assert {"Start", "Prep", "Agent", "LLM"}.issubset(set(names))
+    assert not any(n.startswith("Post #") for n in names)
+    assert {"Start #0", "Prep #0", "Agent #0", "LLM #0"}.issubset(set(names))
 
     root = next(s for s in trace.spans if "n8n.execution.id" in s.metadata)
     assert root.metadata.get("n8n.filter.mode") == "strict"

@@ -271,11 +271,11 @@ def test_all_tool_spans_present_in_unfiltered_trace(
     )
     names = [s.name for s in trace.spans]
     # 2 SqlTool + 3 DataTableTool + 2 LLM + 1 Agent + 1 Post + root
-    assert names.count("SqlTool") == 2
-    assert names.count("DataTableTool") == 3
-    assert names.count("LLM") == 2
-    assert names.count("MyAgent") == 1
-    assert names.count("PostProcess") == 1
+    assert sum(1 for n in names if n.startswith("SqlTool #")) == 2
+    assert sum(1 for n in names if n.startswith("DataTableTool #")) == 3
+    assert sum(1 for n in names if n.startswith("LLM #")) == 2
+    assert sum(1 for n in names if n.startswith("MyAgent #")) == 1
+    assert sum(1 for n in names if n.startswith("PostProcess #")) == 1
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -292,10 +292,10 @@ def test_base_tools_retained_by_ai_filter(
     )
     names = [s.name for s in trace.spans]
     # All AI-connected spans should be present
-    assert "SqlTool" in names
-    assert "DataTableTool" in names
-    assert "LLM" in names
-    assert "MyAgent" in names
+    assert any(n.startswith("SqlTool #") for n in names)
+    assert any(n.startswith("DataTableTool #") for n in names)
+    assert any(n.startswith("LLM #") for n in names)
+    assert any(n.startswith("MyAgent #") for n in names)
     # PostProcess is non-AI, may or may not be in context
     root = next(
         s for s in trace.spans if s.parent_id is None
@@ -322,13 +322,13 @@ def test_tools_before_agent_parented_correctly(
 
     # Find all tool spans
     sql_spans = [
-        s for s in trace.spans if s.name == "SqlTool"
+        s for s in trace.spans if s.name.startswith("SqlTool #")
     ]
     dt_spans = [
-        s for s in trace.spans if s.name == "DataTableTool"
+        s for s in trace.spans if s.name.startswith("DataTableTool #")
     ]
     llm_spans = [
-        s for s in trace.spans if s.name == "LLM"
+        s for s in trace.spans if s.name.startswith("LLM #")
     ]
 
     # ALL tools/LLMs connected to agent should be parented to it
@@ -359,7 +359,7 @@ def test_fixup_metadata_emitted(timing_inversion_record):
     sql0 = next(
         s
         for s in trace.spans
-        if s.name == "SqlTool"
+        if s.name.startswith("SqlTool #")
         and s.metadata.get("n8n.node.run_index") == 0
     )
     assert sql0.metadata.get("n8n.agent.parent_fixup") is True
@@ -369,7 +369,7 @@ def test_fixup_metadata_emitted(timing_inversion_record):
     sql1 = next(
         s
         for s in trace.spans
-        if s.name == "SqlTool"
+        if s.name.startswith("SqlTool #")
         and s.metadata.get("n8n.node.run_index") == 1
     )
     # This should NOT have fixup since it was correct initially
@@ -455,8 +455,8 @@ def test_non_ai_non_connected_excluded():
         rec, filter_ai_only=True
     )
     names = [s.name for s in trace.spans]
-    assert "Agent" in names
-    assert "LLM" in names
+    assert any(n.startswith("Agent #") for n in names)
+    assert any(n.startswith("LLM #") for n in names)
     # RandomSet not connected to agent via ai_* and not AI type
     # It MAY appear as post-context. Verify it's at most in
     # context window, not classified as AI.
@@ -538,7 +538,7 @@ def test_multi_run_agent_parenting():
     )
 
     tool_spans = sorted(
-        [s for s in trace.spans if s.name == "ToolA"],
+        [s for s in trace.spans if s.name.startswith("ToolA #")],
         key=lambda s: s.start_time,
     )
     assert len(tool_spans) == 2
@@ -602,7 +602,7 @@ def test_tool_before_all_agent_runs_uses_earliest():
         uuid5(SPAN_NAMESPACE, f"{trace_id}:AgentY:0")
     )
     tool_span = next(
-        s for s in trace.spans if s.name == "ToolB"
+        s for s in trace.spans if s.name == "ToolB #0"
     )
     assert tool_span.parent_id == agent_id
     assert tool_span.metadata.get("n8n.agent.parent_fixup") is True

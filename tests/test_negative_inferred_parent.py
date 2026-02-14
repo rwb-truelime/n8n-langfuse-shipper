@@ -50,5 +50,5 @@ def test_no_inferred_parent_when_runtime_source_present():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    b_span = next(s for s in trace.spans if s.name == "B")
+    b_span = next(s for s in trace.spans if s.name == "B #0")
     assert "n8n.graph.inferred_parent" not in b_span.metadata

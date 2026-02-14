@@ -90,7 +90,7 @@ def test_generation_input_extraction_with_llm_params():
 
     # Find the generation span
     gen_span = next(
-        s for s in trace.spans if s.name == "OpenAIChat"
+        s for s in trace.spans if s.name == "OpenAIChat #0"
     )
 
     # Verify it's classified as generation
@@ -180,7 +180,7 @@ def test_generation_without_messages_array_unchanged():
 
     # Find the span
     span = next(
-        s for s in trace.spans if s.name == "CustomLLM"
+        s for s in trace.spans if s.name == "CustomLLM #0"
     )
 
     # Verify it's classified as generation
@@ -242,7 +242,7 @@ def test_non_generation_node_unaffected():
 
     # Find the span
     span = next(
-        s for s in trace.spans if s.name == "HTTPRequest"
+        s for s in trace.spans if s.name == "HTTPRequest #0"
     )
 
     # Verify it's NOT classified as generation
@@ -342,7 +342,7 @@ def test_recursive_search_with_nested_structure():
     trace = map_execution_to_langfuse(execution)
 
     # Find LMChat span
-    span = next((s for s in trace.spans if s.name == "LMChat"), None)
+    span = next((s for s in trace.spans if s.name == "LMChat #0"), None)
     assert span is not None
     assert span.observation_type == "generation"
 

@@ -90,7 +90,7 @@ def test_inplace_surface_replaces_placeholder(monkeypatch):
     mapped = MappedTraceWithAssets(trace=trace, assets=assets)
     settings = DummySettings(DB_TABLE_PREFIX="n8n_")  # required field
     patch_and_upload_media(mapped, settings)
-    span = [s for s in mapped.trace.spans if s.name == "ImageNode"][0]
+    span = [s for s in mapped.trace.spans if s.name == "ImageNode #0"][0]
     assert span.output is not None
     parsed = json.loads(span.output)
     # Token must have replaced original placeholder in-place under binary.image.data

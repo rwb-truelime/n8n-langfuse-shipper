@@ -78,7 +78,7 @@ def _record():
 def test_item_level_binary_promoted():
     rec = _record()
     mapped = map_execution_with_assets(rec, collect_binaries=True)
-    span = next(s for s in mapped.trace.spans if s.name == "NodeY")
+    span = next(s for s in mapped.trace.spans if s.name == "NodeY #0")
     assert span.output is not None
     parsed = json.loads(str(span.output))
     # Normalization may unwrap to list root (e.g. merged json objects); when list, search

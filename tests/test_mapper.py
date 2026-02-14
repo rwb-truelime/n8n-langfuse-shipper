@@ -69,7 +69,7 @@ def test_deterministic_ids_and_generation_detection():
     ids2 = [s.id for s in trace2.spans]
     assert ids1 == ids2, "Deterministic span IDs changed between runs"
     # Generation detection for LLM node
-    llm_span = next(s for s in trace1.spans if s.name == "LLM")
+    llm_span = next(s for s in trace1.spans if s.name == "LLM #0")
     assert llm_span.usage is not None
     assert llm_span.usage.input == 5
     assert llm_span.usage.output == 7
@@ -99,8 +99,8 @@ def test_parent_resolution_with_previous_node_run():
     }
     rec = _base_record(run_data)
     trace = map_execution_to_langfuse(rec, truncate_limit=100)
-    span_a = next(s for s in trace.spans if s.name == "A")
-    span_b = next(s for s in trace.spans if s.name == "B")
+    span_a = next(s for s in trace.spans if s.name == "A #0")
+    span_b = next(s for s in trace.spans if s.name == "B #0")
     assert span_b.parent_id == span_a.id
 
 
@@ -118,7 +118,7 @@ def test_truncation_flags():
     }
     rec = _base_record(run_data)
     trace = map_execution_to_langfuse(rec, truncate_limit=100)
-    span = next(s for s in trace.spans if s.name == "Node")
+    span = next(s for s in trace.spans if s.name == "Node #0")
     assert span.metadata.get("n8n.truncated.output") is True
 
 
@@ -156,8 +156,8 @@ def test_graph_fallback_parent_inference():
         "Parent": {"main": [[{"index": 0, "node": "Child", "type": "main"}]]}
     }
     trace = map_execution_to_langfuse(rec, truncate_limit=200)
-    parent_span = next(s for s in trace.spans if s.name == "Parent")
-    child_span = next(s for s in trace.spans if s.name == "Child")
+    parent_span = next(s for s in trace.spans if s.name == "Parent #0")
+    child_span = next(s for s in trace.spans if s.name == "Child #0")
     assert child_span.parent_id == parent_span.id, "Graph fallback failed to assign parent span"
     assert child_span.metadata.get("n8n.graph.inferred_parent") is True
 
@@ -256,7 +256,7 @@ def test_agent_hierarchy_parenting():
     trace = map_execution_to_langfuse(_agent_hierarchy_execution(), truncate_limit=200)
     spans_by_name = {s.name: s for s in trace.spans}
     root = next(s for s in trace.spans if s.parent_id is None)
-    agent = spans_by_name["HAL9000"]
+    agent = spans_by_name["HAL9000 #0"]
     assert agent.parent_id == root.id
     expected_link_types = {
         "Tool1": "ai_tool",
@@ -266,9 +266,9 @@ def test_agent_hierarchy_parenting():
         "Retriever1": "ai_retriever",
     }
     for child, link_type in expected_link_types.items():
-        child_span = spans_by_name[child]
+        child_span = spans_by_name[f"{child} #0"]
         assert child_span.parent_id == agent.id, f"{child} not parented to agent"
         assert child_span.metadata.get("n8n.agent.parent") == "HAL9000"
         assert child_span.metadata.get("n8n.agent.link_type") == link_type
-    llm_span = spans_by_name["LLM1"]
+    llm_span = spans_by_name["LLM1 #0"]
     assert llm_span.observation_type == "generation"

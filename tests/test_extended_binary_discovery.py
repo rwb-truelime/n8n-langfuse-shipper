@@ -47,7 +47,7 @@ def _record(payload):
 
 
 def _extract_output_span(trace):
-    return next(s for s in trace.spans if s.name == "NodeX")
+    return next(s for s in trace.spans if s.name == "NodeX #0")
 
 
 def test_data_url_discovered():

@@ -37,6 +37,6 @@ def test_error_status_normalization():
         data=ExecutionData(executionData=ExecutionDataDetails(resultData=ResultData(runData=runData))),
     )
     trace = map_execution_to_langfuse(rec, truncate_limit=None)
-    span = next(s for s in trace.spans if s.name == "ErrNode")
+    span = next(s for s in trace.spans if s.name == "ErrNode #0")
     assert span.status == "error", "Error status not normalized"
     assert span.error is not None
