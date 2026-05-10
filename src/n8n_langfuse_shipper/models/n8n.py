@@ -27,7 +27,7 @@ class NodeRun(BaseModel):
     executionTime: int
     executionStatus: str
     data: Dict[str, Any] = Field(default_factory=dict)
-    source: Optional[List[NodeRunSource]] = None
+    source: Optional[List[Optional[NodeRunSource]]] = None
     inputOverride: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, Any]] = None
 
