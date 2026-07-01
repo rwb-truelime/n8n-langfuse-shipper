@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS base
+FROM python:3.12-alpine AS base
 
 # Build-time metadata labels (optional but helpful)
 LABEL org.opencontainers.image.title="n8n-langfuse-shipper" \
@@ -15,11 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=UTC
 
 # System deps kept minimal (psycopg[binary] ships wheels). Add libpq if needed later.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates \
-       curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates curl
 
 WORKDIR /app
 
@@ -34,10 +30,10 @@ COPY src ./src
 RUN pip install --upgrade pip \
     && pip install .
 
-# Add SSL certificate to Python's certifi bundle (used by requests/urllib3)
-COPY sertigo_intermediate.crt /tmp/sertigo_intermediate.crt
-RUN cat /tmp/sertigo_intermediate.crt >> $(python -c "import certifi; print(certifi.where())") \
-    && rm /tmp/sertigo_intermediate.crt
+# Add Sectigo TLS intermediates to Python's certifi bundle (used by HTTPX/urllib3).
+COPY sectigo_tls_intermediates.pem /tmp/sectigo_tls_intermediates.pem
+RUN cat /tmp/sectigo_tls_intermediates.pem >> $(python -c "import certifi; print(certifi.where())") \
+    && rm /tmp/sectigo_tls_intermediates.pem
 
 # (Source already copied earlier for build correctness.)
 
