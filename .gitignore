@@ -1,6 +1,7 @@
 sampledata
 tests/test_execution_887_integration.py
-
+data
+docker-compose.yml
 .shipper_checkpoint
 
 #Infratructure
